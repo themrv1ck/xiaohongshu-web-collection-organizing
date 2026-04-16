@@ -1,134 +1,77 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: Organize Xiaohongshu web favorites on macOS with Chrome + AppleScript + DOM injection, including album creation, cautious classification, and the verified re-collect -> banner -> add-to-album workflow.
+description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on macOS when the user asks to inspect favorites, create boards, classify saved notes, clean up a messy board like “杂项灵感”, or batch reassign notes through Chrome + AppleScript/JXA. Trigger only when Chrome is available, the user is already logged in on Xiaohongshu web, and Chrome has “允许 Apple 事件中的 JavaScript” enabled; this skill depends on macOS, osascript/JXA, Chrome DOM automation, and optionally the @lucasygu/redbook client for note metadata, collect/uncollect verification, and resume-safe batch execution.
 ---
 
-# 小红书 Web 收藏整理（开源版）
+# 小红书收藏整理 Skill
 
-## 什么时候用
+## 稳定工作流
+1. 检查环境：macOS、Chrome、小红书网页登录态、Apple 事件中的 JavaScript。
+2. 抓取收藏页当前实际可见条目，写入 `visible_items.json`。
+3. 读取或创建专辑，写入 `created_boards.json`。
+4. 生成 `classification.json`，对模糊项做 OCR / 视觉复核。
+5. 批量执行 `uncollect -> collect -> banner 加入专辑 -> 选择目标专辑`。
+6. 每条实时写入 `run_report.json`，失败项同步写入 `retry_queue.json`。
+7. 批次结束后重新抓取目标专辑样本并做数量核对。
 
-当你要：
-- 读取用户已登录的小红书网页端收藏
-- 按主题给收藏分组
-- 自动创建专辑
-- 把收藏加入对应专辑
+## 输入
+- 当前已登录的小红书收藏页 / 专辑页
+- 用户给定的专辑体系 JSON
+- 已抓取的 `visible_items.json`
+- 已完成的 `classification.json`
+- 历史 `run_report.json` / `retry_queue.json`
 
-## 前提
+## 输出
+- `visible_items.json`
+- `classification.json`
+- `created_boards.json`
+- `run_report.json`
+- `retry_queue.json`
 
-- macOS
-- Google Chrome
-- 用户已登录小红书网页版
-- Chrome 已开启：`查看 -> 开发者 -> 允许 Apple 事件中的 JavaScript`
+## 分类复核要求
+- 弱标题、短标题、跨类内容必须复核。
+- 复核顺序：标题/desc/tags/作者 -> 视觉识别 -> 人工判断。
+- 复核后的结论必须回写 `classification.json`，不能只留 review 文件。
 
-## 结论先行
+## 批量执行要求
+- 每条必须有 `status`、`attempt`、`events`、`error`。
+- 单条失败不能阻断整批。
+- 每成功一条立即写盘。
+- 第二次重试要延长 `.collect-wrapper` 等待时间。
 
-当前可复用的稳定路线是：
+## 单条失败处理
+- `.collect-wrapper` 延迟挂载：首次等 45 秒，二次等 75 秒。
+- banner 未出现：重发鼠标事件，再失败则进 `retry_queue.json`。
+- AppleEvent / JXA 超时：当前条失败，整批继续。
+- 目标专辑点击失败：记录实际 board 文本，退出当前条。
 
-1. 先抓收藏页里当前实际可见的收藏条目
-2. 先做分类
-3. 在真正批量执行前人工复核分类
-4. 创建/补齐专辑
-5. 对每条笔记走：
-   - `取消收藏`
-   - 用收藏来源链接重新打开笔记
-   - `重新收藏`
-   - 等 `收藏成功 / 加入专辑` banner
-   - 点 `加入专辑`
-   - 点目标专辑
-6. 跑完后核对数量与抽样验证
+## 整体续跑机制
+- 启动前读取旧 `run_report.json`。
+- `status=success` 的条目直接跳过。
+- `failed` 条目写入 `retry_queue.json` 并优先补跑。
+- 中途终止后只从未成功条目继续，不从头跑。
 
-## 为什么不能只靠粗分类直接跑
+## 核验方式
+1. 事件核验：`board:CLICKED:<目标专辑>` 与 `toast:ok`
+2. 页面核验：重新抓目标专辑，确认条目已出现
+3. 数量核验：比较 `board_counts_before` / `board_counts_after`
 
-因为实际执行中很容易出现这些问题：
+## 明确禁止事项
+- 不要把 `.collect-wrapper` 当成直接入专辑入口。
+- 不要伪造未验证私有接口。
+- 不要把 UI 总数当成已完整抓取数。
+- 不要只写文档不落盘 JSON。
+- 不要对全部条目做重型 OCR。
 
-- `杂项灵感` 变成垃圾桶，塞进大量其实能单独归类的内容
-- 穿搭 / 摄影 / 审美 / 成长 / 训练 / 旅行之间会互相串类
-- 一些内容从语义上看很像“杂项”，但从用户使用目标看更适合明确专辑
+## 环境前提与限制
+- 仅适用于 macOS + Google Chrome。
+- 用户必须已登录小红书网页端。
+- Chrome 必须开启“允许 Apple 事件中的 JavaScript”。
+- 依赖：`osascript`、AppleScript/JXA、可选 Node.js 与 `@lucasygu/redbook`。
 
-实战修正规则：
-
-- `杂项灵感` 只能做临时缓冲区，不能当最终归宿
-- “挑第一只手表”应归入 `穿搭发型与品味`
-- 如果滑雪内容数量足够，应拆出独立 `滑雪` 专辑
-- 如果用户反馈“你弄丢了两个收藏夹 / 数量不对”，必须先回到抓取和分类阶段重新核对，不要继续带错数据往下跑
-
-## 已验证的关键实现细节
-
-### 1. 不要只用 `/explore/<note_id>` 进入笔记
-优先使用收藏页抓到的原始 `href`：
-
-`/user/profile/<self_uid>/<note_id>?xsec_token=...&xsec_source=pc_collect`
-
-原因：
-- 这个入口更接近“从收藏场景进入”
-- 某些笔记在这种入口下更容易正确挂载收藏控件
-
-### 2. `.collect-wrapper` 不要只做 DOM `.click()`
-部分笔记上，单纯 `.click()` 不稳定。
-更稳的是派发一整组鼠标事件：
-
-- `mouseover`
-- `mousedown`
-- `mouseup`
-- `click`
-
-### 3. 要接受页面很慢
-即使 URL 已对：
-- `.collect-wrapper` 也可能晚十几秒才出现
-- 某些笔记需要更长等待甚至重试
-
-建议：
-- 单条等待至少 45 秒
-- 失败时再重试一次
-
-### 4. 批量任务必须可续跑
-不要一条失败就整批报废。
-建议报告至少包含：
-
-- `visible_count`
-- `group_counts`
-- `processed`
-- `errors`
-- `board_counts_before`
-- `board_counts_after`
-- `sample_verify`
-
-并支持：
-- 读取旧报告
-- 跳过已成功 ID
-- 只补跑未完成条目
-
-## 推荐的专辑层级思想
-
-第一层按主主题分：
-- 家居装修与收纳
-- 穿搭发型与品味
-- 运动训练与体态
-- 效率系统与AI
-- 日本旅行与机位
-- 摄影审美与创作
-- 思考与成长
-
-第二层按实际内容再细化：
-- 如果滑雪内容足够，拆出 `滑雪`
-- 如果某一类下主题仍过杂，再拆更小专辑
-
-## 不要做的事
-
-- 不要把 `.collect-wrapper` 本身误当成“加入专辑按钮”
-- 不要在没核对数量时宣称已完成全量整理
-- 不要把 UI 显示总数直接当作已经抓全的条数
-- 不要在 `杂项灵感` 明显过大时继续机械执行
-
-## 开源交付建议
-
-GitHub 里至少放：
-- `README.md`
-- `SKILL.md`
-- `LICENSE`
-
-如果后续继续完善，可补：
-- `examples/`
+## 关联资源
 - `scripts/`
-- `reports/`
-- `assets/`
+- `references/io-contract.md`
+- `references/recovery-and-resume.md`
+- `references/environment-and-limitations.md`
+- `examples/`
