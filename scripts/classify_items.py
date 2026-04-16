@@ -1,32 +1,63 @@
 #!/usr/bin/env python3
-import json, sys
+import argparse
+import json
 from pathlib import Path
-RULES = {
-    '家居装修与收纳': ['家居','装修','餐边柜','镜柜','台盆柜','厨房','豪宅','收纳','客厅','卧室'],
-    '穿搭发型与品味': ['穿搭','时尚','男士','香水','老钱风','西装','ootd','vogue','chanel'],
-    '滑雪': ['滑雪','单板','雪场','固定器','换刃','casi'],
-    '体态纠正与康复': ['走姿','呼吸','康复','梨状肌','崴脚','一字马','肚腩'],
-    '运动训练与体态': ['硬拉','训练','腿部力量','跟练','跑步动作'],
-    '效率系统与AI': ['app','小组件','收藏夹批量管理','口播神器','科研写作','效率','ai'],
-    '摄影审美与创作': ['剪辑','配乐','徕卡','字体','故事感','画线'],
-    '思考与成长': ['成长','松弛感','西西弗','心智成熟','探索新奇'],
-}
+
+from xhs_ocr_common import infer_board, load_json, load_taxonomy, perform_ocr_for_items, write_json
 
 def main():
-    src = Path(sys.argv[1]); out = Path(sys.argv[2]); items = json.loads(src.read_text(encoding='utf-8'))
+    parser = argparse.ArgumentParser(description='基于元数据 + 封面 OCR 结果生成 classification.json。')
+    parser.add_argument('src', help='visible_items.json 路径')
+    parser.add_argument('out', help='classification.json 输出路径')
+    parser.add_argument('--taxonomy', default=None, help='board_taxonomy.json 路径')
+    parser.add_argument('--ocr-results', default=None, help='ocr_results.json 路径；未提供时自动生成')
+    parser.add_argument('--cache-dir', default=None, help='OCR 下载缓存目录')
+    parser.add_argument('--ocr-timeout-sec', type=int, default=20, help='OCR 图片下载超时时间')
+    parser.add_argument('--skip-ocr', action='store_true', help='跳过 OCR，只使用已有元数据做分类')
+    parser.add_argument('--force-ocr', action='store_true', help='忽略已有 OCR 结果，强制重跑')
+    args = parser.parse_args()
+
+    src = Path(args.src)
+    out = Path(args.out)
+    items = load_json(src)
+    boards = load_taxonomy(Path(args.taxonomy)) if args.taxonomy else load_taxonomy(None)
+
+    ocr_map = {}
+    ocr_output = None
+    if not args.skip_ocr:
+        ocr_output = Path(args.ocr_results) if args.ocr_results else out.parent / 'ocr_results.json'
+        ocr_results = perform_ocr_for_items(
+            items,
+            ocr_output,
+            cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+            timeout_sec=args.ocr_timeout_sec,
+            force=args.force_ocr,
+        )
+        ocr_map = {entry.get('id'): entry for entry in ocr_results if isinstance(entry, dict) and entry.get('id')}
+
     result = []
     for item in items:
-        blob = '
-'.join([item.get('title',''), item.get('desc',''), ' '.join(item.get('tags',[])), item.get('user','')]).lower()
-        board, reasons = '杂项灵感', []
-        for name, words in RULES.items():
-            hits = [w for w in words if w.lower() in blob]
-            if hits:
-                board, reasons = name, hits
-                break
-        result.append({'id': item.get('id'), 'title': item.get('title'), 'target_board': board, 'confidence': 'high' if reasons else 'low', 'reason': reasons, 'review_state': 'pending' if not reasons else 'classified'})
-    out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(json.dumps({'count': len(result), 'output': str(out)}, ensure_ascii=False, indent=2))
+        ocr_entry = ocr_map.get(item.get('id'))
+        board, confidence, reason, review_state = infer_board(item, ocr_entry, boards)
+        result.append({
+            'id': item.get('id'),
+            'title': item.get('title'),
+            'target_board': board,
+            'confidence': confidence,
+            'reason': reason,
+            'review_state': review_state,
+            'ocr_status': (ocr_entry or {}).get('status', 'skipped' if args.skip_ocr else 'missing'),
+            'ocr_confidence': (ocr_entry or {}).get('ocr_confidence'),
+            'ocr_text': (ocr_entry or {}).get('ocr_text', ''),
+            'ocr_image_url': (ocr_entry or {}).get('image_url') or item.get('cover_image_url', ''),
+        })
+
+    write_json(out, result)
+    print(json.dumps({
+        'count': len(result),
+        'ocr_output': str(ocr_output) if ocr_output else None,
+        'output': str(out),
+    }, ensure_ascii=False, indent=2))
 
 if __name__ == '__main__':
     main()

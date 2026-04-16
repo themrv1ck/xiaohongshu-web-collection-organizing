@@ -1,2 +1,10 @@
 .DS_Store
-RESTART-NOTES.md
+ocr_cache/
+visible_items.json
+ocr_results.json
+classification.json
+created_boards.json
+run_report.json
+retry_queue.json
+board_taxonomy.json
+run_config.json

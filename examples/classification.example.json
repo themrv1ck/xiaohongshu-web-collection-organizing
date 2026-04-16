@@ -1,4 +1,26 @@
 [
-  {"id":"66d19b54000000001d03a93d","title":"到底为什么叫他贵妇？","target_board":"穿搭发型与品味","confidence":"high","reason":["西装","老钱风"],"review_state":"reviewed"},
-  {"id":"694d3390000000002203ae33","title":"听CASI考官详细拆解什么固定器角度适合你？","target_board":"滑雪","confidence":"high","reason":["滑雪","固定器","CASI"],"review_state":"reviewed"}
+  {
+    "id": "000000000000000000000001",
+    "title": "示例笔记A",
+    "target_board": "穿搭发型与品味",
+    "confidence": "high",
+    "reason": ["西装", "ocr:老钱风"],
+    "review_state": "ocr_reviewed",
+    "ocr_status": "ok",
+    "ocr_confidence": 0.93,
+    "ocr_text": "老钱风西装 香水推荐",
+    "ocr_image_url": "https://example.invalid/cover-1.jpg"
+  },
+  {
+    "id": "000000000000000000000002",
+    "title": "示例笔记B",
+    "target_board": "滑雪",
+    "confidence": "high",
+    "reason": ["滑雪", "ocr:固定器", "ocr:casi"],
+    "review_state": "ocr_reviewed",
+    "ocr_status": "ok",
+    "ocr_confidence": 0.95,
+    "ocr_text": "CASI 固定器角度 换刃",
+    "ocr_image_url": "https://example.invalid/cover-2.jpg"
+  }
 ]

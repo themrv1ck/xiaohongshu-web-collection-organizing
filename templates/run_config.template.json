@@ -1,9 +1,12 @@
 {
-  "user_id": "556f1a8bc2bdeb527a6fa010",
+  "user_id": "REPLACE_WITH_YOUR_XHS_USER_ID",
   "source_board": "杂项灵感",
   "max_attempts": 2,
   "collect_wrapper_wait_ms": 45000,
   "collect_wrapper_retry_wait_ms": 75000,
   "banner_wait_ms": 8000,
-  "js_timeout_ms": 15000
+  "js_timeout_ms": 15000,
+  "ocr_every_item": true,
+  "ocr_timeout_sec": 20,
+  "ocr_force_refresh": false
 }

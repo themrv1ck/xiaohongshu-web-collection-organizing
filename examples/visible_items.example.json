@@ -1,4 +1,24 @@
 [
-  {"id":"66d19b54000000001d03a93d","title":"到底为什么叫他贵妇？","href":"https://www.xiaohongshu.com/user/profile/...","xsec_token":"ABfv...","first_seen":0},
-  {"id":"694d3390000000002203ae33","title":"听CASI考官详细拆解什么固定器角度适合你？","href":"https://www.xiaohongshu.com/user/profile/...","xsec_token":"ABfh...","first_seen":1}
+  {
+    "id": "000000000000000000000001",
+    "title": "示例笔记A",
+    "href": "https://www.xiaohongshu.com/explore/000000000000000000000001",
+    "cover_image_url": "https://example.invalid/cover-1.jpg",
+    "user": "示例账号A",
+    "desc": "示例描述A",
+    "tags": ["穿搭", "老钱风"],
+    "card_text": "示例笔记A 示例描述A #穿搭 #老钱风",
+    "first_seen": 0
+  },
+  {
+    "id": "000000000000000000000002",
+    "title": "示例笔记B",
+    "href": "https://www.xiaohongshu.com/explore/000000000000000000000002",
+    "cover_image_url": "https://example.invalid/cover-2.jpg",
+    "user": "示例账号B",
+    "desc": "示例描述B",
+    "tags": ["滑雪", "CASI"],
+    "card_text": "示例笔记B 示例描述B #滑雪 #CASI",
+    "first_seen": 1
+  }
 ]

@@ -1,0 +1,22 @@
+[
+  {
+    "id": "000000000000000000000001",
+    "title": "示例笔记A",
+    "image_url": "https://example.invalid/cover-1.jpg",
+    "status": "ok",
+    "ocr_text": "老钱风西装 香水推荐",
+    "ocr_lines": ["老钱风西装", "香水推荐"],
+    "ocr_confidence": 0.93,
+    "error": ""
+  },
+  {
+    "id": "000000000000000000000002",
+    "title": "示例笔记B",
+    "image_url": "https://example.invalid/cover-2.jpg",
+    "status": "ok",
+    "ocr_text": "CASI 固定器角度 换刃",
+    "ocr_lines": ["CASI", "固定器角度", "换刃"],
+    "ocr_confidence": 0.95,
+    "error": ""
+  }
+]
