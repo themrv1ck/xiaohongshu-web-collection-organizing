@@ -1,4 +1,4 @@
-# xiaohongshu-web-collection-organizing
+# 小红书自动整理收藏夹skill
 
 一个可分发、可安装、可续跑的小红书网页端收藏整理 skill 包，现已补上 **每个条目封面图全量 OCR**。
 
