@@ -5,14 +5,14 @@
 ```json
 [
   {
-    "id": "000000000000000000000001",
-    "title": "示例笔记A",
-    "href": "https://www.xiaohongshu.com/explore/000000000000000000000001",
-    "cover_image_url": "https://example.invalid/cover-1.jpg",
-    "user": "示例账号A",
-    "desc": "示例描述A",
+    "id": "66d19b54000000001d03a93d",
+    "title": "到底为什么叫他贵妇？",
+    "href": "https://www.xiaohongshu.com/explore/66d19b54000000001d03a93d",
+    "cover_image_url": "https://ci.xiaohongshu.com/cover-1.jpg",
+    "user": "穿搭研究所",
+    "desc": "男士西装与香水搭配",
     "tags": ["穿搭", "老钱风"],
-    "card_text": "示例笔记A 示例描述A #穿搭 #老钱风",
+    "card_text": "到底为什么叫他贵妇？ 男士西装与香水搭配 #穿搭 #老钱风",
     "first_seen": 0
   }
 ]
@@ -28,9 +28,9 @@
 ```json
 [
   {
-    "id": "000000000000000000000001",
-    "title": "示例笔记A",
-    "image_url": "https://example.invalid/cover-1.jpg",
+    "id": "66d19b54000000001d03a93d",
+    "title": "到底为什么叫他贵妇？",
+    "image_url": "https://ci.xiaohongshu.com/cover-1.jpg",
     "status": "ok",
     "ocr_text": "老钱风西装 香水推荐",
     "ocr_lines": ["老钱风西装", "香水推荐"],
@@ -44,8 +44,8 @@
 ```json
 [
   {
-    "id": "000000000000000000000001",
-    "title": "示例笔记A",
+    "id": "66d19b54000000001d03a93d",
+    "title": "到底为什么叫他贵妇？",
     "target_board": "穿搭发型与品味",
     "confidence": "high",
     "reason": ["西装", "ocr:老钱风"],
@@ -53,7 +53,7 @@
     "ocr_status": "ok",
     "ocr_confidence": 0.93,
     "ocr_text": "老钱风西装 香水推荐",
-    "ocr_image_url": "https://example.invalid/cover-1.jpg"
+    "ocr_image_url": "https://ci.xiaohongshu.com/cover-1.jpg"
   }
 ]
 ```
@@ -65,10 +65,10 @@
 
 ### `run_report.json`
 ```json
-{"started_at":"2026-04-17T01:17:03Z","visible_count":11,"processed":[{"id":"000000000000000000000004","title":"示例成功笔记","target_board":"滑雪","status":"success","attempt":1,"events":["collect:CLICKED","board:CLICKED:滑雪","toast:ok"]}],"errors":[],"board_counts_before":{"杂项灵感":76},"board_counts_after":{"杂项灵感":65}}
+{"started_at":"2026-04-17T01:17:03Z","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4️⃣个技能直接出活","target_board":"滑雪","status":"success","attempt":1,"events":["collect:CLICKED","board:CLICKED:滑雪","toast:ok"]}],"errors":[],"board_counts_before":{"杂项灵感":76},"board_counts_after":{"杂项灵感":65}}
 ```
 
 ### `retry_queue.json`
 ```json
-[{"id":"000000000000000000000003","title":"示例失败笔记","target_board":"体态纠正与康复","reason":"collect selector timeout","next_action":"retry_with_extended_wait"}]
+[{"id":"684bde220000000022004e7d","title":"怀疑自己走姿不对？建议你别只想着纠正走姿","target_board":"体态纠正与康复","reason":"collect selector timeout","next_action":"retry_with_extended_wait"}]
 ```
