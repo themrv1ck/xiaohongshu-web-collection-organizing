@@ -23,7 +23,32 @@
 {"boards":["家居装修与收纳","穿搭发型与品味","运动训练与体态","体态纠正与康复","滑雪","效率系统与AI","摄影审美与创作","日本旅行与机位","思考与成长","杂项灵感"]}
 ```
 
+### 已有专辑内容 JSON
+最小格式：
+
+```json
+{"boards":["滑雪"]}
+```
+
+带专辑内容格式：
+
+```json
+{"boards":[{"name":"滑雪","notes":[{"id":"694d3390000000002203ae33","title":"固定器角度"}]}]}
+```
+
 ## 输出
+### `existing_boards_inventory.json`
+```json
+{
+  "boards": ["滑雪"],
+  "excluded_note_ids": ["694d3390000000002203ae33"],
+  "note_to_board": {
+    "694d3390000000002203ae33": "滑雪"
+  },
+  "generated_at": "2026-05-09T00:00:00Z"
+}
+```
+
 ### `ocr_results.json`
 ```json
 [
@@ -54,6 +79,21 @@
     "ocr_confidence": 0.93,
     "ocr_text": "老钱风西装 香水推荐",
     "ocr_image_url": "https://ci.xiaohongshu.com/cover-1.jpg"
+  },
+  {
+    "id": "694d3390000000002203ae33",
+    "title": "听CASI考官详细拆解什么固定器角度适合你？",
+    "target_board": "",
+    "confidence": "high",
+    "reason": ["滑雪", "固定器"],
+    "review_state": "classified",
+    "ocr_status": "skipped",
+    "ocr_confidence": null,
+    "ocr_text": "",
+    "ocr_image_url": "",
+    "excluded": true,
+    "exclude_reason": "user_kept_existing_boards",
+    "source_board": "滑雪"
   }
 ]
 ```

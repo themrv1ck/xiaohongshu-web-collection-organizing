@@ -15,6 +15,8 @@
 - 支持 Windows Chrome/Edge + Playwright/CDP 抓取。
 - 支持 Tesseract / EasyOCR OCR。
 - 支持分类计划、dry-run 报告、retry queue、报告汇总。
+- 支持已有专辑排除清单，默认不移动用户决定保留的已有专辑内容。
+- 支持本地轻量 WebUI，方便不熟悉命令行的用户做 dry-run。
 - 支持真实批量移动收藏：默认不执行，必须显式传 `--execute`。
 - 真实移动后会查询目标专辑笔记列表，确认 note id 已出现后才记为 `success`。
 
@@ -39,9 +41,11 @@
 │   ├── extract_visible_items.py
 │   ├── ocr_cover_images.py
 │   ├── classify_items.py
+│   ├── build_existing_boards_inventory.py
 │   ├── build_created_boards.py
 │   ├── run_reassign_batch.py
 │   ├── build_retry_queue.py
+│   ├── xhs_skill_webui.py
 │   └── summarize_run_report.py
 ├── templates/
 ├── examples/
@@ -112,6 +116,8 @@ cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
 python3 -m compileall -q .
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/check_environment.py
+printf '{"boards":[{"name":"滑雪","notes":[{"id":"694d3390000000002203ae33","title":"固定器角度"}]}]}\n' > /tmp/xhs_existing_boards_source.json
+python3 scripts/build_existing_boards_inventory.py /tmp/xhs_existing_boards_source.json /tmp/xhs_existing_boards_inventory.json
 python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs_classification_skip.json
 python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_run_report_dry.json
 python3 scripts/build_retry_queue.py /tmp/xhs_run_report_dry.json /tmp/xhs_retry_queue.json
@@ -160,13 +166,27 @@ Windows / Edge 示例：
 
 ```powershell
 python scripts\extract_visible_items.py visible_items.json --backend playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
+python scripts\classify_items.py --skip-ocr visible_items.json classification.json
+python scripts\run_reassign_batch.py classification.json run_report.json --browser playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
 python scripts\run_reassign_batch.py classification.json run_report.json --execute --browser playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
 ```
+
+## 本地 WebUI
+
+不熟悉命令行时，可以在本机终端执行：
+
+```bash
+cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
+python3 scripts/xhs_skill_webui.py
+```
+
+然后打开 `http://127.0.0.1:8765`。WebUI 默认只做 dry-run，输出写到 `webui_runs/latest/`。真实执行必须勾选确认并输入 `EXECUTE`。
 
 ## 输出文件
 
 - `visible_items.json`：抓取到的收藏条目
 - `ocr_results.json`：每条封面 OCR 结果
+- `existing_boards_inventory.json`：用户决定保留的已有专辑排除清单
 - `classification.json`：分类建议和 OCR 证据
 - `created_boards.json`：目标专辑确认/缺失结果
 - `run_report.json`：dry-run 或真实移动报告
@@ -180,9 +200,11 @@ python scripts\run_reassign_batch.py classification.json run_report.json --execu
 - `scripts/extract_visible_items.py`：抓取当前浏览器页面可见收藏条目。
 - `scripts/ocr_cover_images.py`：下载封面并执行 OCR。
 - `scripts/classify_items.py`：生成分类建议。
+- `scripts/build_existing_boards_inventory.py`：从已有专辑 JSON 生成排除清单。
 - `scripts/build_created_boards.py`：核对目标专辑是否已存在。
 - `scripts/run_reassign_batch.py`：默认 dry-run；传 `--execute` 后真实移动收藏。
 - `scripts/build_retry_queue.py`：从运行报告生成重试队列。
+- `scripts/xhs_skill_webui.py`：本地轻量 WebUI，默认 dry-run。
 - `scripts/summarize_run_report.py`：汇总运行报告。
 
 ## 安全边界

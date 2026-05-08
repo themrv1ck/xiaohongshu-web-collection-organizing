@@ -125,12 +125,17 @@ def normalize_classification(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
     for index, item in enumerate(items):
         note_id = str(item.get('id') or '').strip()
         target_board = str(item.get('target_board') or '').strip()
+        exclude_reason = str(item.get('exclude_reason') or '').strip()
+        excluded = bool(item.get('excluded')) or bool(exclude_reason)
         normalized.append({
             'id': note_id,
             'title': item.get('title') or '',
             'target_board': target_board,
             'confidence': item.get('confidence') or '',
             'review_state': item.get('review_state') or '',
+            'excluded': excluded,
+            'exclude_reason': exclude_reason,
+            'source_board': item.get('source_board') or '',
             'source_index': index,
         })
     return normalized
@@ -153,7 +158,11 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
     status = 'planned'
     events = ['dry_run:no_account_changes']
     error = ''
-    if not item['id']:
+    if item.get('excluded') or item.get('exclude_reason'):
+        status = 'skipped'
+        events = ['skip:existing_board_excluded', 'dry_run:no_account_changes']
+        error = item.get('exclude_reason') or 'user_kept_existing_boards'
+    elif not item['id']:
         status = 'failed'
         error = 'missing note id'
     elif not item['target_board']:
@@ -170,6 +179,8 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
         'attempt': 0,
         'events': events,
         'error': error,
+        'source_board': item.get('source_board', ''),
+        'exclude_reason': item.get('exclude_reason', ''),
     })
     if status == 'failed':
         report['errors'].append(report['processed'][-1])
@@ -360,9 +371,18 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
         attempt: 1,
         events,
         error: '',
-        verified: false
+        verified: false,
+        source_board: item.source_board || '',
+        exclude_reason: item.exclude_reason || ''
       };
       try {
+        if (item.excluded || item.exclude_reason) {
+          row.status = 'skipped';
+          row.error = item.exclude_reason || 'user_kept_existing_boards';
+          events.push('skip:existing_board_excluded');
+          processed.push(row);
+          continue;
+        }
         if (!item.id) throw new Error('missing note id');
         if (!item.target_board) {
           row.status = 'needs_review';

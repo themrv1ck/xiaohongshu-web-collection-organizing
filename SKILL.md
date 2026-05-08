@@ -32,10 +32,11 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
    - Safari 自动化细节见 `references/safari-web-automation-notes.md`。
 2. 抓取收藏页当前实际可见条目，写入 `visible_items.json`。
 3. 对全部条目封面图执行 OCR，写入 `ocr_results.json`。
-4. 生成 `classification.json`，默认复用 OCR 结果；缺失时自动补跑 OCR。
-5. 读取或核对专辑，写入 `created_boards.json`。缺失专辑只记录为 `missing`，不自动创建。
-6. 先运行 `scripts/run_reassign_batch.py classification.json run_report.json` 做 dry-run；dry-run 不改账号。
-7. 用户确认分类、目标专辑和风险后，才允许运行 `scripts/run_reassign_batch.py classification.json run_report.json --execute`。执行时使用前端运行时路径：
+4. 如果用户选择不动已有专辑，先用 `scripts/build_existing_boards_inventory.py` 建立 `existing_boards_inventory.json`。
+5. 生成 `classification.json`，默认复用 OCR 结果；缺失时自动补跑 OCR。传入 `--existing-boards-inventory` 时，默认排除已有专辑里的笔记，只有显式传 `--include-existing-boards` 才纳入。
+6. 读取或核对专辑，写入 `created_boards.json`。缺失专辑只记录为 `missing`，不自动创建。
+7. 先运行 `scripts/run_reassign_batch.py classification.json run_report.json` 做 dry-run；dry-run 不改账号。
+8. 用户确认分类、目标专辑和风险后，才允许运行 `scripts/run_reassign_batch.py classification.json run_report.json --execute`。执行时使用前端运行时路径：
    - 检查 `#note-page-collect-board-guide.collect-wrapper` 状态，确认只是“已收藏/未收藏”切换，不把它误判成已入专辑。
    - 从 `window.__INITIAL_STATE__.board.boardListData` 读取当前账号专辑列表、`boardId`、现有计数，先定位目标专辑。
    - 通过 webpack runtime 暴露模块，优先复用真实前端 API：`yC`(专辑列表)、`Ks`(专辑笔记)、`d0`(移动到专辑)、`U_`(专辑详情)。
@@ -43,8 +44,10 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
    - 当目标 `boardId` 与候选 `noteId` 列表已明确时，直接批量执行候选，再统一做核验和回复。
    - `d0(...)` 返回空对象 `{}` 不能直接判失败；必须继续调用 `U_` + `Ks`，用 `detail.total` 与返回的 `notes` 列表确认是否真的入专辑。
    - 已验证细节见 `references/safari-xhs-board-batch-move-verified.md`。
-8. 每条实时写入 `run_report.json`，失败项同步写入 `retry_queue.json`。
-9. 批次结束后重新抓取目标专辑样本并做数量核对，Safari 回退路径优先用 `U_` + `Ks` 做最终核验。
+9. 每条实时写入 `run_report.json`，失败项同步写入 `retry_queue.json`。
+10. 批次结束后重新抓取目标专辑样本并做数量核对，Safari 回退路径优先用 `U_` + `Ks` 做最终核验。
+
+可选小白入口：`python3 scripts/xhs_skill_webui.py` 会启动本地 WebUI，只是把上述脚本串起来，默认仍只做 dry-run；真实 execute 仍必须显式确认，不替代命令行安全边界。
 
 ## 图文收藏整理与专辑规划流程
 
@@ -78,6 +81,7 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 当前已登录的小红书收藏页 / 专辑页
 - 用户给定或确认后的专辑体系 JSON
 - 用户确认后的已有专辑处理策略：`include_existing_boards=true/false`
+- `existing_boards_inventory.json`
 - 已抓取的 `visible_items.json`
 - 已下载/提取的图文素材与 OCR/视觉结果
 - 历史 `run_report.json` / `retry_queue.json`
@@ -86,6 +90,7 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - `visible_items.json`
 - `ocr_results.json`
 - `classification.json`
+- `existing_boards_inventory.json`
 - `created_boards.json`
 - `run_report.json`
 - `retry_queue.json`
@@ -149,6 +154,7 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 
 ## 关联资源
 - 执行脚本：`scripts/`
+- 本地 WebUI：`scripts/xhs_skill_webui.py`
 - 输入输出契约：`references/io-contract.md`
 - 恢复与续跑：`references/recovery-and-resume.md`
 - 环境检查：`references/environment-and-limitations.md`
