@@ -47,8 +47,6 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 9. 每条实时写入 `run_report.json`，失败项同步写入 `retry_queue.json`。
 10. 批次结束后重新抓取目标专辑样本并做数量核对，Safari 回退路径优先用 `U_` + `Ks` 做最终核验。
 
-可选小白入口：`python3 scripts/xhs_skill_webui.py` 会在 `http://127.0.0.1:8766` 启动本地 WebUI，只是把上述脚本串起来，默认仍只做 dry-run；真实 execute 仍必须显式确认，不替代命令行安全边界。如端口被占用，用 `--port <端口>` 改端口。
-
 ## 图文收藏整理与专辑规划流程
 
 当用户目标是整理“所有收藏图文 / 图文笔记 / 收藏夹整体分类”时，采用先规划、再执行的两阶段流程：
@@ -154,7 +152,6 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 
 ## 关联资源
 - 执行脚本：`scripts/`
-- 本地 WebUI：`scripts/xhs_skill_webui.py`
 - 输入输出契约：`references/io-contract.md`
 - 恢复与续跑：`references/recovery-and-resume.md`
 - 环境检查：`references/environment-and-limitations.md`

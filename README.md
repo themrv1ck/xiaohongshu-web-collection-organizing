@@ -16,7 +16,6 @@
 - 支持 Tesseract / EasyOCR OCR。
 - 支持分类计划、dry-run 报告、retry queue、报告汇总。
 - 支持已有专辑排除清单，默认不移动用户决定保留的已有专辑内容。
-- 支持本地轻量 WebUI，方便不熟悉命令行的用户做 dry-run。
 - 支持真实批量移动收藏：默认不执行，必须显式传 `--execute`。
 - 真实移动后会查询目标专辑笔记列表，确认 note id 已出现后才记为 `success`。
 
@@ -45,7 +44,6 @@
 │   ├── build_created_boards.py
 │   ├── run_reassign_batch.py
 │   ├── build_retry_queue.py
-│   ├── xhs_skill_webui.py
 │   └── summarize_run_report.py
 ├── templates/
 ├── examples/
@@ -171,23 +169,6 @@ python scripts\run_reassign_batch.py classification.json run_report.json --brows
 python scripts\run_reassign_batch.py classification.json run_report.json --execute --browser playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
 ```
 
-## 本地 WebUI
-
-不熟悉命令行时，可以在本机终端执行：
-
-```bash
-cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
-python3 scripts/xhs_skill_webui.py
-```
-
-然后打开 `http://127.0.0.1:8766`。WebUI 默认只做 dry-run，输出写到 `webui_runs/latest/`。真实执行必须勾选确认并输入 `EXECUTE`。
-
-如果本机端口被占用，可手动指定端口：
-
-```bash
-python3 scripts/xhs_skill_webui.py --port 8876
-```
-
 ## 输出文件
 
 - `visible_items.json`：抓取到的收藏条目
@@ -210,7 +191,6 @@ python3 scripts/xhs_skill_webui.py --port 8876
 - `scripts/build_created_boards.py`：核对目标专辑是否已存在。
 - `scripts/run_reassign_batch.py`：默认 dry-run；传 `--execute` 后真实移动收藏。
 - `scripts/build_retry_queue.py`：从运行报告生成重试队列。
-- `scripts/xhs_skill_webui.py`：本地轻量 WebUI，默认 dry-run。
 - `scripts/summarize_run_report.py`：汇总运行报告。
 
 ## 安全边界
