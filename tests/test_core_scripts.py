@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
+from run_reassign_batch import filter_classification_for_resume, merge_report_chunk  # noqa: E402
 from xhs_ocr_common import infer_board, load_taxonomy  # noqa: E402
 
 
@@ -177,6 +178,77 @@ class CoreScriptTests(unittest.TestCase):
             self.assertEqual(data['confirmed'], ['滑雪'])
             self.assertEqual(data['missing'], ['体态纠正与康复'])
             self.assertTrue(data['action_required'])
+
+    def test_resume_filters_successful_items_and_preserves_report_rows(self):
+        classification = [
+            {'id': 'note-1', 'title': '已完成', 'target_board': '滑雪', 'confidence': 'high'},
+            {'id': 'note-2', 'title': '待处理', 'target_board': '穿搭发型与品味', 'confidence': 'high'},
+        ]
+        previous_report = {
+            'processed': [
+                {'id': 'note-1', 'title': '已完成', 'target_board': '滑雪', 'status': 'success', 'events': ['verify:note_present'], 'error': ''},
+                {'id': 'note-3', 'title': '失败旧项', 'target_board': '滑雪', 'status': 'failed', 'events': ['error'], 'error': 'old failure'},
+            ],
+        }
+        pending, preserved = filter_classification_for_resume(classification, previous_report)
+        self.assertEqual([item['id'] for item in pending], ['note-2'])
+        self.assertEqual([item['id'] for item in preserved], ['note-1'])
+
+    def test_merge_report_chunk_appends_processed_errors_and_missing_boards(self):
+        report = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}}
+        chunk = {
+            'processed': [{'id': 'note-1', 'status': 'failed', 'target_board': '滑雪'}],
+            'errors': [{'id': 'note-1', 'status': 'failed', 'target_board': '滑雪'}],
+            'missing_boards': ['滑雪', '滑雪'],
+            'board_counts_before': {'滑雪': 1},
+            'board_counts_after': {'滑雪': 1},
+        }
+        merge_report_chunk(report, chunk)
+        merge_report_chunk(report, chunk)
+        self.assertEqual(len(report['processed']), 2)
+        self.assertEqual(len(report['errors']), 2)
+        self.assertEqual(report['missing_boards'], ['滑雪'])
+        self.assertEqual(report['board_counts_before'], {'滑雪': 1})
+        self.assertEqual(report['board_counts_after'], {'滑雪': 1})
+
+    def test_extract_visible_items_writes_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            simulator = tmp_path / 'simulate_extract.py'
+            simulator.write_text(
+                """
+import json
+from pathlib import Path
+import sys
+ROOT = Path(__import__('os').environ['XHS_SKILL_ROOT'])
+sys.path.insert(0, str(ROOT / 'scripts'))
+from extract_visible_items import extract_with_js
+states = [
+  {'scrollY':0,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'}]},
+  {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
+  {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
+  {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
+  {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
+]
+def js_eval(js):
+    if js.startswith('window.scrollBy'):
+        return 'ok'
+    return json.dumps(states.pop(0), ensure_ascii=False)
+out = Path(sys.argv[1])
+manifest = Path(sys.argv[2])
+print(json.dumps(extract_with_js(js_eval, out, 5, 0, manifest), ensure_ascii=False))
+""",
+                encoding='utf-8',
+            )
+            out = tmp_path / 'visible.json'
+            manifest = tmp_path / 'crawl_manifest.json'
+            env = dict(__import__('os').environ)
+            env['XHS_SKILL_ROOT'] = str(ROOT)
+            subprocess.run([sys.executable, str(simulator), str(out), str(manifest)], cwd=str(ROOT), env=env, check=True)
+            data = json.loads(manifest.read_text(encoding='utf-8'))
+            self.assertEqual(data['item_count'], 2)
+            self.assertEqual(data['stopped_reason'], 'bottom_stable')
+            self.assertGreaterEqual(len(data['scroll_snapshots']), 4)
 
 
 if __name__ == '__main__':

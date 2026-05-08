@@ -4,6 +4,7 @@ import json
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -51,21 +52,30 @@ def osascript(script: str) -> str:
 
 
 def chrome_js_macos(js: str) -> str:
-    script = (
-        'tell application "Google Chrome"\n'
-        'tell active tab of front window\n'
-        f'execute javascript {json.dumps(js)}\n'
-        'end tell\n'
-        'end tell\n'
-    )
-    return osascript(script)
+    with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8', delete=False) as fh:
+        fh.write(js)
+        js_path = fh.name
+    try:
+        script = (
+            f'set jsSource to read POSIX file {json.dumps(js_path)} as «class utf8»\n'
+            'tell application "Google Chrome"\n'
+            'tell active tab of front window\n'
+            'execute javascript jsSource\n'
+            'end tell\n'
+            'end tell\n'
+        )
+        return osascript(script)
+    finally:
+        Path(js_path).unlink(missing_ok=True)
 
 
-def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float):
+def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float, manifest: Optional[Path] = None):
     seen = {}
     stable = 0
     last_meta = {}
-    for _ in range(max_scrolls):
+    snapshots = []
+    stopped_reason = 'max_scrolls_reached'
+    for index in range(max_scrolls):
         raw = js_eval(ITEMS_JS)
         data = json.loads(raw)
         last_meta = {k: data.get(k) for k in ('location', 'title', 'scrollY', 'innerHeight', 'scrollHeight')}
@@ -79,19 +89,42 @@ def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float):
             if item.get('id') and item['id'] not in seen:
                 seen[item['id']] = item
         stable = stable + 1 if len(seen) == before else 0
-        if stable >= 3 and data.get('scrollY', 0) + data.get('innerHeight', 0) >= data.get('scrollHeight', 0) - 50:
+        bottom = data.get('scrollY', 0) + data.get('innerHeight', 0) >= data.get('scrollHeight', 0) - 50
+        snapshots.append({
+            'index': index,
+            'scrollY': data.get('scrollY', 0),
+            'innerHeight': data.get('innerHeight', 0),
+            'scrollHeight': data.get('scrollHeight', 0),
+            'item_count': len(seen),
+            'new_items': len(seen) - before,
+            'stable_rounds': stable,
+            'at_bottom': bottom,
+        })
+        if stable >= 3 and bottom:
+            stopped_reason = 'bottom_stable'
             break
         js_eval('window.scrollBy(0, 1000); "ok"')
         time.sleep(scroll_pause)
     out.write_text(json.dumps(list(seen.values()), ensure_ascii=False, indent=2), encoding='utf-8')
-    return {'count': len(seen), 'output': str(out), 'page': last_meta}
+    result = {'count': len(seen), 'output': str(out), 'page': last_meta}
+    if manifest:
+        manifest_data = {
+            'output': str(out),
+            'item_count': len(seen),
+            'stopped_reason': stopped_reason,
+            'page': last_meta,
+            'scroll_snapshots': snapshots,
+        }
+        manifest.write_text(json.dumps(manifest_data, ensure_ascii=False, indent=2), encoding='utf-8')
+        result['manifest'] = str(manifest)
+    return result
 
 
-def extract_macos_chrome(out: Path, max_scrolls: int, scroll_pause: float):
-    return extract_with_js(chrome_js_macos, out, max_scrolls, scroll_pause)
+def extract_macos_chrome(out: Path, max_scrolls: int, scroll_pause: float, manifest: Optional[Path] = None):
+    return extract_with_js(chrome_js_macos, out, max_scrolls, scroll_pause, manifest)
 
 
-def extract_playwright(out: Path, max_scrolls: int, scroll_pause: float, url: Optional[str], channel: str, user_data_dir: Optional[str], cdp_url: Optional[str], headless: bool):
+def extract_playwright(out: Path, max_scrolls: int, scroll_pause: float, url: Optional[str], channel: str, user_data_dir: Optional[str], cdp_url: Optional[str], headless: bool, manifest: Optional[Path] = None):
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
@@ -120,7 +153,7 @@ def extract_playwright(out: Path, max_scrolls: int, scroll_pause: float, url: Op
         def js_eval(js: str) -> str:
             return page.evaluate(js)
 
-        result = extract_with_js(js_eval, out, max_scrolls, scroll_pause)
+        result = extract_with_js(js_eval, out, max_scrolls, scroll_pause, manifest)
         if close_context:
             context.close()
         elif browser:
@@ -139,16 +172,18 @@ def main():
     parser.add_argument('--headless', action='store_true', help='Playwright 新开浏览器时使用 headless；登录场景通常不要开启')
     parser.add_argument('--max-scrolls', type=int, default=30, help='最多滚动次数')
     parser.add_argument('--scroll-pause', type=float, default=1.5, help='每次滚动后的等待秒数')
+    parser.add_argument('--manifest', default='crawl_manifest.json', help='抓取完整性 manifest 输出路径；传空字符串可禁用')
     args = parser.parse_args()
 
     out = Path(args.out)
+    manifest = Path(args.manifest) if args.manifest else None
     backend = args.backend
     if backend == 'auto':
         backend = 'macos-chrome' if platform.system() == 'Darwin' else 'playwright'
     if backend == 'macos-chrome':
-        result = extract_macos_chrome(out, args.max_scrolls, args.scroll_pause)
+        result = extract_macos_chrome(out, args.max_scrolls, args.scroll_pause, manifest)
     else:
-        result = extract_playwright(out, args.max_scrolls, args.scroll_pause, args.url, args.channel, args.user_data_dir, args.cdp_url, args.headless)
+        result = extract_playwright(out, args.max_scrolls, args.scroll_pause, args.url, args.channel, args.user_data_dir, args.cdp_url, args.headless, manifest)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

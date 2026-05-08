@@ -154,6 +154,33 @@ def initial_report(classification: List[Dict[str, Any]], mode: str) -> Dict[str,
     }
 
 
+def successful_processed_ids(report: Dict[str, Any]) -> set:
+    return {str(row.get('id') or '') for row in report.get('processed', []) if row.get('status') == 'success' and row.get('id')}
+
+
+def filter_classification_for_resume(classification: List[Dict[str, Any]], previous_report: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    success_ids = successful_processed_ids(previous_report)
+    pending: List[Dict[str, Any]] = []
+    preserved: List[Dict[str, Any]] = []
+    for item in classification:
+        if item.get('id') in success_ids:
+            preserved.extend([row for row in previous_report.get('processed', []) if row.get('id') == item.get('id') and row.get('status') == 'success'][:1])
+        else:
+            pending.append(item)
+    return pending, preserved
+
+
+def merge_report_chunk(report: Dict[str, Any], chunk: Dict[str, Any]) -> None:
+    report.setdefault('processed', []).extend(chunk.get('processed', []))
+    report.setdefault('errors', []).extend(chunk.get('errors', []))
+    missing = report.setdefault('missing_boards', [])
+    for board in chunk.get('missing_boards', []):
+        if board and board not in missing:
+            missing.append(board)
+    report.setdefault('board_counts_before', {}).update(chunk.get('board_counts_before', {}))
+    report.setdefault('board_counts_after', {}).update(chunk.get('board_counts_after', {}))
+
+
 def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confidence: bool) -> None:
     status = 'planned'
     events = ['dry_run:no_account_changes']
@@ -459,17 +486,16 @@ def poll_browser_job(runner: BrowserRunner, run_id: str, timeout_sec: int) -> Di
     raise TimeoutError('browser job timed out')
 
 
-def execute_batch(classification: List[Dict[str, Any]], report: Dict[str, Any], args: argparse.Namespace) -> None:
+def execute_batch(classification: List[Dict[str, Any]], report: Dict[str, Any], args: argparse.Namespace, report_path: Path) -> None:
     backend = choose_backend(args.browser)
     runner = BrowserRunner(backend, args)
     try:
-        run_id = runner.eval(build_browser_job(classification, args))
-        result = poll_browser_job(runner, str(run_id), args.timeout_sec)
-        report['processed'] = result.get('processed', [])
-        report['errors'] = result.get('errors', [])
-        report['missing_boards'] = result.get('missing_boards', [])
-        report['board_counts_before'] = result.get('board_counts_before', {})
-        report['board_counts_after'] = result.get('board_counts_after', {})
+        for item in classification:
+            run_id = runner.eval(build_browser_job([item], args))
+            result = poll_browser_job(runner, str(run_id), args.timeout_sec)
+            merge_report_chunk(report, result)
+            report['updated_at'] = utc_now()
+            write_json(report_path, report)
     finally:
         runner.close()
 
@@ -489,18 +515,28 @@ def main() -> None:
     parser.add_argument('--user-data-dir', default=None, help='Playwright 持久化浏览器资料目录')
     parser.add_argument('--cdp-url', default=None, help='连接已启动 Chrome/Edge 的 CDP 地址')
     parser.add_argument('--headless', action='store_true', help='Playwright 新开浏览器时使用 headless；登录场景通常不要开启')
+    parser.add_argument('--resume', action='store_true', help='读取已有 run_report.json，跳过已经 success 且核验过的条目')
     args = parser.parse_args()
 
     classification = normalize_classification(load_json(args.classification))
     mode = 'execute' if args.execute else 'dry_run'
-    report = initial_report(classification, mode)
     report_path = Path(args.report)
+    report = initial_report(classification, mode)
+    if args.resume and report_path.exists():
+        previous = load_json(str(report_path))
+        classification, preserved = filter_classification_for_resume(classification, previous)
+        report['resumed_from'] = str(report_path)
+        report['processed'] = preserved
+        report['visible_count'] = len(classification) + len(preserved)
+        report['skipped_success_count'] = len(preserved)
 
     if args.execute:
-        execute_batch(classification, report, args)
+        execute_batch(classification, report, args, report_path)
     else:
         for item in classification:
             append_dry_run(report, item, args.allow_low_confidence)
+            report['updated_at'] = utc_now()
+            write_json(report_path, report)
 
     report['finished_at'] = utc_now()
     write_json(report_path, report)
