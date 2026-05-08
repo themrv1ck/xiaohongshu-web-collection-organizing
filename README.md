@@ -82,7 +82,7 @@ Windows：
 - Playwright Python：`python -m pip install playwright`，然后 `python -m playwright install chromium`
 - OCR 二选一：Tesseract（建议带 `chi_sim` 中文语言包并加入 PATH）或 EasyOCR（`python -m pip install easyocr`）
 
-先运行：
+先运行环境检查；图片文字识别必须依赖 OCR：
 
 ```bash
 cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
@@ -94,9 +94,12 @@ python3 scripts/check_environment.py
 ```json
 {
   "browser_automation_ready": true,
-  "ocr_ready": true
+  "ocr_ready": true,
+  "image_text_recognition_ready": true
 }
 ```
+
+如果 `ocr_ready` / `image_text_recognition_ready` 是 `false`，不要开启图片文字识别。应先询问用户是否需要安装 OCR，并说明安装目的：通过识别小红书封面/图片中的中文文字，提高收藏笔记分类和专辑归档准确性。用户同意后，再按系统安装 Tesseract / EasyOCR 或确认 macOS Vision 可用。
 
 Windows 上如果看到 `"windows_supported_path_ready": true`，表示抓取 + OCR 的 Windows 路径已就绪。
 

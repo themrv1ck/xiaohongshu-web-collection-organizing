@@ -21,6 +21,9 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 
 ## 稳定工作流
 1. 检查环境：操作系统、浏览器网页登录态、浏览器自动化后端、OCR 后端。
+   - **启动本 skill 后必须先运行 OCR 检测**：执行 `python3 scripts/check_environment.py`（Windows 可用 `python scripts/check_environment.py`），读取 `ocr_ready` / `image_text_recognition_ready`。
+   - **只有 OCR 可用时，才开启图片文字识别参与分类**。如果 `ocr_ready=false`，不得假装已识别图片文字，也不得把图片文字识别结果写成成功；应先询问用户是否需要安装 OCR 功能，并解释：安装 OCR 的目的是识别收藏封面/图片中的中文文字，从而提高小红书笔记分类和专辑归档准确性。
+   - 如果用户同意安装，再按当前系统选择 OCR 后端：macOS 优先 `swift` + Vision（通常系统自带，只需确认可用），Windows 优先 Tesseract（建议带中文 `chi_sim`）或 EasyOCR；安装涉及系统/配置文件变更时先请示。
    - macOS 默认优先 Chrome + AppleScript/JXA：检查小红书网页登录态、Chrome “允许 Apple 事件中的 JavaScript”、`swift` Vision OCR。
    - Windows 默认走 Chrome/Edge + Playwright 或已启动浏览器 CDP；OCR 走 Tesseract 或 EasyOCR，必须使用用户自己的网页登录态，不抓取或复制敏感 token。
    - 如果 Chrome 未登录但用户说“用 Safari”，立即切换 Safari，打开 `https://www.xiaohongshu.com/explore` 并验证 Safari 登录态，不要继续卡在 Chrome。
@@ -84,8 +87,9 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - `retry_queue.json`
 
 ## 分类复核要求
-- 默认对每个条目先跑一遍封面 OCR。
+- 默认对每个条目先跑一遍封面 OCR；但必须以启动时环境检测为准，`ocr_ready=false` 时先询问用户是否安装 OCR，不得直接开启图片文字识别。
 - OCR 走 `scripts/ocr_cover_images.py`，后端按平台自动选择：macOS 优先 `scripts/ocr_image.swift` + Vision；Windows 优先 Tesseract / EasyOCR。所有后端必须回写同一份 `ocr_results.json`。
+- 如果用户未安装/不同意安装 OCR，分类流程可以继续走标题、desc、tags、作者等元数据，但必须在 `classification.json` 保留 `ocr_status=unavailable` 或 `ocr_status=skipped`，并说明图片文字未参与分类、准确性会下降。
 - 复核顺序：标题/desc/tags/作者 -> OCR 文本 -> 人工判断。
 - 复核后的结论必须回写 `classification.json`，不能只留 review 文件。
 - OCR 下载失败或无图片 URL 的条目，要显式保留 `ocr_status`。
@@ -143,6 +147,7 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 输入输出契约：`references/io-contract.md`
 - 恢复与续跑：`references/recovery-and-resume.md`
 - 环境检查：`references/environment-and-limitations.md`
+- Windows Playwright/CDP + OCR 支持：`references/windows-playwright-ocr-notes.md`
 - Safari 自动化补充：`references/safari-web-automation-notes.md`
 - Safari 小红书前端模块/私有接口观察：`references/safari-xhs-private-api-notes.md`
 - Safari 专辑移动回退路径与已验证 payload：`references/safari-xhs-board-move-fallback.md`

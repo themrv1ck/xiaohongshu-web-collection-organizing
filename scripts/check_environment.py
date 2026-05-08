@@ -77,6 +77,30 @@ def main():
         or checks['easyocr_python']
         or checks['paddleocr_python']
     )
+    checks['image_text_recognition_ready'] = checks['ocr_ready']
+    checks['ocr_install_purpose'] = (
+        'OCR is used to recognize Chinese text in Xiaohongshu cover/images so '
+        'classification and board assignment are more accurate.'
+    )
+    if not checks['ocr_ready']:
+        if is_macos:
+            checks['ocr_install_suggestions'] = [
+                'Confirm Xcode Command Line Tools / swift is available so macOS Vision OCR can run.',
+                'If Vision is unavailable, install Tesseract with Chinese language data or use EasyOCR.',
+            ]
+        elif is_windows:
+            checks['ocr_install_suggestions'] = [
+                'Install Tesseract OCR with chi_sim Chinese language data and add tesseract.exe to PATH.',
+                'Or run: python -m pip install easyocr',
+            ]
+        else:
+            checks['ocr_install_suggestions'] = [
+                'Install Tesseract OCR with Chinese language data, or run: python3 -m pip install easyocr',
+            ]
+        checks['should_ask_user_to_install_ocr'] = True
+    else:
+        checks['ocr_install_suggestions'] = []
+        checks['should_ask_user_to_install_ocr'] = False
     checks['windows_supported_path_ready'] = bool(is_windows and checks['playwright_python'] and checks['chrome_or_edge_executable'] and checks['ocr_ready'])
     print(json.dumps(checks, ensure_ascii=False, indent=2))
 
