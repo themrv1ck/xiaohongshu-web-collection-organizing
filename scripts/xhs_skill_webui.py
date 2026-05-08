@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import argparse
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -10,8 +12,8 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 
-HOST = '127.0.0.1'
-PORT = 8765
+DEFAULT_HOST = '127.0.0.1'
+DEFAULT_PORT = int(os.environ.get('XHS_SKILL_WEBUI_PORT', '8766'))
 ROOT = Path(__file__).resolve().parents[1]
 RUN_DIR = Path.cwd() / 'webui_runs' / 'latest'
 MAX_BODY_BYTES = 20 * 1024 * 1024
@@ -319,9 +321,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description='启动小红书收藏整理本地 WebUI。')
+    parser.add_argument('--host', default=DEFAULT_HOST, help='监听地址，默认 127.0.0.1')
+    parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='监听端口，默认 8766；也可用 XHS_SKILL_WEBUI_PORT 覆盖')
+    args = parser.parse_args()
     ensure_run_dir()
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f'WebUI: http://{HOST}:{PORT}')
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f'WebUI: http://{args.host}:{args.port}')
     print(f'Output: {RUN_DIR}')
     server.serve_forever()
 

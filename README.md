@@ -180,7 +180,13 @@ cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
 python3 scripts/xhs_skill_webui.py
 ```
 
-然后打开 `http://127.0.0.1:8765`。WebUI 默认只做 dry-run，输出写到 `webui_runs/latest/`。真实执行必须勾选确认并输入 `EXECUTE`。
+然后打开 `http://127.0.0.1:8766`。WebUI 默认只做 dry-run，输出写到 `webui_runs/latest/`。真实执行必须勾选确认并输入 `EXECUTE`。
+
+如果本机端口被占用，可手动指定端口：
+
+```bash
+python3 scripts/xhs_skill_webui.py --port 8876
+```
 
 ## 输出文件
 
