@@ -1,17 +1,18 @@
 # xiaohongshu-web-collection-organizing
 
-一个面向 **macOS + Hermes Agent** 的小红书网页端收藏整理 skill：抓取当前可见收藏、对封面执行 OCR、生成分类建议、创建/核对专辑，并支持可续跑的批量移动流程。
+一个面向 **macOS / Windows + Hermes Agent** 的小红书网页端收藏整理 skill：抓取当前可见收藏、对封面执行 OCR、生成分类建议、创建/核对专辑，并支持可续跑的批量移动流程。
 
 > 适合：已经在小红书网页端登录、收藏夹比较乱、想把收藏按主题整理到专辑的人。
 >
-> 不适合：Windows/Linux；未登录小红书；希望完全无授权地操作账号；希望不经过浏览器状态直接批量改账号数据。
+> 不适合：未登录小红书；希望完全无授权地操作账号；希望不经过浏览器状态直接批量改账号数据。
 
 ## 当前能力状态
 
 - ✅ 可被 Hermes 作为本地 skill 安装和识别
 - ✅ 可运行无副作用检查、示例分类、报告汇总脚本
-- ✅ 支持每个条目的封面 OCR：`ocr_cover_images.py` + macOS Vision
-- ✅ 支持 Chrome + AppleScript/JXA 路径
+- ✅ 支持每个条目的封面 OCR：macOS Vision / Tesseract / EasyOCR
+- ✅ 支持 macOS Chrome + AppleScript/JXA 路径
+- ✅ 支持 Windows Chrome/Edge + Playwright/CDP 抓取路径
 - ✅ 支持 Safari 自动化说明与前端运行时回退路径文档
 - ⚠️ 真实批量移动收藏会改动你的小红书账号收藏/专辑，必须在明确授权和确认目标专辑后执行
 - ⚠️ 小红书网页结构可能变化；如果页面 DOM 或前端模块变更，需要重新验证脚本
@@ -62,14 +63,24 @@ hermes skills list
 
 ## 前置条件
 
-- macOS
+通用：
+
 - 已安装 Hermes Agent
+- 已安装 Python 3.10+
 - 已登录小红书网页端
-- 使用 Chrome 或 Safari
-- `osascript` 可用
-- `swift` 可用
-- macOS Vision OCR 可用
+- 使用 Chrome / Edge / Safari 中至少一种浏览器
+
+macOS：
+
 - Chrome 路径需要开启：Chrome 的“允许 Apple 事件中的 JavaScript”
+- `osascript` 可用
+- `swift` + macOS Vision OCR 可用
+
+Windows：
+
+- Chrome 或 Microsoft Edge
+- Playwright Python：`python -m pip install playwright`，然后 `python -m playwright install chromium`
+- OCR 二选一：Tesseract（建议带 `chi_sim` 中文语言包并加入 PATH）或 EasyOCR（`python -m pip install easyocr`）
 
 先运行：
 
@@ -82,13 +93,12 @@ python3 scripts/check_environment.py
 
 ```json
 {
-  "osascript": true,
-  "swift": true,
-  "curl": true,
-  "google_chrome_bundle": true,
-  "swift_can_import_vision": true
+  "browser_automation_ready": true,
+  "ocr_ready": true
 }
 ```
+
+Windows 上如果看到 `"windows_supported_path_ready": true`，表示抓取 + OCR 的 Windows 路径已就绪。
 
 ## 无副作用 smoke test
 
@@ -121,9 +131,14 @@ cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
 python3 scripts/check_environment.py
 
 # 2. 打开并登录小红书收藏页，然后抓取当前可见条目
+# macOS 默认使用 Chrome + AppleScript；Windows 使用 --backend playwright
 python3 scripts/extract_visible_items.py visible_items.json
 
+# Windows 示例：
+# python scripts\extract_visible_items.py visible_items.json --backend playwright --channel msedge --user-data-dir "%USERPROFILE%\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
+
 # 3. 对封面图跑 OCR
+# macOS 默认 swift Vision；Windows 可用 --provider tesseract 或 --provider easyocr
 python3 scripts/ocr_cover_images.py visible_items.json ocr_results.json
 
 # 4. 生成分类建议
@@ -154,13 +169,27 @@ python3 scripts/build_created_boards.py templates/board_taxonomy.template.json e
 
 ## 浏览器说明
 
-### Chrome
+### macOS Chrome
 
 默认优先 Chrome。需要：
 
 - 已登录小红书网页端
 - Chrome 允许 AppleScript/JXA 执行 JavaScript
 - 页面处在收藏页或相关专辑页
+
+### Windows Chrome / Edge
+
+Windows 走 Playwright 或 CDP：
+
+```powershell
+python scripts\extract_visible_items.py visible_items.json --backend playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
+```
+
+如果浏览器已用远程调试端口启动：
+
+```powershell
+python scripts\extract_visible_items.py visible_items.json --backend playwright --cdp-url http://127.0.0.1:9222
+```
 
 ### Safari
 

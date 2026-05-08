@@ -1,6 +1,6 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on macOS when the user asks to inspect favorites, create boards, classify saved notes, clean up a messy board like “杂项灵感”, or batch reassign notes through browser automation. Prefer Chrome + AppleScript/JXA when available, but Safari + AppleScript do JavaScript is supported when the user says “用 Safari” or Chrome is not logged in. Requires the user to be logged in on Xiaohongshu web and macOS automation/OCR prerequisites for deeper review.
+description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on macOS or Windows when the user asks to inspect favorites, create boards, classify saved notes, clean up a messy board like “杂项灵感”, or batch reassign notes through browser automation. macOS supports Chrome/Safari AppleScript plus Vision OCR; Windows supports Chrome/Edge via Playwright or CDP plus Tesseract/EasyOCR OCR. Requires the user to be logged in on Xiaohongshu web and keeps JSON outputs/retry reports for safe resume.
 ---
 
 # 小红书收藏整理 Skill
@@ -20,8 +20,9 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 删除或清理专辑前必须先核验该专辑内笔记已迁移或无需保留在该专辑；不得因专辑分类重构导致笔记丢失。
 
 ## 稳定工作流
-1. 检查环境：macOS、浏览器网页登录态、AppleScript 自动化、`swift` Vision OCR。
-   - 默认优先 Chrome：检查小红书网页登录态、Chrome “允许 Apple 事件中的 JavaScript”、`swift` Vision OCR。
+1. 检查环境：操作系统、浏览器网页登录态、浏览器自动化后端、OCR 后端。
+   - macOS 默认优先 Chrome + AppleScript/JXA：检查小红书网页登录态、Chrome “允许 Apple 事件中的 JavaScript”、`swift` Vision OCR。
+   - Windows 默认走 Chrome/Edge + Playwright 或已启动浏览器 CDP；OCR 走 Tesseract 或 EasyOCR，必须使用用户自己的网页登录态，不抓取或复制敏感 token。
    - 如果 Chrome 未登录但用户说“用 Safari”，立即切换 Safari，打开 `https://www.xiaohongshu.com/explore` 并验证 Safari 登录态，不要继续卡在 Chrome。
    - 如果目标浏览器未登录：明确告诉用户需要扫码登录；同时启动后台登录态轮询（建议每 5 分钟一次），检测到登录成功后自动续跑，不要把“等待登录”当成任务完成。
    - 登录态判断优先读取页面文本：出现“手机号登录 / 登录后推荐 / 马上登录即可 / 扫码”等视为未登录；未出现这些且页面已显示用户态内容再继续。
@@ -84,7 +85,7 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 
 ## 分类复核要求
 - 默认对每个条目先跑一遍封面 OCR。
-- OCR 走 `scripts/ocr_cover_images.py` + `scripts/ocr_image.swift`，底层用 macOS Vision，经实际验证可直接识别封面文案并回写 `ocr_results.json`。
+- OCR 走 `scripts/ocr_cover_images.py`，后端按平台自动选择：macOS 优先 `scripts/ocr_image.swift` + Vision；Windows 优先 Tesseract / EasyOCR。所有后端必须回写同一份 `ocr_results.json`。
 - 复核顺序：标题/desc/tags/作者 -> OCR 文本 -> 人工判断。
 - 复核后的结论必须回写 `classification.json`，不能只留 review 文件。
 - OCR 下载失败或无图片 URL 的条目，要显式保留 `ocr_status`。
@@ -130,10 +131,12 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 不要假设 OCR 成功覆盖全部条目，必须写出真实 `ocr_status`。
 
 ## 环境前提与限制
-- 仅适用于 macOS + Google Chrome 或 Safari。
+- 支持 macOS + Chrome/Safari；支持 Windows + Chrome/Edge。
+- macOS：Chrome 路径需要开启“允许 Apple 事件中的 JavaScript”；Safari 路径使用 AppleScript `do JavaScript`，复杂 JS 应写临时文件后执行，避免 shell 引号错误；OCR 默认用 `swift` + macOS Vision。
+- Windows：浏览器抓取走 Playwright 或 CDP；推荐 Chrome/Edge 已登录小红书网页端；OCR 默认用 Tesseract（可选 EasyOCR）。
+- Windows 安装建议：`python -m pip install playwright easyocr`、`python -m playwright install chromium`，或安装 Tesseract 并确保 `tesseract.exe` 在 PATH。
 - 用户必须已登录小红书网页端；如果 Chrome 未登录但 Safari 已登录，按用户指示切 Safari 继续。
-- Chrome 路径需要开启“允许 Apple 事件中的 JavaScript”；Safari 路径使用 AppleScript `do JavaScript`，复杂 JS 应写临时文件后执行，避免 shell 引号错误。
-- 依赖：`osascript`、`swift`、macOS Vision、可选 Node.js 与 `@lucasygu/redbook`。
+- 依赖按平台检测：`scripts/check_environment.py` 会输出 `browser_automation_ready`、`ocr_ready`、`windows_supported_path_ready`。
 
 ## 关联资源
 - 执行骨架：`scripts/`

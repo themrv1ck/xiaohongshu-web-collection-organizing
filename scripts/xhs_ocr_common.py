@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import hashlib
 import json
+import os
+import platform
 import re
+import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -17,13 +20,16 @@ DEFAULT_RULES = {
     '思考与成长': ['成长', '松弛感', '西西弗', '心智成熟', '探索新奇'],
 }
 
+
 def load_json(path: Path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
+
 
 def write_json(path: Path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+
 
 def normalize_text(value) -> str:
     if value is None:
@@ -32,6 +38,7 @@ def normalize_text(value) -> str:
         value = ' '.join(str(v) for v in value)
     return re.sub(r'\s+', ' ', str(value)).strip()
 
+
 def load_taxonomy(path: Path | None):
     if not path:
         return list(DEFAULT_RULES.keys()) + ['杂项灵感']
@@ -39,8 +46,10 @@ def load_taxonomy(path: Path | None):
     boards = data.get('boards', []) if isinstance(data, dict) else data
     return boards or (list(DEFAULT_RULES.keys()) + ['杂项灵感'])
 
+
 def choose_fallback_board(boards):
     return '杂项灵感' if '杂项灵感' in boards else (boards[-1] if boards else '杂项灵感')
+
 
 def compute_rule_matches(blob: str, boards):
     matches = []
@@ -55,6 +64,7 @@ def compute_rule_matches(blob: str, boards):
         if hits:
             matches.append((board, hits))
     return matches
+
 
 def infer_board(item: dict, ocr_entry: dict | None, boards):
     fallback = choose_fallback_board(boards)
@@ -84,16 +94,18 @@ def infer_board(item: dict, ocr_entry: dict | None, boards):
         return fallback, 'low', ['ocr:unmatched'], 'ocr_reviewed'
     return fallback, 'low', ['no_rule_match'], 'pending'
 
+
 def safe_slug(value: str) -> str:
     value = re.sub(r'[^A-Za-z0-9._-]+', '-', value)
     value = value.strip('-._')
     return value or 'item'
 
+
 def download_image(url: str, dest: Path, timeout_sec: int = 20):
     request = urllib.request.Request(
         url,
         headers={
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
             'Referer': 'https://www.xiaohongshu.com/',
         },
     )
@@ -103,6 +115,7 @@ def download_image(url: str, dest: Path, timeout_sec: int = 20):
     dest.write_bytes(data)
     return len(data)
 
+
 def resolve_image_url(item: dict) -> str:
     for key in ('cover_image_url', 'image_url', 'cover', 'cover_url', 'currentSrc'):
         value = normalize_text(item.get(key, ''))
@@ -110,26 +123,80 @@ def resolve_image_url(item: dict) -> str:
             return value
     return ''
 
+
 def run_swift_ocr(swift_script: Path, image_path: Path):
-    proc = subprocess.run(
-        ['/usr/bin/swift', str(swift_script), str(image_path)],
-        capture_output=True,
-        text=True,
-    )
+    swift_bin = shutil.which('swift') or '/usr/bin/swift'
+    proc = subprocess.run([swift_bin, str(swift_script), str(image_path)], capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or 'swift ocr failed')
     return json.loads(proc.stdout)
+
+
+def run_tesseract_ocr(image_path: Path, languages: str = 'chi_sim+eng'):
+    tesseract = shutil.which('tesseract')
+    if not tesseract:
+        raise RuntimeError('tesseract not found')
+    proc = subprocess.run([tesseract, str(image_path), 'stdout', '-l', languages], capture_output=True, text=True)
+    if proc.returncode != 0:
+        # fall back to English if Chinese language data is missing.
+        proc = subprocess.run([tesseract, str(image_path), 'stdout', '-l', 'eng'], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or 'tesseract ocr failed')
+    text = normalize_text(proc.stdout)
+    return {'text': text, 'lines': [{'text': line, 'confidence': None} for line in proc.stdout.splitlines() if normalize_text(line)], 'average_confidence': None, 'provider': 'tesseract'}
+
+
+def run_easyocr_ocr(image_path: Path):
+    try:
+        import easyocr
+    except Exception as exc:
+        raise RuntimeError('easyocr not installed') from exc
+    reader = easyocr.Reader(['ch_sim', 'en'], gpu=False)
+    rows = reader.readtext(str(image_path))
+    lines = [{'text': normalize_text(row[1]), 'confidence': float(row[2]) if len(row) > 2 else None} for row in rows]
+    confidences = [line['confidence'] for line in lines if line['confidence'] is not None]
+    return {'text': normalize_text(' '.join(line['text'] for line in lines)), 'lines': lines, 'average_confidence': (sum(confidences) / len(confidences) if confidences else None), 'provider': 'easyocr'}
+
+
+def detect_ocr_provider(preferred: str):
+    if preferred != 'auto':
+        return preferred
+    if platform.system() == 'Darwin' and shutil.which('swift'):
+        return 'swift'
+    if shutil.which('tesseract'):
+        return 'tesseract'
+    try:
+        import easyocr  # noqa: F401
+        return 'easyocr'
+    except Exception:
+        pass
+    return 'none'
+
+
+def run_ocr(provider: str, image_path: Path, swift_script: Path, tesseract_lang: str):
+    if provider == 'swift':
+        result = run_swift_ocr(swift_script, image_path)
+        result.setdefault('provider', 'swift')
+        return result
+    if provider == 'tesseract':
+        return run_tesseract_ocr(image_path, languages=tesseract_lang)
+    if provider == 'easyocr':
+        return run_easyocr_ocr(image_path)
+    raise RuntimeError('no OCR provider available; install tesseract or easyocr, or use macOS swift Vision')
+
 
 def build_cache_path(cache_dir: Path, item_id: str, image_url: str) -> Path:
     suffix = Path(urllib.request.urlparse(image_url).path).suffix or '.img'
     digest = hashlib.sha1(image_url.encode('utf-8')).hexdigest()[:12]
     return cache_dir / f'{safe_slug(item_id)}-{digest}{suffix}'
 
-def perform_ocr_for_items(items, output_path: Path, cache_dir: Path | None = None, swift_script: Path | None = None, timeout_sec: int = 20, force: bool = False):
+
+def perform_ocr_for_items(items, output_path: Path, cache_dir: Path | None = None, swift_script: Path | None = None, timeout_sec: int = 20, force: bool = False, provider: str = 'auto', tesseract_lang: str = 'chi_sim+eng'):
     output_path = Path(output_path)
     base_dir = output_path.parent
     cache_dir = Path(cache_dir) if cache_dir else base_dir / 'ocr_cache'
     swift_script = Path(swift_script) if swift_script else Path(__file__).resolve().parent / 'ocr_image.swift'
+    provider = detect_ocr_provider(provider)
     existing = {}
     if output_path.exists() and not force:
         try:
@@ -151,6 +218,7 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Path | None = Non
             'ocr_text': '',
             'ocr_lines': [],
             'ocr_confidence': None,
+            'ocr_provider': provider,
             'error': '',
         }
         if not image_url:
@@ -161,11 +229,12 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Path | None = Non
         try:
             if force or not cache_path.exists():
                 download_image(image_url, cache_path, timeout_sec=timeout_sec)
-            ocr = run_swift_ocr(swift_script, cache_path)
+            ocr = run_ocr(provider, cache_path, swift_script, tesseract_lang)
             entry['status'] = 'ok'
             entry['ocr_text'] = normalize_text(ocr.get('text', ''))
             entry['ocr_lines'] = ocr.get('lines', [])
             entry['ocr_confidence'] = ocr.get('average_confidence')
+            entry['ocr_provider'] = ocr.get('provider', provider)
             entry['download_path'] = str(cache_path)
         except Exception as exc:
             entry['status'] = 'error'

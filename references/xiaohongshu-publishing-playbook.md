@@ -12,6 +12,10 @@
 
 > 小红书收藏夹太乱？我做了个自动整理工具
 
+Windows 版更新标题：
+
+> 小红书收藏夹整理工具，Windows 也能用了
+
 备选：
 
 1. 我把小红书收藏夹自动分门别类了
@@ -47,7 +51,7 @@
 装修、穿搭、健身、旅行、AI工具、摄影灵感……
 最后全都堆在“杂项灵感”里。
 
-所以我做了一个 macOS + Hermes Agent 的小工具：
+所以我做了一个 macOS / Windows + Hermes Agent 的小工具：
 可以自动读取小红书网页端收藏，识别每条收藏封面上的文字，生成分类建议，再把收藏整理到对应专辑里。
 
 它大概能做这些事：
@@ -57,7 +61,7 @@
 3. 根据标题、标签、作者、封面文字生成分类建议
 4. 输出 classification.json，方便人工复核
 5. 支持失败重试和续跑
-6. 支持 Chrome，也补了 Safari 路径说明
+6. 支持 Chrome / Edge / Safari，新增 Windows 的 Playwright/CDP 抓取路径
 
 我没有做成那种要你交账号密码的云服务。
 它是在你自己的电脑上跑，通过你已经登录的小红书网页端操作。
@@ -66,10 +70,9 @@
 - 收藏夹几百/几千条，已经完全失控
 - 经常收藏装修、穿搭、健身、旅行攻略
 - 想把“杂项灵感”重新整理成专辑
-- 愿意自己在 macOS 上跑一个本地工具
+- 愿意自己在 macOS 或 Windows 上跑一个本地工具
 
 不适合这些人：
-- 不用 macOS
 - 不想折腾命令行
 - 想要一个手机 App 一键完成
 
@@ -85,7 +88,7 @@ GitHub：评论区/主页自取
 项目地址：
 https://github.com/themrv1ck/xiaohongshu-web-collection-organizing
 
-目前适合 macOS + Hermes Agent 用户。
+目前适合 macOS / Windows + Hermes Agent 用户。
 真实移动收藏前，请先看 README，并先跑无副作用 smoke test。
 ```
 
@@ -94,7 +97,7 @@ https://github.com/themrv1ck/xiaohongshu-web-collection-organizing
 核心标签：
 
 ```text
-#小红书收藏夹 #收藏夹整理 #效率工具 #AI工具 #开源项目 #macOS #自动化 #OCR #信息整理 #数字整理
+#小红书收藏夹 #收藏夹整理 #效率工具 #AI工具 #开源项目 #macOS #Windows #自动化 #OCR #信息整理 #数字整理
 ```
 
 可替换标签：
@@ -207,7 +210,7 @@ https://github.com/themrv1ck/xiaohongshu-web-collection-organizing
 
 建议写：
 
-- 目前适合 macOS + Hermes Agent 用户
+- 目前适合 macOS / Windows + Hermes Agent 用户
 - 真实移动收藏前建议人工复核分类结果
 - 小红书页面变化可能导致脚本需要更新
 - 先开源给有相同痛点的人试用
