@@ -63,8 +63,11 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 3. 专辑创建前必须询问用户
    - 在创建、删除、重命名专辑或批量移动笔记前，先把建议专辑体系展示给用户，询问是否要继续创建。
    - 明确询问用户是否有自己的分类想法，以及建议清单是否覆盖了他想到的所有层面。
+   - **如果检测到用户已经创建过专辑，必须额外询问：是否需要一并移动/重组这些已创建专辑里的内容。**
+   - 如果用户回答“不需要 / 不要动已有专辑 / 只整理未归档收藏”，仍然必须先只读查看用户已创建专辑里的内容，写入 `existing_boards_inventory.json` 或等价字段，用来建立排除清单；随后只移动“客户已创建专辑以外”的收藏内容，不移动、不取消收藏、不重新归档已在客户专辑中的笔记。
+   - 如果用户同意重组已有专辑内容，才允许把已在客户专辑中的笔记纳入新的分类/移动计划；移动前仍需展示计划并确认。
    - 如果用户认为没有覆盖完整，就继续追问/迭代分类体系，不执行专辑创建和批量移动。
-   - 只有用户确认分类体系后，才根据用户需求创建所需专辑。
+   - 只有用户确认分类体系和已有专辑处理策略后，才根据用户需求创建所需专辑。
 
 4. 按图文特性归档
    - 用户确认专辑体系后，根据每条图文笔记的主题、场景、用途、视觉内容和文本信息，将其归入对应专辑。
@@ -74,12 +77,15 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 ## 输入
 - 当前已登录的小红书收藏页 / 专辑页
 - 用户给定或确认后的专辑体系 JSON
+- 用户确认后的已有专辑处理策略：`include_existing_boards=true/false`
 - 已抓取的 `visible_items.json`
+- 已只读盘点的已有专辑内容 `existing_boards_inventory.json`（当账号已有专辑时必须生成，用于确认哪些笔记属于客户已创建专辑、哪些属于专辑外收藏）
 - 已下载/提取的图文素材与 OCR/视觉结果
 - 历史 `run_report.json` / `retry_queue.json`
 
 ## 输出
 - `visible_items.json`
+- `existing_boards_inventory.json`（已有专辑只读盘点；当用户不希望移动已创建专辑内容时，它也是排除清单）
 - `ocr_results.json`
 - `classification.json`
 - `created_boards.json`
@@ -119,11 +125,12 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 中途终止后只从未成功条目继续，不从头跑。
 
 ## 核验方式
-1. OCR 核验：`ocr_results.json` 覆盖每个条目，至少能看到 `status`
-2. 分类核验：`classification.json` 包含 `ocr_status` / `ocr_text` / `ocr_confidence`
-3. 事件核验：`board:CLICKED:<目标专辑>` 与 `toast:ok`
-4. 页面核验：重新抓目标专辑，确认条目已出现
-5. 数量核验：比较 `board_counts_before` / `board_counts_after`
+1. 已有专辑策略核验：账号已有专辑时，必须能看到 `existing_boards_inventory.json`；如果用户选择不移动已有专辑内容，`classification.json` / `run_report.json` 中不得出现这些专辑内笔记的移动事件，只能处理专辑外收藏。
+2. OCR 核验：`ocr_results.json` 覆盖每个条目，至少能看到 `status`
+3. 分类核验：`classification.json` 包含 `ocr_status` / `ocr_text` / `ocr_confidence`
+4. 事件核验：`board:CLICKED:<目标专辑>` 与 `toast:ok`
+5. 页面核验：重新抓目标专辑，确认条目已出现
+6. 数量核验：比较 `board_counts_before` / `board_counts_after`
 
 ## 明确禁止事项
 - 不要把 `.collect-wrapper` 当成直接入专辑入口。
