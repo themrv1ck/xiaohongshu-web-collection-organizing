@@ -1,6 +1,6 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on macOS or Windows when the user asks to inspect favorites, create boards, classify saved notes, clean up a messy board like “杂项灵感”, or batch reassign notes through browser automation. macOS supports Chrome/Safari AppleScript plus Vision OCR; Windows supports Chrome/Edge via Playwright or CDP plus Tesseract/EasyOCR OCR. Requires the user to be logged in on Xiaohongshu web and keeps JSON outputs/retry reports for safe resume.
+description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on macOS or Windows when the user asks to inspect favorites, classify saved notes, clean up a messy board like “杂项灵感”, or batch reassign notes through browser automation. macOS supports Chrome/Safari AppleScript plus Vision OCR; Windows supports Chrome/Edge via Playwright or CDP plus Tesseract/EasyOCR OCR. Requires the user to be logged in on Xiaohongshu web, defaults to dry-run before account changes, and keeps JSON outputs/retry reports for safe resume.
 ---
 
 # 小红书收藏整理 Skill
@@ -10,8 +10,8 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 当用户要求整理“小红书收藏 / 我的收藏 / 专辑分类”时，默认目标是：进入当前已登录账号的“我的页面/收藏”，完整阅览并抓取收藏笔记，重点收集笔记标题、作者、链接、现有专辑、封面/OCR 文本等可分类信息；整理或重建专辑体系；把所有收藏笔记合理归档进对应主题专辑。
 
 允许的动作：
-- 可创建新专辑、重命名/调整不合理专辑、在确认笔记已安全迁移后删除空的或不再需要的专辑。
-- 可对笔记执行“取消收藏 -> 重新收藏 -> 加入专辑”或前端真实 API `note/move` 回退路径，用于完成重新归档。
+- 可核对目标专辑是否已存在，并把缺失专辑写入 `created_boards.json`；创建、删除、重命名专辑必须另行取得用户明确授权。
+- 可通过前端真实 API `note/move` 路径完成重新归档；真实执行必须显式传 `--execute`。
 - 只要下一步明确，就持续推进到全量完成、失败项入队、最终核验，不要在中间阶段只做总结就停止。
 
 硬性边界：
@@ -33,14 +33,14 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 2. 抓取收藏页当前实际可见条目，写入 `visible_items.json`。
 3. 对全部条目封面图执行 OCR，写入 `ocr_results.json`。
 4. 生成 `classification.json`，默认复用 OCR 结果；缺失时自动补跑 OCR。
-5. 读取或创建专辑，写入 `created_boards.json`。
-6. 默认先走 UI：`uncollect -> collect -> banner 加入专辑 -> 选择目标专辑`。
-7. 如果 Safari 网页端已能收藏，但“加入专辑/选择专辑”弹层不稳定或抓不到，不要停在 UI 猜测；立即切换到前端运行时回退路径：
+5. 读取或核对专辑，写入 `created_boards.json`。缺失专辑只记录为 `missing`，不自动创建。
+6. 先运行 `scripts/run_reassign_batch.py classification.json run_report.json` 做 dry-run；dry-run 不改账号。
+7. 用户确认分类、目标专辑和风险后，才允许运行 `scripts/run_reassign_batch.py classification.json run_report.json --execute`。执行时使用前端运行时路径：
    - 检查 `#note-page-collect-board-guide.collect-wrapper` 状态，确认只是“已收藏/未收藏”切换，不把它误判成已入专辑。
    - 从 `window.__INITIAL_STATE__.board.boardListData` 读取当前账号专辑列表、`boardId`、现有计数，先定位目标专辑。
    - 通过 webpack runtime 暴露模块，优先复用真实前端 API：`yC`(专辑列表)、`Ks`(专辑笔记)、`d0`(移动到专辑)、`U_`(专辑详情)。
    - 已验证 `note/move` 的真实 payload 形状为 `{targetBoardId, notesId}`；不要再枚举猜参。
-   - 当目标 `boardId` 与候选 `noteId` 列表已明确时，不要停在“先试 1 条再汇报”；应直接批量执行全部候选，再统一做核验和回复。
+   - 当目标 `boardId` 与候选 `noteId` 列表已明确时，直接批量执行候选，再统一做核验和回复。
    - `d0(...)` 返回空对象 `{}` 不能直接判失败；必须继续调用 `U_` + `Ks`，用 `detail.total` 与返回的 `notes` 列表确认是否真的入专辑。
    - 已验证细节见 `references/safari-xhs-board-batch-move-verified.md`。
 8. 每条实时写入 `run_report.json`，失败项同步写入 `retry_queue.json`。
@@ -64,7 +64,7 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
    - 在创建、删除、重命名专辑或批量移动笔记前，先把建议专辑体系展示给用户，询问是否要继续创建。
    - 明确询问用户是否有自己的分类想法，以及建议清单是否覆盖了他想到的所有层面。
    - **如果检测到用户已经创建过专辑，必须额外询问：是否需要一并移动/重组这些已创建专辑里的内容。**
-   - 如果用户回答“不需要 / 不要动已有专辑 / 只整理未归档收藏”，仍然必须先只读查看用户已创建专辑里的内容，写入 `existing_boards_inventory.json` 或等价字段，用来建立排除清单；随后只移动“客户已创建专辑以外”的收藏内容，不移动、不取消收藏、不重新归档已在客户专辑中的笔记。
+   - 如果用户回答“不需要 / 不要动已有专辑 / 只整理未归档收藏”，必须先建立已有专辑排除清单；随后只移动“客户已创建专辑以外”的收藏内容，不移动、不取消收藏、不重新归档已在客户专辑中的笔记。
    - 如果用户同意重组已有专辑内容，才允许把已在客户专辑中的笔记纳入新的分类/移动计划；移动前仍需展示计划并确认。
    - 如果用户认为没有覆盖完整，就继续追问/迭代分类体系，不执行专辑创建和批量移动。
    - 只有用户确认分类体系和已有专辑处理策略后，才根据用户需求创建所需专辑。
@@ -79,13 +79,11 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 用户给定或确认后的专辑体系 JSON
 - 用户确认后的已有专辑处理策略：`include_existing_boards=true/false`
 - 已抓取的 `visible_items.json`
-- 已只读盘点的已有专辑内容 `existing_boards_inventory.json`（当账号已有专辑时必须生成，用于确认哪些笔记属于客户已创建专辑、哪些属于专辑外收藏）
 - 已下载/提取的图文素材与 OCR/视觉结果
 - 历史 `run_report.json` / `retry_queue.json`
 
 ## 输出
 - `visible_items.json`
-- `existing_boards_inventory.json`（已有专辑只读盘点；当用户不希望移动已创建专辑内容时，它也是排除清单）
 - `ocr_results.json`
 - `classification.json`
 - `created_boards.json`
@@ -125,10 +123,10 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 中途终止后只从未成功条目继续，不从头跑。
 
 ## 核验方式
-1. 已有专辑策略核验：账号已有专辑时，必须能看到 `existing_boards_inventory.json`；如果用户选择不移动已有专辑内容，`classification.json` / `run_report.json` 中不得出现这些专辑内笔记的移动事件，只能处理专辑外收藏。
+1. 已有专辑策略核验：如果用户选择不移动已有专辑内容，必须先建立排除清单，`classification.json` / `run_report.json` 中不得出现这些专辑内笔记的移动事件，只能处理专辑外收藏。
 2. OCR 核验：`ocr_results.json` 覆盖每个条目，至少能看到 `status`
 3. 分类核验：`classification.json` 包含 `ocr_status` / `ocr_text` / `ocr_confidence`
-4. 事件核验：`board:CLICKED:<目标专辑>` 与 `toast:ok`
+4. 事件核验：`board:FOUND:<目标专辑>`、`note_move:CALLED`、`verify:note_present`
 5. 页面核验：重新抓目标专辑，确认条目已出现
 6. 数量核验：比较 `board_counts_before` / `board_counts_after`
 
@@ -150,14 +148,14 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 依赖按平台检测：`scripts/check_environment.py` 会输出 `browser_automation_ready`、`ocr_ready`、`windows_supported_path_ready`。
 
 ## 关联资源
-- 执行骨架：`scripts/`
+- 执行脚本：`scripts/`
 - 输入输出契约：`references/io-contract.md`
 - 恢复与续跑：`references/recovery-and-resume.md`
 - 环境检查：`references/environment-and-limitations.md`
 - Windows Playwright/CDP + OCR 支持：`references/windows-playwright-ocr-notes.md`
 - Safari 自动化补充：`references/safari-web-automation-notes.md`
 - Safari 小红书前端模块/私有接口观察：`references/safari-xhs-private-api-notes.md`
-- Safari 专辑移动回退路径与已验证 payload：`references/safari-xhs-board-move-fallback.md`
+- Safari 专辑移动前端运行时路径与已验证 payload：`references/safari-xhs-board-move-fallback.md`
 - 分发可用性审计：`references/distribution-readiness-audit.md`
 - 小红书发布标题/文案/标签/推送策略：`references/xiaohongshu-publishing-playbook.md`
 - 示例文件：`examples/`
@@ -176,9 +174,9 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 2. 下载检查：至少覆盖 `git clone --depth 1` 和 GitHub `main.zip` 下载/解压两条路径。
 3. 临时安装检查：创建临时 `HERMES_HOME`，把下载后的 skill 放到 `skills/social-media/xiaohongshu-web-collection-organizing/`，运行 `hermes skills list` 确认可识别。
 4. 静态检查：运行 `python3 -m compileall -q <repo>`，确认脚本无语法错误。
-5. 示例烟测：用 examples/templates 跑无副作用脚本，例如 `check_environment.py`、`classify_items.py --skip-ocr`、`build_retry_queue.py`、`summarize_run_report.py`；涉及真实网页/收藏移动的脚本只说明前置，不要在未授权环境中执行。
+5. 示例烟测：用 examples/templates 跑无副作用脚本，例如 `check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` dry-run、`build_retry_queue.py`、`summarize_run_report.py`；涉及真实网页/收藏移动的脚本必须显式传 `--execute`，不要在未授权环境中执行。
 6. 本机最新版对比：如果本机 skill 目录和 GitHub 下载版本不同，必须明确提醒“GitHub 版本落后/不一致”，不能把本机已修复能力误报成外部用户可用能力。
-7. 发布判断：README 必须包含安装命令、浏览器权限、登录态要求、可直接运行脚本、骨架脚本/限制；否则结论应是“可下载和基础可跑，但不建议直接对外宣传为任何人下载即用”。
+7. 发布判断：README 必须包含安装命令、浏览器权限、登录态要求、可直接运行脚本、真实移动入口和限制；否则结论应是“可下载和基础可跑，但不建议直接对外宣传为任何人下载即用”。
 
 详细审计清单见 `references/distribution-readiness-audit.md`。
 
@@ -196,10 +194,10 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
    - `examples/`
 2. `SKILL.md` 的 frontmatter 只保留 `name` 和 `description`，并把触发条件、前提环境、适用请求写进 `description`。
 3. 至少提供最小可复用执行资源，而不只是文档：
-   - 收藏抓取脚本或脚本骨架
+   - 收藏抓取脚本
    - OCR 落盘脚本
    - 分类落盘脚本
-   - 运行报告生成脚本或脚本骨架
+   - dry-run / execute 运行报告生成脚本
    - retry queue / resume 相关资源
 4. 明确输入输出契约，并给出 JSON 示例：
    - `visible_items.json`
@@ -215,5 +213,5 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 6. 回复用户时必须说明：
    - 新增了哪些文件
    - 哪些能直接运行
-   - 哪些只是骨架 / 模板 / 示例
+   - 哪些是模板 / 示例
    - 当前还存在什么限制

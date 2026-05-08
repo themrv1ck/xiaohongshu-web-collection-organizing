@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 DEFAULT_RULES = {
     '家居装修与收纳': ['家居', '装修', '餐边柜', '镜柜', '台盆柜', '厨房', '豪宅', '收纳', '客厅', '卧室'],
@@ -39,16 +40,12 @@ def normalize_text(value) -> str:
     return re.sub(r'\s+', ' ', str(value)).strip()
 
 
-def load_taxonomy(path: Path | None):
+def load_taxonomy(path: Optional[Path]):
     if not path:
         return list(DEFAULT_RULES.keys()) + ['杂项灵感']
     data = load_json(Path(path))
     boards = data.get('boards', []) if isinstance(data, dict) else data
     return boards or (list(DEFAULT_RULES.keys()) + ['杂项灵感'])
-
-
-def choose_fallback_board(boards):
-    return '杂项灵感' if '杂项灵感' in boards else (boards[-1] if boards else '杂项灵感')
 
 
 def compute_rule_matches(blob: str, boards):
@@ -66,8 +63,7 @@ def compute_rule_matches(blob: str, boards):
     return matches
 
 
-def infer_board(item: dict, ocr_entry: dict | None, boards):
-    fallback = choose_fallback_board(boards)
+def infer_board(item: dict, ocr_entry: Optional[dict], boards):
     text_fields = [
         item.get('title', ''),
         item.get('desc', ''),
@@ -91,8 +87,8 @@ def infer_board(item: dict, ocr_entry: dict | None, boards):
         review_state = 'ocr_reviewed' if ocr_entry and ocr_entry.get('status') == 'ok' else 'classified'
         return board, confidence, reason, review_state
     if ocr_entry and normalize_text(ocr_entry.get('ocr_text', '')):
-        return fallback, 'low', ['ocr:unmatched'], 'ocr_reviewed'
-    return fallback, 'low', ['no_rule_match'], 'pending'
+        return '', 'low', ['ocr:unmatched'], 'ocr_reviewed'
+    return '', 'low', ['no_rule_match'], 'pending'
 
 
 def safe_slug(value: str) -> str:
@@ -191,7 +187,7 @@ def build_cache_path(cache_dir: Path, item_id: str, image_url: str) -> Path:
     return cache_dir / f'{safe_slug(item_id)}-{digest}{suffix}'
 
 
-def perform_ocr_for_items(items, output_path: Path, cache_dir: Path | None = None, swift_script: Path | None = None, timeout_sec: int = 20, force: bool = False, provider: str = 'auto', tesseract_lang: str = 'chi_sim+eng'):
+def perform_ocr_for_items(items, output_path: Path, cache_dir: Optional[Path] = None, swift_script: Optional[Path] = None, timeout_sec: int = 20, force: bool = False, provider: str = 'auto', tesseract_lang: str = 'chi_sim+eng'):
     output_path = Path(output_path)
     base_dir = output_path.parent
     cache_dir = Path(cache_dir) if cache_dir else base_dir / 'ocr_cache'

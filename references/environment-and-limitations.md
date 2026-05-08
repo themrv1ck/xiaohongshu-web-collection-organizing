@@ -8,7 +8,7 @@
 
 ## 通用必备前提
 
-- 已安装 Python 3.10+
+- 已安装 Python 3.9+
 - 已登录小红书网页端
 - 不抓取、不复制、不外传 cookies / xsec / signed URL / token
 - 真实移动收藏前必须先确认分类结果和目标专辑
@@ -38,7 +38,7 @@ python3 scripts/check_environment.py
 必备：
 - Windows 10/11
 - Google Chrome 或 Microsoft Edge
-- Python 3.10+
+- Python 3.9+
 - Playwright Python：
 
 ```powershell
@@ -102,6 +102,6 @@ python scripts\ocr_cover_images.py visible_items.json ocr_results.json --provide
 - 小红书网页 DOM 和前端模块可能变化，需要按实际页面复核选择器。
 - 网页端总数与可抓取总数可能不一致。
 - OCR 基于封面图，不是进入每条笔记后的全文识别。
-- 无封面图 URL 或图片下载失败的条目只能退回标题/desc/tags 规则分类。
+- 无封面图 URL 或图片下载失败的条目只能使用标题/desc/tags 规则分类。
 - Windows 的 Playwright 路径优先覆盖“抓取 + OCR + 分类”；真实移动收藏仍必须在明确授权、目标专辑确认、且页面状态可核验时执行。
-- Tesseract 中文识别依赖 `chi_sim` 语言包；缺失时脚本会退回英文，中文效果会变差。
+- Tesseract 中文识别依赖 `chi_sim` 语言包；缺失时脚本会改用英文识别，中文效果会变差。

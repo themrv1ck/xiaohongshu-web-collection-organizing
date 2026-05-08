@@ -1,8 +1,22 @@
 {
   "started_at": "2026-04-17T01:17:03Z",
+  "finished_at": "2026-04-17T01:17:38Z",
+  "mode": "execute",
   "visible_count": 11,
-  "processed": [{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4️⃣个技能直接出活","target_board":"滑雪","status":"success","attempt":1,"events":["collect:CLICKED","board:CLICKED:滑雪","toast:ok"]}],
+  "processed": [
+    {
+      "id": "69538be3000000001e028205",
+      "title": "技能练反脚不用从头练",
+      "target_board": "滑雪",
+      "status": "success",
+      "attempt": 1,
+      "events": ["board:FOUND:滑雪", "note_move:CALLED", "verify:note_present"],
+      "error": "",
+      "verified": true
+    }
+  ],
   "errors": [],
-  "board_counts_before": {"杂项灵感": 76},
-  "board_counts_after": {"杂项灵感": 65}
+  "missing_boards": [],
+  "board_counts_before": {"滑雪": 76},
+  "board_counts_after": {"滑雪": 77}
 }

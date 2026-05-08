@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -50,10 +51,15 @@ def main():
     is_macos = system == 'Darwin'
     is_windows = system == 'Windows'
     python_cmd = shutil.which('python3') or shutil.which('python')
+    python_version = '.'.join(str(x) for x in sys.version_info[:3])
+    python_supported = sys.version_info >= (3, 9)
     chrome_paths = [p for p in chrome_candidates(system) if executable_exists(p)]
     checks = {
         'platform': system,
         'python': bool(python_cmd),
+        'python_executable': python_cmd,
+        'python_version': python_version,
+        'python_version_supported': python_supported,
         'curl': check('curl'),
         'node': check('node'),
         'playwright_python': python_import_ok('playwright'),
@@ -78,6 +84,7 @@ def main():
         or checks['paddleocr_python']
     )
     checks['image_text_recognition_ready'] = checks['ocr_ready']
+    checks['script_runtime_ready'] = bool(checks['python'] and checks['python_version_supported'])
     checks['ocr_install_purpose'] = (
         'OCR is used to recognize Chinese text in Xiaohongshu cover/images so '
         'classification and board assignment are more accurate.'
@@ -101,6 +108,10 @@ def main():
     else:
         checks['ocr_install_suggestions'] = []
         checks['should_ask_user_to_install_ocr'] = False
+    if not checks['python_version_supported']:
+        checks['python_install_suggestion'] = 'Install Python 3.9 or newer, then rerun this script with that Python.'
+    else:
+        checks['python_install_suggestion'] = ''
     checks['windows_supported_path_ready'] = bool(is_windows and checks['playwright_python'] and checks['chrome_or_edge_executable'] and checks['ocr_ready'])
     print(json.dumps(checks, ensure_ascii=False, indent=2))
 

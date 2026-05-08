@@ -1,0 +1,4 @@
+# Core scripts use only the Python standard library.
+# Install optional platform dependencies only when needed:
+# - Windows browser automation: pip install -r requirements-windows.txt
+# - Optional Python OCR: pip install easyocr

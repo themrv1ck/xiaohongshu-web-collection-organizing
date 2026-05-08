@@ -24,7 +24,9 @@
 
    ```bash
    python3 scripts/check_environment.py
+   python3 -m unittest discover -s tests -p 'test_*.py'
    python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs_classification_skip.json
+   python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_run_report_dry.json
    python3 scripts/build_retry_queue.py examples/run_report.example.json /tmp/xhs_retry_queue.json
    python3 scripts/summarize_run_report.py examples/run_report.example.json /tmp/xhs_summary.json
    ```
@@ -61,6 +63,6 @@ diff -qr ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing <do
 - **可以说“可下载”**：GitHub API、clone、zip 都成功。
 - **可以说“可安装”**：临时 `HERMES_HOME` 下 `hermes skills list` 能识别。
 - **可以说“基础可跑”**：compileall 和无副作用 smoke tests 通过。
-- **可以说“适合发给别人直接用”**：除以上外，README 还必须写清：安装命令、macOS/浏览器前置、Chrome Apple Events JavaScript 或 Safari 路径、登录态要求、哪些脚本可直接运行、哪些只是骨架/模板、真实移动收藏的风险和授权边界。
+- **可以说“适合发给别人直接用”**：除以上外，README 还必须写清：安装命令、macOS/浏览器前置、Chrome Apple Events JavaScript 或 Safari 路径、登录态要求、哪些脚本可直接运行、真实移动入口、真实移动收藏的风险和授权边界。
 
 如果 README 不足或 GitHub 版本落后，最终结论应为：**可下载和基础可跑，但不建议宣传为任何人下载即用；先同步最新版并补 README。**

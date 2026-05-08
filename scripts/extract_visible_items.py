@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 ITEMS_JS = r'''JSON.stringify({
   scrollY: window.scrollY,
@@ -13,6 +14,7 @@ ITEMS_JS = r'''JSON.stringify({
   scrollHeight: document.documentElement.scrollHeight,
   location: location.href,
   title: document.title,
+  loginRequired: /手机号登录|登录后推荐|马上登录即可|扫码登录|验证码登录/.test((document.body && document.body.innerText) || ''),
   items: Array.from(document.querySelectorAll('section.note-item, .note-item, [data-note-id]')).map((section, index) => {
     const titleLink = section.querySelector('a.title') || section.querySelector('a[href*="/explore/"]');
     const coverLink = section.querySelector('a.cover') || section.querySelector('a[href*="/explore/"]');
@@ -67,6 +69,11 @@ def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float):
         raw = js_eval(ITEMS_JS)
         data = json.loads(raw)
         last_meta = {k: data.get(k) for k in ('location', 'title', 'scrollY', 'innerHeight', 'scrollHeight')}
+        location = str(data.get('location') or '')
+        if 'xiaohongshu.com' not in location:
+            raise RuntimeError(f'当前浏览器页面不是小红书页面：{location or "unknown"}')
+        if data.get('loginRequired'):
+            raise RuntimeError('当前小红书页面像是未登录状态。请先在浏览器里登录，再重新运行抓取。')
         before = len(seen)
         for item in data.get('items', []):
             if item.get('id') and item['id'] not in seen:
@@ -84,7 +91,7 @@ def extract_macos_chrome(out: Path, max_scrolls: int, scroll_pause: float):
     return extract_with_js(chrome_js_macos, out, max_scrolls, scroll_pause)
 
 
-def extract_playwright(out: Path, max_scrolls: int, scroll_pause: float, url: str | None, channel: str, user_data_dir: str | None, cdp_url: str | None, headless: bool):
+def extract_playwright(out: Path, max_scrolls: int, scroll_pause: float, url: Optional[str], channel: str, user_data_dir: Optional[str], cdp_url: Optional[str], headless: bool):
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:

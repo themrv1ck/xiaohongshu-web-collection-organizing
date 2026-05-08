@@ -1,6 +1,7 @@
 {
   "confirmed": ["穿搭发型与品味", "滑雪", "杂项灵感"],
-  "created": ["体态纠正与康复"],
-  "missing": [],
-  "failed": []
+  "created": [],
+  "missing": ["体态纠正与康复"],
+  "failed": [],
+  "action_required": "Create missing boards manually in Xiaohongshu before running --execute."
 }
