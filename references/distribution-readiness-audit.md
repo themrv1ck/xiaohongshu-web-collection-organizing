@@ -52,6 +52,10 @@ diff -qr ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing <do
 
 如果本机有新增 Safari 支持、私有 API notes、batch move verified 等而 GitHub 没有，结论必须写成：GitHub 版本落后，不能把本机能力承诺给外部下载者。
 
+如果 GitHub API 匿名访问返回 `403 rate limit exceeded`，不要直接判定仓库不可公开访问；继续用两条匿名路径核验：`git clone --depth 1 https://github.com/<owner>/<repo>.git` 和 `curl -L --fail https://github.com/<owner>/<repo>/archive/refs/heads/main.zip`。clone 与 zip 均成功时，可判为“公开下载路径可用，但 API 检查受限”。
+
+如果下载版与本机版仅 `SKILL.md` 存在差异，也不能自动忽略：`SKILL.md` 里常包含安全边界、workflow pitfall、回归链路和不泄露 token/xsec/cookie 的约束。发布前必须 diff 内容；若差异涉及安全/执行纪律/恢复流程，应先同步到 GitHub 后再宣布“达到公开发布最低标准”。
+
 忽略差异时要排除：
 - `.git/`
 - `__pycache__/`

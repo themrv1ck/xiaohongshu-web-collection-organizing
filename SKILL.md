@@ -3,7 +3,23 @@ name: xiaohongshu-web-collection-organizing
 description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on macOS or Windows when the user asks to inspect favorites, classify saved notes, clean up a messy board like “杂项灵感”, or batch reassign notes through browser automation. macOS supports Chrome/Safari AppleScript plus Vision OCR; Windows supports Chrome/Edge via Playwright or CDP plus Tesseract/EasyOCR OCR. Requires the user to be logged in on Xiaohongshu web, defaults to dry-run before account changes, and keeps JSON outputs/retry reports for safe resume.
 ---
 
-# 小红书收藏整理 Skill
+# 小红书工作流 Skill
+
+This is the umbrella for Xiaohongshu web workflows. Use the collection-organizing sections for logged-in favorites/board cleanup, and use the single-note research section below for one shared note URL.
+
+## 单篇笔记研究 / note research
+
+Use this subsection when the user gives one Xiaohongshu note URL and asks to “研究一下”, summarize, extract value, inspect comments, or evaluate product/market implications. Do not run account-changing collection scripts for this task.
+
+Workflow:
+1. Try browser navigation first; if it shows login/IP-risk/security, continue with mobile HTML extraction instead of stopping.
+2. Fetch the note page with an iPhone/mobile User-Agent and parse `window.__SETUP_SERVER_STATE__` / `LAUNCHER_SSR_STORE_PAGE_DATA.noteData` when present.
+3. Extract title, desc, tags, user, interaction counts, image list, comments/subComments, and author context.
+4. Download images only when needed for visual/OCR analysis, using normal browser headers and no credential leakage.
+5. Synthesize value: what the post says, evidence from comments/engagement, implementation details, user pain points, competitor mentions, and actionable recommendations.
+6. Answer in Chinese unless asked otherwise, with conclusion first and evidence compactly.
+
+See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 ## 用户目标口径
 
@@ -18,6 +34,7 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 所有收藏笔记不允许删除；“取消收藏”只能作为重新加入目标专辑的中间动作，必须确保最终仍被收藏并归入目标专辑。
 - 不得把未分类、抓取失败或移动失败的笔记静默丢弃；必须写入 `retry_queue.json` / `run_report.json`。
 - 删除或清理专辑前必须先核验该专辑内笔记已迁移或无需保留在该专辑；不得因专辑分类重构导致笔记丢失。
+- 不得把完整小红书 URL query、`xsec_token`、cookie、signed media URL、`sign` 参数或任何疑似凭据写入模型上下文、正式报告、Telegram/Discord 回复或日志摘要；只保留标准 `/explore/<note_id>`、标题、作者、公开计数和分类所需普通文本。历史上完整 `xsec_token` 链接曾触发 GPT `cyber_policy` 误判。
 
 ## 稳定工作流
 1. 检查环境：操作系统、浏览器网页登录态、浏览器自动化后端、OCR 后端。
@@ -30,7 +47,9 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
    - 如果目标浏览器未登录：明确告诉用户需要扫码登录；同时启动后台登录态轮询（建议每 5 分钟一次），检测到登录成功后自动续跑，不要把“等待登录”当成任务完成。
    - 登录态判断优先读取页面文本：出现“手机号登录 / 登录后推荐 / 马上登录即可 / 扫码”等视为未登录；未出现这些且页面已显示用户态内容再继续。
    - Safari 自动化细节见 `references/safari-web-automation-notes.md`。
-2. 抓取收藏页当前实际可见条目，写入 `visible_items.json`。
+2. 抓取收藏页当前实际可见条目，写入 `visible_items.json`，并同时写出 `crawl_manifest.json` 记录 `item_count`、`stopped_reason`、页面元信息和滚动快照；如果 `stopped_reason=max_scrolls_reached`，不得声称已经全量完成，只能说完成了当前滚动预算内的只读抓取。
+   - macOS Chrome 执行复杂/长 JS 时，不要把整段 JS 直接插入 AppleScript `execute javascript "..."` 字符串；这容易触发 `预期是“\"”，却找到未知的记号 (-2741)`。应把 JS 写入临时 `.js` 文件，用 AppleScript `read POSIX file ... as «class utf8»` 读入变量后 `execute javascript jsSource`，执行后删除临时文件。
+   - 每次修浏览器抓取器后，至少跑一次真实登录态的只读探针：`python3 scripts/extract_visible_items.py /tmp/xhs-visible-probe.json --backend macos-chrome --manifest /tmp/xhs-crawl-manifest-probe.json --max-scrolls 2 --scroll-pause 1`；Windows 用 `--backend playwright --channel chrome|msedge` 或 `--cdp-url`。
 3. 对全部条目封面图执行 OCR，写入 `ocr_results.json`。
 4. 如果用户选择不动已有专辑，先用 `scripts/build_existing_boards_inventory.py` 建立 `existing_boards_inventory.json`。
 5. 生成 `classification.json`，默认复用 OCR 结果；缺失时自动补跑 OCR。传入 `--existing-boards-inventory` 时，默认排除已有专辑里的笔记，只有显式传 `--include-existing-boards` 才纳入。
@@ -119,11 +138,18 @@ description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on m
 - 如能从 `window.__INITIAL_STATE__.board.boardListData` 读到目标专辑 `boardId`，优先记录后再继续，避免重复定位。
 
 ## 整体续跑机制
-- 启动前读取旧 `run_report.json`。
+- 启动前读取旧 `run_report.json`；执行或 dry-run 时使用 `--resume` 跳过已 `status=success` 的条目，并在新报告中保留已成功行。
 - `status=success` 的条目直接跳过。
 - `failed` 条目写入 `retry_queue.json` 并优先补跑。
 - `ocr_results.json` 中 `status=ok` 的条目默认直接复用。
+- 执行批处理时按单条提交给浏览器运行时；每条返回后立即 `merge_report_chunk` 并写回 `run_report.json`，避免长批次中断后丢失进度。
 - 中途终止后只从未成功条目继续，不从头跑。
+
+## 最低回归链路
+- 修改脚本后先跑 `python3 -m compileall -q .`。
+- 跑 `python3 -m unittest discover -s tests -p 'test_*.py'`，当前核心用例应覆盖 resume 过滤、报告 chunk 合并、抓取 manifest 写盘。
+- 再跑无副作用 smoke：`python3 scripts/classify_items.py examples/visible_items.example.json /tmp/xhs-classification-smoke.json --skip-ocr` 和 `python3 scripts/run_reassign_batch.py /tmp/xhs-classification-smoke.json /tmp/xhs-run-report-smoke.json`。
+- 最后做真实网页登录态只读探针与 dry-run：抓取到 `/tmp/xhs-visible-probe.json`，分类到 `/tmp/xhs-classification-probe.json`，再生成 `/tmp/xhs-run-report-probe.json`；没有用户明确授权前不得加 `--execute`。
 
 ## 核验方式
 1. 已有专辑策略核验：如果用户选择不移动已有专辑内容，必须先建立排除清单，`classification.json` / `run_report.json` 中不得出现这些专辑内笔记的移动事件，只能处理专辑外收藏。
