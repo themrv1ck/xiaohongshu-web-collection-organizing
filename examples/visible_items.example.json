@@ -8,6 +8,8 @@
     "desc": "男士西装与香水搭配",
     "tags": ["穿搭", "老钱风"],
     "card_text": "到底为什么叫他贵妇？ 男士西装与香水搭配 #穿搭 #老钱风",
+    "source_lists": ["收藏"],
+    "source_primary": "收藏",
     "first_seen": 0
   },
   {
@@ -19,6 +21,8 @@
     "desc": "固定器角度与换刃思路",
     "tags": ["滑雪", "CASI"],
     "card_text": "听CASI考官详细拆解什么固定器角度适合你？ 固定器角度与换刃思路 #滑雪 #CASI",
+    "source_lists": ["点赞"],
+    "source_primary": "点赞",
     "first_seen": 1
   }
 ]

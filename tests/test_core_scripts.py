@@ -211,6 +211,24 @@ class CoreScriptTests(unittest.TestCase):
         self.assertEqual(report['board_counts_before'], {'滑雪': 1})
         self.assertEqual(report['board_counts_after'], {'滑雪': 1})
 
+    def test_extract_visible_items_merges_source_lists(self):
+        from extract_visible_items import merge_items
+        existing = [
+            {'id': 'note-1', 'title': '同一笔记', 'source_lists': ['收藏'], 'source_primary': '收藏'},
+            {'id': 'note-2', 'title': '只在收藏', 'source_lists': ['收藏'], 'source_primary': '收藏'},
+        ]
+        incoming = [
+            {'id': 'note-1', 'title': '同一笔记更新', 'desc': '补充描述'},
+            {'id': 'note-3', 'title': '只在点赞'},
+        ]
+        merged = merge_items(existing, incoming, '点赞')
+        by_id = {item['id']: item for item in merged}
+        self.assertEqual(by_id['note-1']['source_lists'], ['收藏', '点赞'])
+        self.assertEqual(by_id['note-1']['source_primary'], '收藏')
+        self.assertEqual(by_id['note-1']['desc'], '补充描述')
+        self.assertEqual(by_id['note-3']['source_lists'], ['点赞'])
+        self.assertEqual([item['id'] for item in merged], ['note-1', 'note-2', 'note-3'])
+
     def test_extract_visible_items_writes_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

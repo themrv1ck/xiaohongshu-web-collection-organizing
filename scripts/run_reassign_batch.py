@@ -3,6 +3,7 @@ import argparse
 import json
 import platform
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,12 +45,19 @@ def chrome_js(js: str) -> str:
 
 
 def safari_js(js: str) -> str:
-    script = (
-        'tell application "Safari"\n'
-        f'do JavaScript {json.dumps(js)} in current tab of front window\n'
-        'end tell\n'
-    )
-    return osascript(script)
+    with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8', delete=False) as fh:
+        fh.write(js)
+        js_path = fh.name
+    try:
+        script = (
+            f'set jsSource to read POSIX file {json.dumps(js_path)} as «class utf8»\n'
+            'tell application "Safari"\n'
+            'do JavaScript jsSource in current tab of front window\n'
+            'end tell\n'
+        )
+        return osascript(script)
+    finally:
+        Path(js_path).unlink(missing_ok=True)
 
 
 def parse_js_json(raw: str) -> Any:
@@ -136,6 +144,8 @@ def normalize_classification(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
             'excluded': excluded,
             'exclude_reason': exclude_reason,
             'source_board': item.get('source_board') or '',
+            'source_lists': item.get('source_lists') or ([item.get('source_primary')] if item.get('source_primary') else []),
+            'source_primary': item.get('source_primary') or ((item.get('source_lists') or [''])[0] if isinstance(item.get('source_lists'), list) and item.get('source_lists') else ''),
             'source_index': index,
         })
     return normalized
@@ -207,6 +217,8 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
         'events': events,
         'error': error,
         'source_board': item.get('source_board', ''),
+        'source_lists': item.get('source_lists', []),
+        'source_primary': item.get('source_primary', ''),
         'exclude_reason': item.get('exclude_reason', ''),
     })
     if status == 'failed':

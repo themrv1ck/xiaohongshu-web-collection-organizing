@@ -1,11 +1,11 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: Reorganize a logged-in Xiaohongshu web 收藏 / 专辑 library on macOS or Windows when the user asks to inspect favorites, classify saved notes, clean up a messy board like “杂项灵感”, or batch reassign notes through browser automation. macOS supports Chrome/Safari AppleScript plus Vision OCR; Windows supports Chrome/Edge via Playwright or CDP plus Tesseract/EasyOCR OCR. Requires the user to be logged in on Xiaohongshu web, defaults to dry-run before account changes, and keeps JSON outputs/retry reports for safe resume.
+description: Reorganize a logged-in Xiaohongshu web 收藏 / 点赞 / 专辑 library on macOS or Windows when the user asks to inspect favorites/liked notes, classify saved or liked notes, clean up a messy board like “杂项灵感”, or batch reassign notes through browser automation. macOS supports Chrome/Safari AppleScript plus Vision OCR; Windows supports Chrome/Edge via Playwright or CDP plus Tesseract/EasyOCR OCR. Requires the user to be logged in on Xiaohongshu web, defaults to dry-run before account changes, and keeps JSON outputs/retry reports for safe resume.
 ---
 
 # 小红书工作流 Skill
 
-This is the umbrella for Xiaohongshu web workflows. Use the collection-organizing sections for logged-in favorites/board cleanup, and use the single-note research section below for one shared note URL.
+This is the umbrella for Xiaohongshu web workflows. Use the collection/liked organizing sections for logged-in favorites, liked notes, and board cleanup; use the single-note research section below for one shared note URL.
 
 ## 单篇笔记研究 / note research
 
@@ -23,7 +23,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 ## 用户目标口径
 
-当用户要求整理“小红书收藏 / 我的收藏 / 专辑分类”时，默认目标是：进入当前已登录账号的“我的页面/收藏”，完整阅览并抓取收藏笔记，重点收集笔记标题、作者、链接、现有专辑、封面/OCR 文本等可分类信息；整理或重建专辑体系；把所有收藏笔记合理归档进对应主题专辑。
+当用户要求整理“小红书收藏 / 点赞 / 我的收藏 / 专辑分类”时，先询问范围：**“这次按收藏整理、按点赞整理，还是我全都要？”** 用户回答“收藏”就只整理收藏里的笔记；回答“点赞”就只整理点赞里的笔记；回答“我全都要 / 全部 / 都要”就把点赞和收藏合并去重后一起整理。进入当前已登录账号对应页面，完整阅览并抓取目标范围内的笔记，重点收集笔记标题、作者、链接、来源列表（收藏/点赞）、现有专辑、封面/OCR 文本等可分类信息；整理或重建专辑体系；把目标范围内笔记合理归档进对应主题专辑。
 
 允许的动作：
 - 可核对目标专辑是否已存在，并把缺失专辑写入 `created_boards.json`；创建、删除、重命名专辑必须另行取得用户明确授权。
@@ -32,11 +32,16 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 硬性边界：
 - 所有收藏笔记不允许删除；“取消收藏”只能作为重新加入目标专辑的中间动作，必须确保最终仍被收藏并归入目标专辑。
+- 选择“点赞”或“我全都要”时，不得取消点赞、删除互动记录或把点赞来源静默丢弃；抓取和报告中必须保留 `source_lists` / `source_primary`，能区分笔记来自收藏、点赞或二者都有。
 - 不得把未分类、抓取失败或移动失败的笔记静默丢弃；必须写入 `retry_queue.json` / `run_report.json`。
 - 删除或清理专辑前必须先核验该专辑内笔记已迁移或无需保留在该专辑；不得因专辑分类重构导致笔记丢失。
 - 不得把完整小红书 URL query、`xsec_token`、cookie、signed media URL、`sign` 参数或任何疑似凭据写入模型上下文、正式报告、Telegram/Discord 回复或日志摘要；只保留标准 `/explore/<note_id>`、标题、作者、公开计数和分类所需普通文本。历史上完整 `xsec_token` 链接曾触发 GPT `cyber_policy` 误判。
 
 ## 稳定工作流
+0. 先询问整理范围：收藏、点赞、还是我全都要。只有用户已在本轮明确说了范围，才可跳过此问。
+   - 收藏：抓取收藏页，`source=collection`。
+   - 点赞：抓取点赞页，`source=liked`。
+   - 我全都要：先抓收藏再抓点赞，按 note id 合并去重；同一笔记同时在收藏和点赞中出现时，`source_lists` 应包含两个来源。
 1. 检查环境：操作系统、浏览器网页登录态、浏览器自动化后端、OCR 后端。
    - **启动本 skill 后必须先运行 OCR 检测**：执行 `python3 scripts/check_environment.py`（Windows 可用 `python scripts/check_environment.py`），读取 `ocr_ready` / `image_text_recognition_ready`。
    - **只有 OCR 可用时，才开启图片文字识别参与分类**。如果 `ocr_ready=false`，不得假装已识别图片文字，也不得把图片文字识别结果写成成功；应先询问用户是否需要安装 OCR 功能，并解释：安装 OCR 的目的是识别收藏封面/图片中的中文文字，从而提高小红书笔记分类和专辑归档准确性。
@@ -46,10 +51,15 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
    - 如果 Chrome 未登录但用户说“用 Safari”，立即切换 Safari，打开 `https://www.xiaohongshu.com/explore` 并验证 Safari 登录态，不要继续卡在 Chrome。
    - 如果目标浏览器未登录：明确告诉用户需要扫码登录；同时启动后台登录态轮询（建议每 5 分钟一次），检测到登录成功后自动续跑，不要把“等待登录”当成任务完成。
    - 登录态判断优先读取页面文本：出现“手机号登录 / 登录后推荐 / 马上登录即可 / 扫码”等视为未登录；未出现这些且页面已显示用户态内容再继续。
+   - Safari 抓取收藏页前应显式 `window.scrollTo(0,0)` 或重新导航到目标收藏 URL 后从顶部开始；如果从页面中部开始，虚拟列表/瀑布流可能只抓到后半段，导致把 223 条有效笔记误抓成 115 条。
+   - 不要把小红书 UI 收藏总数当作有效笔记总量。用户已确认其账号里 `笔记・276` 包含失效/不可访问收藏；整理与归档核验应以 Safari 全量抓取 + 专辑 API 可返回的有效笔记为准（当前有效口径曾核验为 223），页面总数差额可记录为失效/缓存计数，不应尝试移动或修复不存在的笔记对象。
    - Safari 自动化细节见 `references/safari-web-automation-notes.md`。
-2. 抓取收藏页当前实际可见条目，写入 `visible_items.json`，并同时写出 `crawl_manifest.json` 记录 `item_count`、`stopped_reason`、页面元信息和滚动快照；如果 `stopped_reason=max_scrolls_reached`，不得声称已经全量完成，只能说完成了当前滚动预算内的只读抓取。
-   - macOS Chrome 执行复杂/长 JS 时，不要把整段 JS 直接插入 AppleScript `execute javascript "..."` 字符串；这容易触发 `预期是“\"”，却找到未知的记号 (-2741)`。应把 JS 写入临时 `.js` 文件，用 AppleScript `read POSIX file ... as «class utf8»` 读入变量后 `execute javascript jsSource`，执行后删除临时文件。
-   - 每次修浏览器抓取器后，至少跑一次真实登录态的只读探针：`python3 scripts/extract_visible_items.py /tmp/xhs-visible-probe.json --backend macos-chrome --manifest /tmp/xhs-crawl-manifest-probe.json --max-scrolls 2 --scroll-pause 1`；Windows 用 `--backend playwright --channel chrome|msedge` 或 `--cdp-url`。
+  - Safari 多标签页时，不要默认操作 front window/current tab；应优先定位 URL 包含 `xiaohongshu.com` 的标签页，否则容易在 B 站/其它网页上执行并误判失败。
+2. 抓取用户所选范围的当前实际可见条目，写入 `visible_items.json`，并同时写出 `crawl_manifest.json` 记录 `item_count`、`source`、`stopped_reason`、页面元信息和滚动快照；如果 `stopped_reason=max_scrolls_reached`，不得声称已经全量完成，只能说完成了当前滚动预算内的只读抓取。
+   - **Safari 抓全量前先回到页面顶部**：如果 Safari 当前停在收藏页中下部，直接抓取会只统计从当前位置之后逐步加载出的条目，导致明显低估（实测中途起抓只得 115，先 `window.scrollTo(0,0)` 后重跑得 223）。全量核验前先执行顶部复位，再跑 `extract_visible_items.py --backend macos-safari --max-scrolls`。
+   - macOS Chrome 执行复杂/长 JS 时，不要把整段 JS 直接插入 AppleScript `execute javascript \"...\"` 字符串；这容易触发 `预期是“\\\"”，却找到未知的记号 (-2741)`。应把 JS 写入临时 `.js` 文件，用 AppleScript `read POSIX file ... as «class utf8»` 读入变量后 `execute javascript jsSource`，执行后删除临时文件。
+   - 每次修浏览器抓取器后，至少跑一次真实登录态的只读探针：`python3 scripts/extract_visible_items.py /tmp/xhs-visible-probe.json --backend macos-chrome --manifest /tmp/xhs-crawl-manifest-probe.json --max-scrolls 2 --scroll-pause 1 --source collection`；Windows 用 `--backend playwright --channel chrome|msedge` 或 `--cdp-url`。
+   - “我全都要”抓取命令范式：先打开收藏页运行 `python3 scripts/extract_visible_items.py visible_items.json --source collection`；再打开点赞页运行 `python3 scripts/extract_visible_items.py visible_items.json --source liked --append-existing`。两次输出会按 note id 合并，并保留来源列表。
 3. 对全部条目封面图执行 OCR，写入 `ocr_results.json`。
 4. 如果用户选择不动已有专辑，先用 `scripts/build_existing_boards_inventory.py` 建立 `existing_boards_inventory.json`。
 5. 生成 `classification.json`，默认复用 OCR 结果；缺失时自动补跑 OCR。传入 `--existing-boards-inventory` 时，默认排除已有专辑里的笔记，只有显式传 `--include-existing-boards` 才纳入。
@@ -65,13 +75,18 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
    - 已验证细节见 `references/safari-xhs-board-batch-move-verified.md`。
 9. 每条实时写入 `run_report.json`，失败项同步写入 `retry_queue.json`。
 10. 批次结束后重新抓取目标专辑样本并做数量核对，Safari 回退路径优先用 `U_` + `Ks` 做最终核验。
+    - 当用户反馈“专辑里的笔记数量和笔记总量不一致”时，先做只读三方核对，不要立即执行移动：
+      1. Safari 收藏页从顶部全量滚动抓取，得到收藏页可访问笔记集合 A。
+      2. 通过 `window.__INITIAL_STATE__.board.boardListData` / webpack runtime 中的 `yC` 列专辑，通过 `Ks` 分页抓每个专辑的真实笔记集合 B。
+      3. 比较 `A - B`（收藏页可见但不在任何专辑）、`B - A`、专辑列表显示计数 vs `Ks` 实际返回计数、重复 noteId。
+      4. 如果 `A == B` 但 UI 总数或专辑卡片计数更大，结论应是小红书缓存/失效/不可见笔记口径差异；不能声称有可移动的缺失笔记，也不要为了修计数执行 `note/move`。
 
 ## 图文收藏整理与专辑规划流程
 
-当用户目标是整理“所有收藏图文 / 图文笔记 / 收藏夹整体分类”时，采用先规划、再执行的两阶段流程：
+当用户目标是整理“所有收藏图文 / 所有点赞图文 / 图文笔记 / 收藏夹整体分类”时，采用先确定来源范围、再规划、再执行的两阶段流程：
 
-1. 全量抓取收藏条目
-   - 先抓取一遍所有收藏条目，区分图文笔记、视频笔记和不可识别条目。
+1. 全量抓取目标范围条目
+   - 按用户选择抓取收藏、点赞或二者合并后的所有条目，区分图文笔记、视频笔记和不可识别条目。
    - 图文笔记优先下载/保存可访问的图片、标题、正文摘要、作者、标签、链接、现有专辑等信息；这些素材可以作为大模型分类输入。
    - 不要只依赖当前可见卡片；需要滚动/翻页直到覆盖收藏列表，并把抓取覆盖情况写入 `visible_items.json`。
 
@@ -95,11 +110,11 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
    - 归档完成后必须核验目标专辑样本、数量变化和失败项；未成功归档的条目写入 `retry_queue.json`。
 
 ## 输入
-- 当前已登录的小红书收藏页 / 专辑页
+- 当前已登录的小红书收藏页 / 点赞页 / 专辑页
 - 用户给定或确认后的专辑体系 JSON
 - 用户确认后的已有专辑处理策略：`include_existing_boards=true/false`
 - `existing_boards_inventory.json`
-- 已抓取的 `visible_items.json`
+- 已抓取的 `visible_items.json`，每条建议包含 `source_lists` / `source_primary` 表示来自收藏、点赞或二者都有
 - 已下载/提取的图文素材与 OCR/视觉结果
 - 历史 `run_report.json` / `retry_queue.json`
 
@@ -179,6 +194,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 ## 关联资源
 - 执行脚本：`scripts/`
 - 输入输出契约：`references/io-contract.md`
+- 收藏 / 点赞来源范围选择与“我全都要”合并：`references/source-scope-selection.md`
 - 恢复与续跑：`references/recovery-and-resume.md`
 - 环境检查：`references/environment-and-limitations.md`
 - Windows Playwright/CDP + OCR 支持：`references/windows-playwright-ocr-notes.md`
@@ -194,6 +210,19 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 不要把内容包装成“程序员开源项目发布”；小红书首屏应先打泛用户痛点：收藏夹太乱、收藏了找不到、杂项灵感爆炸。输出时优先给用户可直接复制的标题、封面文案、正文、置顶评论和标签，并提醒第一版不要承诺“任何人下载就能直接用”或“一键整理所有收藏”。
 
 发布策略要围绕收藏率、评论入口和系列化展开：封面表达“混乱收藏夹 → 自动分类整理”；正文自然引导“先收藏，后续发从 0 安装教程”；评论区引导“教程 / Windows”等关键词；建议拆成痛点展示、安装教程、真实整理案例三篇。详细模板见 `references/xiaohongshu-publishing-playbook.md`。
+
+## 当用户要求“把 skill 变成可以公开发布状态”时
+
+不要只给建议或只检查本机目录；要主动完成发布闭环：同步 GitHub、跑发布前验证、再用新下载版复核。推荐流程：
+
+1. 临时 clone 公开仓库，而不是直接在本机安装目录里提交：`git clone https://github.com/<owner>/<repo>.git /tmp/<work>/repo`。
+2. 从本机 skill 目录同步完整可发布内容到 clone，排除 `.git/`、`__pycache__/`、`*.pyc` 和运行产物 `visible_items.json` / `ocr_results.json` / `classification.json` / `created_boards.json` / `run_report.json` / `retry_queue.json`。
+3. 检查 diff，尤其是 `SKILL.md`、`README.md`、`references/`、`scripts/`；如果新增 reference 被 `SKILL.md` 引用，必须确保文件也被同步。
+4. 在 clone 中跑发布前验证：`python3 -m compileall -q .`、`python3 -m unittest discover -s tests -p 'test_*.py'`、`check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` dry-run、`build_retry_queue.py`、`summarize_run_report.py`，并用临时 `HERMES_HOME` 验证 `hermes skills list` 能识别。
+5. 提交并推送 main 后，不要立即宣布完成；重新 `git clone --depth 1` 和下载 `main.zip`，再比较新下载版与本机 skill 目录是否无差异，并重复关键 smoke。
+6. 最终回复必须给出 commit hash、验证项目和公开发布口径；仍要提醒真实移动收藏需要用户已登录并显式 `--execute`。
+
+详细审计标准见 `references/distribution-readiness-audit.md`。
 
 ## 当用户要求“测试下载后别人是否可用”时
 

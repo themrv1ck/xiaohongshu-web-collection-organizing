@@ -1,8 +1,8 @@
 # xiaohongshu-web-collection-organizing
 
-小红书网页端收藏整理 skill。它在用户自己的电脑上运行，读取已登录浏览器里的收藏页，抓取收藏条目，识别封面文字，生成专辑分类建议，并在用户显式授权后把收藏移动到目标专辑。
+小红书网页端收藏 / 点赞整理 skill。它在用户自己的电脑上运行，读取已登录浏览器里的收藏页或点赞页，按用户选择抓取收藏、点赞或二者合并后的条目，识别封面文字，生成专辑分类建议，并在用户显式授权后把目标范围内笔记移动到目标专辑。
 
-适合：收藏夹很乱、想按主题整理到专辑的人。
+适合：收藏夹或点赞列表很乱、想按主题整理到专辑的人。
 
 不适合：未登录小红书网页端、想绕过浏览器授权、想无确认批量改账号数据的人。
 
@@ -10,12 +10,13 @@
 
 - 可被 Hermes Agent 安装和识别。
 - 支持 macOS 默认 Python 3.9+，不要求额外 Python 包。
-- 支持 macOS Chrome + AppleScript/JXA 抓取。
+- 支持 macOS Chrome + AppleScript/JXA 抓取收藏页、点赞页或当前小红书列表页。
 - 支持 macOS Swift + Vision OCR。
 - 支持 Windows Chrome/Edge + Playwright/CDP 抓取。
 - 支持 Tesseract / EasyOCR OCR。
 - 支持分类计划、dry-run 报告、retry queue、报告汇总。
 - 支持已有专辑排除清单，默认不移动用户决定保留的已有专辑内容。
+- 支持 `--source collection|liked|custom` 标记来源；支持 `--append-existing` 合并收藏和点赞，按 note id 去重，并保留 `source_lists`。
 - 支持真实批量移动收藏：默认不执行，必须显式传 `--execute`。
 - 真实移动后会查询目标专辑笔记列表，确认 note id 已出现后才记为 `success`。
 
@@ -131,13 +132,19 @@ python3 scripts/build_created_boards.py templates/board_taxonomy.template.json /
 
 ## 最短真实使用路径
 
-先在 Chrome 打开并登录小红书收藏页，然后在本机终端执行：
+先在 Chrome 打开并登录小红书。运行前先决定范围：收藏、点赞、还是二者都要。只整理收藏时打开收藏页；只整理点赞时打开点赞页；二者都要时先抓收藏再抓点赞。
 
 ```bash
 cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
 
 python3 scripts/check_environment.py
-python3 scripts/extract_visible_items.py visible_items.json
+# 收藏：打开收藏页后运行
+python3 scripts/extract_visible_items.py visible_items.json --source collection
+# 点赞：打开点赞页后运行
+# python3 scripts/extract_visible_items.py visible_items.json --source liked
+# 我全都要：先打开收藏页跑 collection，再打开点赞页追加合并
+# python3 scripts/extract_visible_items.py visible_items.json --source collection
+# python3 scripts/extract_visible_items.py visible_items.json --source liked --append-existing
 python3 scripts/ocr_cover_images.py visible_items.json ocr_results.json
 python3 scripts/classify_items.py visible_items.json classification.json --ocr-results ocr_results.json
 python3 scripts/run_reassign_batch.py classification.json run_report.json
@@ -163,7 +170,7 @@ python3 scripts/run_reassign_batch.py classification.json run_report.json --exec
 Windows / Edge 示例：
 
 ```powershell
-python scripts\extract_visible_items.py visible_items.json --backend playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
+python scripts\extract_visible_items.py visible_items.json --backend playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore --source collection
 python scripts\classify_items.py --skip-ocr visible_items.json classification.json
 python scripts\run_reassign_batch.py classification.json run_report.json --browser playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
 python scripts\run_reassign_batch.py classification.json run_report.json --execute --browser playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
@@ -171,7 +178,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --execu
 
 ## 输出文件
 
-- `visible_items.json`：抓取到的收藏条目
+- `visible_items.json`：抓取到的收藏 / 点赞条目；每条保留 `source_lists` / `source_primary` 来源标记
 - `ocr_results.json`：每条封面 OCR 结果
 - `existing_boards_inventory.json`：用户决定保留的已有专辑排除清单
 - `classification.json`：分类建议和 OCR 证据
@@ -184,7 +191,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --execu
 ## 脚本说明
 
 - `scripts/check_environment.py`：检查 Python、浏览器自动化、OCR。
-- `scripts/extract_visible_items.py`：抓取当前浏览器页面可见收藏条目。
+- `scripts/extract_visible_items.py`：抓取当前浏览器页面可见收藏 / 点赞 / 专辑条目，支持 `--source` 和 `--append-existing`。
 - `scripts/ocr_cover_images.py`：下载封面并执行 OCR。
 - `scripts/classify_items.py`：生成分类建议。
 - `scripts/build_existing_boards_inventory.py`：从已有专辑 JSON 生成排除清单。
@@ -208,6 +215,10 @@ python scripts\run_reassign_batch.py classification.json run_report.json --execu
 
 ```text
 用 xiaohongshu-web-collection-organizing 帮我整理小红书收藏夹。
+# 或
+用 xiaohongshu-web-collection-organizing 帮我整理小红书点赞。
+# 或
+用 xiaohongshu-web-collection-organizing 帮我把收藏和点赞一起整理。
 ```
 
 如果当前浏览器未登录，先登录小红书网页端，再让 Hermes 继续。

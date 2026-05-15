@@ -11,14 +11,17 @@ from pathlib import Path
 from typing import Optional
 
 DEFAULT_RULES = {
-    '家居装修与收纳': ['家居', '装修', '餐边柜', '镜柜', '台盆柜', '厨房', '豪宅', '收纳', '客厅', '卧室'],
-    '穿搭发型与品味': ['穿搭', '时尚', '男士', '香水', '老钱风', '西装', 'ootd', 'vogue', 'chanel'],
+    'hermes': ['hermes', 'codex', 'token', 'skill', '自动分类'],
+    '家居装修与收纳': ['家居', '装修', '餐边柜', '镜柜', '台盆柜', '厨房', '豪宅', '收纳', '客厅', '卧室', '极简', '冰箱', '浴室', '咖啡角', '水吧台', '家政柜', '布置', '图纸', '洗漱台', '锅架', '不锈钢锅'],
+    '穿搭发型与品味': ['穿搭', '时尚', '男士', '香水', '老钱风', '西装', 'ootd', 'vogue', 'chanel', '高级感', '理发', '发型', '发油', '鞋', '莫卡辛', 't恤', '贵妇'],
     '滑雪': ['滑雪', '单板', '雪场', '固定器', '换刃', 'casi'],
-    '体态纠正与康复': ['走姿', '呼吸', '康复', '梨状肌', '崴脚', '一字马', '肚腩'],
-    '运动训练与体态': ['硬拉', '训练', '腿部力量', '跟练', '跑步动作'],
-    '效率系统与AI': ['app', '小组件', '收藏夹批量管理', '口播神器', '科研写作', '效率', 'ai'],
-    '摄影审美与创作': ['剪辑', '配乐', '徕卡', '字体', '故事感', '画线'],
-    '思考与成长': ['成长', '松弛感', '西西弗', '心智成熟', '探索新奇'],
+    '体态纠正与康复': ['走姿', '呼吸', '康复', '梨状肌', '崴脚', '一字马', '肚腩', '骨盆', '肩胛', '前屈', '拉伸', '呼吸法'],
+    '运动训练与体态': ['硬拉', '训练', '腿部力量', '跟练', '跑步动作', '跑步', '攀岩', '倒立', '半马', '深蹲', '卧推', '动物流', '弹跳', '体态'],
+    '效率系统与AI': ['app', '小组件', '收藏夹批量管理', '口播神器', '科研写作', '效率', 'ai', 'agent', '智能体', 'notion', '第二大脑', '工作原理'],
+    '摄影审美与创作': ['剪辑', '配乐', '徕卡', '字体', '故事感', '画线', '构图', '审美', '旅拍', '油画', '随手拍', '拍摄', '电影'],
+    '思考与成长': ['成长', '松弛感', '西西弗', '心智成熟', '探索新奇', '多巴胺', '大脑', '前额叶', '平庸', '拖延', '人生', '轨迹', '自控', '赚钱', '计划', '改变', '自己'],
+    '日本旅行与机位': ['日本', '东京', 'tokyo', '神社', '户隐', '富士山', '罗森', '自由行', '机位', '海外', '摩纳哥'],
+    '接口探测专辑': ['接口', '探测', 'api', '抓包', 'webhook', 'runtime', 'webpack', 'userid'],
 }
 
 
@@ -51,7 +54,7 @@ def load_taxonomy(path: Optional[Path]):
 def compute_rule_matches(blob: str, boards):
     matches = []
     board_set = set(boards or [])
-    for board, words in DEFAULT_RULES.items():
+    for index, (board, words) in enumerate(DEFAULT_RULES.items()):
         if board_set and board not in board_set:
             continue
         hits = []
@@ -59,8 +62,9 @@ def compute_rule_matches(blob: str, boards):
             if word.lower() in blob:
                 hits.append(word)
         if hits:
-            matches.append((board, hits))
-    return matches
+            matches.append((board, hits, index))
+    matches.sort(key=lambda item: (-len(item[1]), item[2]))
+    return [(board, hits) for board, hits, _ in matches]
 
 
 def infer_board(item: dict, ocr_entry: Optional[dict], boards):

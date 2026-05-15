@@ -64,6 +64,8 @@ def main():
             'ocr_confidence': (ocr_entry or {}).get('ocr_confidence'),
             'ocr_text': (ocr_entry or {}).get('ocr_text', ''),
             'ocr_image_url': (ocr_entry or {}).get('image_url') or item.get('cover_image_url', ''),
+            'source_lists': item.get('source_lists') or ([item.get('source_primary')] if item.get('source_primary') else []),
+            'source_primary': item.get('source_primary') or ((item.get('source_lists') or [''])[0] if isinstance(item.get('source_lists'), list) and item.get('source_lists') else ''),
         }
         if args.existing_boards_inventory and not args.include_existing_boards:
             source_board = existing_note_to_board.get(str(item_id))

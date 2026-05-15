@@ -13,6 +13,8 @@
     "desc": "男士西装与香水搭配",
     "tags": ["穿搭", "老钱风"],
     "card_text": "到底为什么叫他贵妇？ 男士西装与香水搭配 #穿搭 #老钱风",
+    "source_lists": ["收藏", "点赞"],
+    "source_primary": "收藏",
     "first_seen": 0
   }
 ]
@@ -66,6 +68,9 @@
 ```
 
 ### `classification.json`
+
+`source_lists` / `source_primary` 从 `visible_items.json` 透传，用于区分收藏、点赞或二者都有。
+
 ```json
 [
   {
@@ -78,7 +83,9 @@
     "ocr_status": "ok",
     "ocr_confidence": 0.93,
     "ocr_text": "老钱风西装 香水推荐",
-    "ocr_image_url": "https://ci.xiaohongshu.com/cover-1.jpg"
+    "ocr_image_url": "https://ci.xiaohongshu.com/cover-1.jpg",
+    "source_lists": ["收藏", "点赞"],
+    "source_primary": "收藏"
   },
   {
     "id": "694d3390000000002203ae33",
