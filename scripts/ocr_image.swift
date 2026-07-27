@@ -42,6 +42,12 @@ func run() throws {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
+    let recognitionLanguages = ["zh-Hans", "en-US"]
+    let supportedLanguages = try request.supportedRecognitionLanguages()
+    guard recognitionLanguages.allSatisfy({ supportedLanguages.contains($0) }) else {
+        throw OCRScriptError.visionFailed("Vision OCR does not support both zh-Hans and en-US on this Mac")
+    }
+    request.recognitionLanguages = recognitionLanguages
     if #available(macOS 13.0, *) {
         request.automaticallyDetectsLanguage = true
     }

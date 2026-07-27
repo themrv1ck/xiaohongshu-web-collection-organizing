@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "skill_version": "2.0.0",
+  "startup_mode": "quick",
+  "source": "collection",
+  "ocr_enabled": false,
+  "collection": {
+    "batch_size": 200,
+    "hard_max_batch_size": 200,
+    "pause_minutes": 3,
+    "auto_continue_after_pause": true
+  },
+  "review": {
+    "expand_album_items": false
+  },
+  "weekly_task": {
+    "enabled": false,
+    "weekday": null,
+    "time": null,
+    "processed_note_ids_file": "weekly_processed_note_ids.json",
+    "creates_classification_plan_only": true,
+    "requires_current_browser_confirmation": true,
+    "automatic_move": false
+  }
+}

@@ -1,4 +1,6 @@
-# Safari 小红书专辑批量移动：已验证路径
+# Safari 小红书专辑批量移动：历史取证（不可执行）
+
+> 这里记录的是一次历史验证，不是当前可执行路径。不得直接逐条调用 `d0`，也不得把它当作 UI/接口回退。真实移动只能走 `scripts/run_reassign_batch.py --execute --max-moves-per-session <1–200>`，并使用同一份 `xhs_safety_state.json`。
 
 ## 场景
 当网页端“收藏后加入专辑”弹层不稳定，且已经拿到目标 `boardId` 与候选 `noteId` 列表时，可直接在 Safari 当前页面的 webpack runtime 中调用真实前端 API 完成批量入专辑。
@@ -20,14 +22,9 @@
 4. 因此：在这个路径里，`d0` 返回空对象 `{}` 不应直接判定为失败；必须继续做专辑详情与笔记列表核验。
 5. UI 上的 `collect-wrapper` / 图标切换依旧不能作为“已入专辑”的证据，最终以 `U_` / `Ks` 结果为准。
 
-## 推荐批量执行顺序
-1. 从 `boardListData` 读取目标 `boardId`
-2. 准备候选 `noteId[]`
-3. 逐条调用 `d0({targetBoardId, notesId})`
-4. 批次结束后调用：
-   - `U_({resourceParams:{boardId}, params:{imageFormats:'jpg,webp,avif'}})`
-   - `Ks({params:{boardId, num:30, cursor:''}})`
-5. 用 `detail.total` 与 `notes.notes[].noteId` 做最终核验
+## 当前执行规则
+
+统一执行器会先建立本地计划、限制本次写入数、每条结果原子落盘，并在安全验证、登录、页面绑定失效或写入状态不确定时停止。核验必须另起只读会话，不能把历史 API 片段直接拼成新的批量操作。
 
 ## 风险与解释
 - 直接用同步 XHR 打 `/api/sns/web/v1/note/move` 可能得到 `500 create invoker failed, service: jarvis-gateway-default`，这不代表前端真实 API 不能用；优先复用 webpack runtime 中现成的前端方法。

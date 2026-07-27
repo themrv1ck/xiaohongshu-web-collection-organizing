@@ -1,0 +1,21 @@
+[
+  {
+    "id": "694d3390000000002203ae33",
+    "status": "success",
+    "main_topic": "单板滑雪固定器角度设置",
+    "content_summary": "解释固定器角度对站姿的影响，并建议按个人前后脚习惯调整。",
+    "target_board": "滑雪",
+    "confidence": "high",
+    "reason": [
+      "核心内容是单板滑雪装备设置",
+      "完整转写持续讨论固定器角度"
+    ],
+    "transcript_sha256": "aaf9c61a99dd4c0b7f8bced208796f564362ed64240c8b7e4221c056c2c9a363",
+    "analysis_provider": "mimo-vl-mlx",
+    "analysis_model": "/Users/example/Documents/MiMo-VL-7B-RL-2508/models/MiMo-VL-7B-RL-2508",
+    "analysis_provider_version": "mlx-vlm-0.5.0",
+    "analysis_basis": "transcript_only",
+    "visual_status": "not_enabled",
+    "error": ""
+  }
+]
