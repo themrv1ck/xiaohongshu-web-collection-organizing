@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import platform
+import re
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -22,6 +25,11 @@ from xhs_safety import (
 
 
 LOGIN_MARKERS = ('手机号登录', '登录后推荐', '马上登录即可', '扫码登录', '验证码登录')
+NOTE_ID_RE = re.compile(r'^[0-9a-f]{24}$', re.IGNORECASE)
+
+
+class ExecutionPreflightError(RuntimeError):
+    pass
 
 
 LIVE_API_RESOLVER_JS = r'''
@@ -408,6 +416,10 @@ def load_json(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def write_json(path: Path, data: Any) -> None:
     atomic_write_json(path, data)
 
@@ -575,10 +587,14 @@ def initial_report(classification: List[Dict[str, Any]], mode: str) -> Dict[str,
     return {
         'started_at': utc_now(),
         'mode': mode,
+        'ready_for_execute': False,
+        'blockers': [],
+        'board_validation_status': 'not_checked',
+        'membership_validation_status': 'not_checked',
         'visible_count': len(classification),
         'processed': [],
         'errors': [],
-        'missing_boards': [],
+        'missing_boards': None,
         'board_counts_before': {},
         'board_counts_after': {},
         'board_count_checks': {},
@@ -626,13 +642,277 @@ def filter_classification_for_resume(classification: List[Dict[str, Any]], previ
 def merge_report_chunk(report: Dict[str, Any], chunk: Dict[str, Any]) -> None:
     report.setdefault('processed', []).extend(chunk.get('processed', []))
     report.setdefault('errors', []).extend(chunk.get('errors', []))
-    missing = report.setdefault('missing_boards', [])
+    missing = report.get('missing_boards')
+    if missing is None:
+        missing = []
+        report['missing_boards'] = missing
     for board in chunk.get('missing_boards', []):
         if board and board not in missing:
             missing.append(board)
     report.setdefault('board_counts_before', {}).update(chunk.get('board_counts_before', {}))
     report.setdefault('board_counts_after', {}).update(chunk.get('board_counts_after', {}))
     report.setdefault('board_count_checks', {}).update(chunk.get('board_count_checks', {}))
+
+
+def append_classification_preview(
+    report: Dict[str, Any],
+    item: Dict[str, Any],
+    allow_low_confidence: bool,
+) -> None:
+    status = 'preview_only'
+    events = ['preview:no_account_changes', 'preflight:not_run']
+    error = ''
+    if item.get('excluded') or item.get('exclude_reason'):
+        status = 'skipped'
+        events = ['skip:existing_board_excluded', 'preview:no_account_changes', 'preflight:not_run']
+        error = item.get('exclude_reason') or 'user_kept_existing_boards'
+    elif not item['id']:
+        status = 'failed'
+        error = 'missing note id'
+    elif not item['target_board']:
+        status = 'needs_review'
+        error = 'missing target_board'
+    elif item['confidence'] == 'low' and not allow_low_confidence:
+        status = 'needs_review'
+        error = 'low confidence classification; review before membership preflight'
+    report['processed'].append({
+        'id': item['id'],
+        'title': item['title'],
+        'target_board': item['target_board'],
+        'status': status,
+        'attempt': 0,
+        'events': events,
+        'error': error,
+        'source_board': item.get('source_board', ''),
+        'source_board_id': item.get('source_board_id', ''),
+        'membership_state': 'not_checked',
+        'source_lists': item.get('source_lists', []),
+        'source_primary': item.get('source_primary', ''),
+        'exclude_reason': item.get('exclude_reason', ''),
+    })
+    if status == 'failed':
+        report['errors'].append(report['processed'][-1])
+
+
+def _normalize_string_list(value: Any, field: str) -> List[str]:
+    if not isinstance(value, list):
+        raise ExecutionPreflightError(f'{field} must be an array')
+    result = []
+    for entry in value:
+        text = str(entry or '').strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def prepare_execution_preflight(
+    classification: List[Dict[str, Any]],
+    board_snapshot: Any,
+    created_boards: Any,
+    *,
+    allow_low_confidence: bool,
+) -> Dict[str, Any]:
+    blockers: List[str] = []
+    if not isinstance(board_snapshot, dict):
+        raise ExecutionPreflightError('board_snapshot must be an object')
+    source = board_snapshot.get('source')
+    validation = board_snapshot.get('validation')
+    boards = board_snapshot.get('boards')
+    if (
+        board_snapshot.get('mode') != 'read_only'
+        or not isinstance(source, dict)
+        or source.get('writes_performed') is not False
+    ):
+        blockers.append('board_snapshot_not_read_only')
+    if not isinstance(validation, dict):
+        blockers.append('board_snapshot_validation_missing')
+        validation = {}
+    if validation.get('pagination_cursor_invariants_passed') is not True:
+        blockers.append('board_pagination_incomplete')
+    if validation.get('full_membership_complete') is not True:
+        blockers.append('full_membership_incomplete')
+    if validation.get('within_board_duplicates'):
+        blockers.append('within_board_duplicates')
+    if not isinstance(boards, list) or not boards:
+        raise ExecutionPreflightError('board_snapshot.boards must be a non-empty array')
+
+    board_by_name: Dict[str, Dict[str, str]] = {}
+    board_by_id: Dict[str, Dict[str, str]] = {}
+    membership: Dict[str, List[Dict[str, str]]] = {}
+    board_counts: Dict[str, int] = {}
+    board_count_checks: Dict[str, Dict[str, Any]] = {}
+    for index, board in enumerate(boards):
+        if not isinstance(board, dict):
+            raise ExecutionPreflightError(f'board_snapshot.boards[{index}] must be an object')
+        board_id = str(board.get('id') or '').strip()
+        board_name = str(board.get('name') or '').strip()
+        note_ids = board.get('note_ids')
+        if not NOTE_ID_RE.fullmatch(board_id) or not board_name or not isinstance(note_ids, list):
+            raise ExecutionPreflightError(f'board_snapshot.boards[{index}] has invalid id/name/note_ids')
+        if board_id in board_by_id or board_name in board_by_name:
+            raise ExecutionPreflightError('board snapshot board ids and names must be unique')
+        normalized_board = {'id': board_id, 'name': board_name}
+        board_by_id[board_id] = normalized_board
+        board_by_name[board_name] = normalized_board
+        normalized_note_ids = []
+        for note_id_value in note_ids:
+            note_id = str(note_id_value or '').strip()
+            if not NOTE_ID_RE.fullmatch(note_id):
+                raise ExecutionPreflightError(f'board {board_name} contains invalid note id')
+            normalized_note_ids.append(note_id)
+            membership.setdefault(note_id, []).append({
+                'board_id': board_id,
+                'board_name': board_name,
+            })
+        if len(normalized_note_ids) != len(set(normalized_note_ids)):
+            blockers.append(f'within_board_duplicates:{board_name}')
+        declared_total = board.get('declared_total')
+        accessible_total = len(set(normalized_note_ids))
+        if declared_total != accessible_total:
+            blockers.append(f'board_count_mismatch:{board_name}')
+        board_counts[board_name] = accessible_total
+        board_count_checks[board_name] = {
+            'declared_total': declared_total,
+            'accessible_total': accessible_total,
+            'count_mismatch': declared_total != accessible_total,
+            'page_count': board.get('page_count'),
+        }
+
+    if not isinstance(created_boards, dict):
+        raise ExecutionPreflightError('created_boards must be an object')
+    confirmed_boards = set(_normalize_string_list(created_boards.get('confirmed'), 'created_boards.confirmed'))
+    declared_missing = set(_normalize_string_list(created_boards.get('missing'), 'created_boards.missing'))
+
+    resolved_items: List[Dict[str, Any]] = []
+    required_targets = set()
+    missing_targets = set()
+    membership_counts = {
+        'already_in_target': 0,
+        'in_other_board': 0,
+        'not_in_any_board': 0,
+        'needs_review': 0,
+        'excluded': 0,
+    }
+    for index, item in enumerate(classification):
+        resolved = dict(item)
+        resolved['membership_state'] = 'not_required'
+        actionable = all([
+            not item.get('excluded'),
+            not item.get('exclude_reason'),
+            bool(item.get('id')),
+            bool(item.get('target_board')),
+            item.get('confidence') != 'low' or allow_low_confidence,
+        ])
+        if not actionable:
+            membership_counts['excluded' if item.get('excluded') or item.get('exclude_reason') else 'needs_review'] += 1
+            resolved_items.append(resolved)
+            continue
+
+        note_id = str(item.get('id') or '').strip()
+        target_board = str(item.get('target_board') or '').strip()
+        required_targets.add(target_board)
+        if not NOTE_ID_RE.fullmatch(note_id):
+            blockers.append(f'invalid_note_id:{index}')
+            resolved_items.append(resolved)
+            continue
+        target = board_by_name.get(target_board)
+        if not target or target_board not in confirmed_boards or target_board in declared_missing:
+            missing_targets.add(target_board)
+            resolved_items.append(resolved)
+            continue
+
+        refs = membership.get(note_id, [])
+        unique_refs = {
+            (ref['board_id'], ref['board_name'])
+            for ref in refs
+        }
+        if len(unique_refs) > 1:
+            blockers.append(f'ambiguous_membership:{note_id}')
+            resolved['membership_state'] = 'ambiguous'
+            resolved_items.append(resolved)
+            continue
+        if not unique_refs:
+            resolved['membership_state'] = 'not_in_any_board'
+            resolved['source_board'] = ''
+            resolved['source_board_id'] = ''
+            membership_counts['not_in_any_board'] += 1
+        else:
+            source_board_id, source_board_name = next(iter(unique_refs))
+            if source_board_id == target['id']:
+                resolved['membership_state'] = 'already_in_target'
+                resolved['excluded'] = True
+                resolved['exclude_reason'] = 'already_in_target'
+                resolved['source_board'] = source_board_name
+                resolved['source_board_id'] = source_board_id
+                membership_counts['already_in_target'] += 1
+            else:
+                resolved['membership_state'] = 'in_other_board'
+                resolved['source_board'] = source_board_name
+                resolved['source_board_id'] = source_board_id
+                membership_counts['in_other_board'] += 1
+        resolved_items.append(resolved)
+
+    for target in sorted(required_targets):
+        if target not in board_by_name or target not in confirmed_boards or target in declared_missing:
+            missing_targets.add(target)
+    blockers.extend(f'missing_target_board:{name}' for name in sorted(missing_targets))
+    blockers = list(dict.fromkeys(blockers))
+    ready = not blockers
+    return {
+        'ready_for_execute': ready,
+        'blockers': blockers,
+        'board_validation_status': 'verified' if ready else 'blocked',
+        'membership_validation_status': 'verified' if ready else 'blocked',
+        'missing_boards': sorted(missing_targets),
+        'required_target_boards': sorted(required_targets),
+        'membership_counts': membership_counts,
+        'resolved_items': resolved_items,
+        'board_counts_before': {
+            name: board_counts[name]
+            for name in sorted(required_targets)
+            if name in board_counts
+        },
+        'board_count_checks': {
+            name: board_count_checks[name]
+            for name in sorted(required_targets)
+            if name in board_count_checks
+        },
+        'snapshot_source': source if isinstance(source, dict) else {},
+    }
+
+
+def execution_binding_blockers(snapshot_source: Any, args: argparse.Namespace) -> List[str]:
+    if not isinstance(snapshot_source, dict):
+        return ['snapshot_source_missing']
+    blockers = []
+    try:
+        backend = choose_backend(args.browser)
+    except RuntimeError:
+        return ['browser_not_explicit']
+    snapshot_browser = str(snapshot_source.get('browser') or '').strip().lower()
+    if snapshot_browser != backend:
+        blockers.append('snapshot_browser_changed')
+    snapshot_user_id = str(snapshot_source.get('user_id') or '').strip()
+    current_user_id = str(getattr(args, 'user_id', '') or '').strip()
+    if not NOTE_ID_RE.fullmatch(snapshot_user_id) or current_user_id != snapshot_user_id:
+        blockers.append('snapshot_user_changed')
+    snapshot_url = str(snapshot_source.get('expected_url_substring') or '').strip()
+    current_url = str(
+        getattr(args, 'expected_url_substring', '')
+        or getattr(args, 'arc_expected_url_substring', '')
+        or ''
+    ).strip()
+    if not snapshot_url or current_url != snapshot_url:
+        blockers.append('snapshot_page_binding_changed')
+    snapshot_safety_state = str(snapshot_source.get('safety_state') or '').strip()
+    current_safety_state = str(getattr(args, 'safety_state', '') or '').strip()
+    if (
+        not snapshot_safety_state
+        or not current_safety_state
+        or Path(snapshot_safety_state).resolve() != Path(current_safety_state).resolve()
+    ):
+        blockers.append('snapshot_safety_session_changed')
+    return blockers
 
 
 def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confidence: bool) -> None:
@@ -662,6 +942,7 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
         'error': error,
         'source_board': item.get('source_board', ''),
         'source_board_id': item.get('source_board_id', ''),
+        'membership_state': item.get('membership_state', ''),
         'source_lists': item.get('source_lists', []),
         'source_primary': item.get('source_primary', ''),
         'exclude_reason': item.get('exclude_reason', ''),
@@ -677,7 +958,11 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
         'verifyPages': args.verify_pages,
         'userId': args.user_id or '',
         'expectedTabMarker': getattr(args, 'arc_tab_marker', '') or '',
-        'expectedUrlSubstring': getattr(args, 'arc_expected_url_substring', '') or '',
+        'expectedUrlSubstring': (
+            getattr(args, 'expected_url_substring', '')
+            or getattr(args, 'arc_expected_url_substring', '')
+            or ''
+        ),
     }
     browser_job = r"""
 (function() {
@@ -1187,7 +1472,7 @@ def execute_batch(classification: List[Dict[str, Any]], report: Dict[str, Any], 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='批量移动小红书收藏到 classification.json 指定专辑。默认 dry-run，不改账号。')
+    parser = argparse.ArgumentParser(description='在专辑与成员关系硬闸门通过后，批量移动小红书收藏。无闸门证据时只输出分类预览。')
     parser.add_argument('classification', help='classification.json 路径')
     parser.add_argument('report', nargs='?', default='run_report.json', help='run_report.json 输出路径')
     parser.add_argument('--execute', action='store_true', help='真实移动收藏；不传则只生成计划')
@@ -1202,17 +1487,25 @@ def main() -> None:
     parser.add_argument('--arc-tab-id', default='', help='Arc 真实执行必填：工作标签页的 Arc AppleScript 唯一 id')
     parser.add_argument('--arc-tab-marker', default='', help='Arc 真实执行必填：预先单独写入工作标签页 window.name 的唯一标记；执行器只核验，不自动设置')
     parser.add_argument('--arc-expected-url-substring', default='', help='Arc 真实执行必填：预期收藏/专辑页 URL 的稳定片段；执行和轮询每次都重新核对')
-    parser.add_argument('--user-id', default='', help='可选：当页面 state 没有专辑列表时，用当前账号 user id 查询专辑')
+    parser.add_argument('--expected-url-substring', default='', help='执行页 URL 必须包含的稳定片段；真实执行时必须与只读专辑快照绑定一致')
+    parser.add_argument('--user-id', default='', help='真实执行时必填且必须与只读专辑快照账号一致；也用于页面 state 没有专辑列表时查询专辑')
     parser.add_argument('--url', default=None, help='Playwright 模式下可选：打开指定小红书页面')
     parser.add_argument('--channel', default='chromium', help='Playwright channel：chrome、msedge、chromium；默认使用 Playwright 自带 chromium')
     parser.add_argument('--user-data-dir', default=None, help='Playwright 持久化浏览器资料目录')
     parser.add_argument('--cdp-url', default=None, help='连接已启动 Chrome/Edge 的 CDP 地址')
     parser.add_argument('--headless', action='store_true', help='Playwright 新开浏览器时使用 headless；登录场景通常不要开启')
     parser.add_argument('--resume', action='store_true', help='读取已有 run_report.json，跳过已经 success 且核验过的条目')
+    parser.add_argument('--board-snapshot', default='', help='capture_board_snapshot.py 生成的只读全专辑快照；与 --created-boards 同时提供后才生成可执行 dry-run')
+    parser.add_argument('--created-boards', default='', help='build_created_boards.py 生成的目标专辑核验结果；与 --board-snapshot 同时提供')
     args = parser.parse_args()
 
     classification = normalize_classification(load_json(args.classification))
-    mode = 'execute' if args.execute else 'dry_run'
+    has_snapshot = bool(str(args.board_snapshot or '').strip())
+    has_created_boards = bool(str(args.created_boards or '').strip())
+    has_preflight_inputs = has_snapshot and has_created_boards
+    if has_snapshot != has_created_boards:
+        raise SystemExit('--board-snapshot 与 --created-boards 必须同时提供')
+    mode = 'execute' if args.execute else ('dry_run' if has_preflight_inputs else 'classification_preview')
     report_path = Path(args.report)
     if not args.safety_state:
         args.safety_state = str(
@@ -1223,6 +1516,64 @@ def main() -> None:
             )
         )
     report = initial_report(classification, mode)
+    if has_preflight_inputs:
+        snapshot_path = Path(args.board_snapshot)
+        created_boards_path = Path(args.created_boards)
+        preflight = prepare_execution_preflight(
+            classification,
+            load_json(str(snapshot_path)),
+            load_json(str(created_boards_path)),
+            allow_low_confidence=args.allow_low_confidence,
+        )
+        classification = preflight.pop('resolved_items')
+        report.update(preflight)
+        report['board_snapshot'] = str(snapshot_path)
+        report['board_snapshot_sha256'] = sha256_file(snapshot_path)
+        report['created_boards'] = str(created_boards_path)
+        report['created_boards_sha256'] = sha256_file(created_boards_path)
+        report['classification_sha256'] = sha256_file(Path(args.classification))
+        if report['blockers']:
+            report['mode'] = 'execute_blocked' if args.execute else 'dry_run_blocked'
+            report['finished_at'] = utc_now()
+            write_json(report_path, report)
+            print(json.dumps({
+                'mode': report['mode'],
+                'ready_for_execute': False,
+                'blockers': report['blockers'],
+                'report': str(report_path),
+            }, ensure_ascii=False, indent=2), file=sys.stderr)
+            raise SystemExit(1)
+        if args.execute:
+            binding_blockers = execution_binding_blockers(report.get('snapshot_source'), args)
+            if binding_blockers:
+                report['ready_for_execute'] = False
+                report['blockers'] = binding_blockers
+                report['mode'] = 'execute_blocked'
+                report['finished_at'] = utc_now()
+                write_json(report_path, report)
+                print(json.dumps({
+                    'mode': report['mode'],
+                    'ready_for_execute': False,
+                    'blockers': report['blockers'],
+                    'report': str(report_path),
+                }, ensure_ascii=False, indent=2), file=sys.stderr)
+                raise SystemExit(1)
+    else:
+        report['blockers'] = [
+            'board_validation_not_run',
+            'membership_validation_not_run',
+        ]
+        if args.execute:
+            report['mode'] = 'execute_blocked'
+            report['finished_at'] = utc_now()
+            write_json(report_path, report)
+            print(json.dumps({
+                'mode': report['mode'],
+                'ready_for_execute': False,
+                'blockers': report['blockers'],
+                'report': str(report_path),
+            }, ensure_ascii=False, indent=2), file=sys.stderr)
+            raise SystemExit(1)
     if args.resume and report_path.exists():
         previous = load_json(str(report_path))
         classification, preserved = filter_classification_for_resume(classification, previous)
@@ -1233,6 +1584,11 @@ def main() -> None:
 
     if args.execute:
         execute_batch(classification, report, args, report_path)
+    elif not has_preflight_inputs:
+        for item in classification:
+            append_classification_preview(report, item, args.allow_low_confidence)
+            report['updated_at'] = utc_now()
+            write_json(report_path, report)
     else:
         for item in classification:
             append_dry_run(report, item, args.allow_low_confidence)
@@ -1243,6 +1599,8 @@ def main() -> None:
     write_json(report_path, report)
     print(json.dumps({
         'mode': report['mode'],
+        'ready_for_execute': report['ready_for_execute'],
+        'blockers': report['blockers'],
         'processed_count': len(report['processed']),
         'error_count': len(report['errors']),
         'missing_boards': report['missing_boards'],

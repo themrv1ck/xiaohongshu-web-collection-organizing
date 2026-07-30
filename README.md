@@ -56,6 +56,7 @@
 │   ├── ocr_note_images.py
 │   ├── classify_items.py
 │   ├── build_existing_boards_inventory.py
+│   ├── capture_board_snapshot.py
 │   ├── build_created_boards.py
 │   ├── run_reassign_batch.py
 │   ├── build_retry_queue.py
@@ -288,10 +289,10 @@ python3 scripts/classify_items.py \
   --require-visual-analysis \
   --video-analysis video_analysis_visual.json
 
-python3 scripts/run_reassign_batch.py classification.json run_report.json
+python3 scripts/run_reassign_batch.py classification.json classification_preview.json
 ```
 
-最后一条仍是 dry-run。必须先展示 `classification.json` 中的视频主要内容、目标专辑、置信度和失败项，并再次取得用户确认，才能真实移动。
+最后一条只生成 `mode=classification_preview`，用于展示 `classification.json` 中的视频主要内容、目标专辑、置信度和失败项；它不是可执行 dry-run。必须再完成真实专辑与成员关系核验，报告出现 `ready_for_execute=true` 后，才能请求移动确认。
 
 长批次中 ASR 与持久 provider worker 各自只加载一次模型；转写和分析都原子写盘。每个小红书访问段完成后都停下，不自动续段；只有本地合并全部已保存段后，正式分类才要求分析文件覆盖所有明确视频。视觉模块关闭时只能生成 `transcript_only`。MiMo-VL 只分析画面，声音仍然来自平台字幕或 ASR。
 
@@ -307,12 +308,12 @@ python3 scripts/check_environment.py
 printf '{"boards":[{"name":"滑雪","notes":[{"id":"694d3390000000002203ae33","title":"固定器角度"}]}]}\n' > /tmp/xhs_existing_boards_source.json
 python3 scripts/build_existing_boards_inventory.py /tmp/xhs_existing_boards_source.json /tmp/xhs_existing_boards_inventory.json
 python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs_classification_skip.json
-python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_run_report_dry.json
-python3 scripts/build_retry_queue.py /tmp/xhs_run_report_dry.json /tmp/xhs_retry_queue.json
-python3 scripts/summarize_run_report.py /tmp/xhs_run_report_dry.json
+python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_classification_preview.json
+python3 scripts/build_retry_queue.py /tmp/xhs_classification_preview.json /tmp/xhs_retry_queue.json
+python3 scripts/summarize_run_report.py /tmp/xhs_classification_preview.json
 ```
 
-如果要核对目标专辑和已有专辑：
+没有 `board_snapshot.json` 和 `created_boards.json` 时，上述命令必须输出 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，不能输出 `planned`。如果要核对目标专辑：
 
 ```bash
 printf '{"boards":["杂项灵感","滑雪"]}\n' > /tmp/xhs_existing_boards.json
@@ -343,19 +344,34 @@ python3 scripts/ocr_note_images.py image_items.json ocr_results.json
 python3 scripts/classify_items.py image_items.json classification.json --ocr-results ocr_results.json
 # 图文 OCR 关闭：不要运行上面两条图片补齐/OCR 命令，改用：
 # python3 scripts/classify_items.py --skip-ocr visible_items.json classification.json
-python3 scripts/run_reassign_batch.py classification.json run_report.json
-python3 scripts/summarize_run_report.py run_report.json
+# 下面只生成分类预览，不代表专辑已核验
+python3 scripts/run_reassign_batch.py classification.json classification_preview.json
+python3 scripts/summarize_run_report.py classification_preview.json
 ```
 
-上面最后一步是 dry-run，只生成计划，不改小红书账号。
+上面最后一步只是分类预览，不改小红书账号，也不具备执行资格。
 
-确认 `classification.json` 里的目标专辑正确、目标专辑已经存在、低置信度条目已经人工复核后，先读取全部专辑的完整 `U_` + `Ks` 成员关系并生成执行清单：已在目标专辑的条目标记 `already_in_target` 后排除；未归档条目的 `source_board_id` 留空；已在其他专辑的条目写入真实 `source_board_id`。多来源或分页不完整时不要执行。
+确认 `classification.json` 的分类建议后，必须先通过用户本轮授权的浏览器读取全部专辑的完整 `yC + U_ + Ks` 成员关系，再生成目标专辑核验结果和可执行 dry-run：
 
 Arc 执行还必须提供稳定的窗口、标签页、`window.name` 标记和预期 URL：
 
 ```bash
+python3 scripts/capture_board_snapshot.py board_snapshot.json \
+  --browser arc --user-id '<user-id>' \
+  --expected-url-substring '<expected-path>' \
+  --arc-window-id '<window-id>' \
+  --arc-tab-id '<tab-id>' \
+  --arc-tab-marker '<window-name-marker>'
+python3 scripts/build_created_boards.py classification.json board_snapshot.json created_boards.json
 python3 scripts/run_reassign_batch.py classification.json run_report.json \
-  --execute --browser arc \
+  --board-snapshot board_snapshot.json \
+  --created-boards created_boards.json
+python3 scripts/summarize_run_report.py run_report.json
+# 只有上一步显示 mode=dry_run、ready_for_execute=true、blockers=[]，并取得用户再次确认，才运行：
+python3 scripts/run_reassign_batch.py classification.json run_report.json \
+  --board-snapshot board_snapshot.json \
+  --created-boards created_boards.json \
+  --execute --browser arc --user-id '<user-id>' \
   --max-moves-per-session <本次明确范围> \
   --arc-window-id '<window-id>' \
   --arc-tab-id '<tab-id>' \
@@ -365,14 +381,17 @@ python3 scripts/build_retry_queue.py run_report.json retry_queue.json
 python3 scripts/summarize_run_report.py run_report.json
 ```
 
-真实执行不接受浏览器 `auto`；必须把 `arc`、`chrome`、`safari` 或 `playwright` 写清楚，并且该浏览器已由用户在当前回合明确授权。Arc 执行器通过隐藏 DOM bridge 把任务注入页面 main world，再从 Rspack `req.m` 按精确 endpoint 唯一解析 `LN/B1/d0/Ks/yC/U_`；匹配不唯一就停止，不猜导出名。
+真实执行不接受浏览器 `auto`；必须把 `arc`、`chrome`、`safari` 或 `playwright` 写清楚，并且该浏览器已由用户在当前回合明确授权。缺少 `board_snapshot.json` 或 `created_boards.json` 时，脚本会在接触浏览器前拒绝执行。Arc 执行器通过隐藏 DOM bridge 把任务注入页面 main world，再从 Rspack `req.m` 按精确 endpoint 唯一解析 `LN/B1/d0/Ks/yC/U_`；匹配不唯一就停止，不猜导出名。
 
 未归档条目使用 `d0 -> U_/Ks`。只有输入显式包含且不同于目标专辑的真实 `source_board_id` 才走跨专辑事务：先预检来源存在、目标不存在，再执行紧邻的 `LN -> B1 -> d0(target) -> U_/Ks`；不会为首次写入失败追加一次写入。非安全错误执行 `LN -> B1 -> d0(source) -> U_/Ks` 严格回滚；安全验证、登录页、页面绑定失效或状态不确定会先写报告和 `xhs_safety_state.json`，立即停写且不追加回滚。每次只提交一条，达到本次上限后等待人工检查，不自动进入下一段。
 
 如果你使用 Safari：
 
 ```bash
-python3 scripts/run_reassign_batch.py classification.json run_report.json --execute --browser safari --max-moves-per-session <本次明确范围>
+python3 scripts/capture_board_snapshot.py board_snapshot.json --browser safari --user-id '<user-id>' --expected-url-substring '<expected-path>'
+python3 scripts/build_created_boards.py classification.json board_snapshot.json created_boards.json
+python3 scripts/run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json
+python3 scripts/run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json --execute --browser safari --user-id '<user-id>' --expected-url-substring '<expected-path>' --max-moves-per-session <本次明确范围>
 ```
 
 Windows / Edge 示例：
@@ -380,8 +399,10 @@ Windows / Edge 示例：
 ```powershell
 python scripts\extract_visible_items.py segment-001-visible.json --backend playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --source collection --capture-mode passive --segment-limit 200
 python scripts\classify_items.py --skip-ocr visible_items.json classification.json
-python scripts\run_reassign_batch.py classification.json run_report.json --browser playwright --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
-python scripts\run_reassign_batch.py classification.json run_report.json --execute --browser playwright --max-moves-per-session <本次明确范围> --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
+python scripts\capture_board_snapshot.py board_snapshot.json --browser playwright --user-id "<user-id>" --expected-url-substring "/user/profile/" --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
+python scripts\build_created_boards.py classification.json board_snapshot.json created_boards.json
+python scripts\run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json
+python scripts\run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json --execute --browser playwright --user-id "<user-id>" --expected-url-substring "/user/profile/" --max-moves-per-session <本次明确范围> --channel msedge --user-data-dir "$env:USERPROFILE\.xhs-skill-browser-profile" --url https://www.xiaohongshu.com/explore
 ```
 
 ## 输出文件
@@ -394,8 +415,9 @@ python scripts\run_reassign_batch.py classification.json run_report.json --execu
 - `video_analysis.json`：所选 analysis provider 根据合格文字稿和/或完整时轴真实帧生成的主要内容、短摘要、目标专辑、置信度和理由；视觉项额外带可验证证据清单，纯文字项必须标明 `transcript_only`
 - `existing_boards_inventory.json`：用户决定保留的已有专辑排除清单
 - `classification.json`：分类建议；图文 OCR 成功时包含逐图证据和同一 `ocr_run_fingerprint`，非图文、跳过或未成功 OCR 的行指纹为空
+- `board_snapshot.json`：通过当前授权浏览器前端只读取得的全部专辑、完整分页成员关系及完整性检查
 - `created_boards.json`：目标专辑确认/缺失结果
-- `run_report.json`：dry-run 或真实移动报告
+- `run_report.json`：分类预览、硬闸门 dry-run 或真实移动报告；`ready_for_execute` 和 `blockers` 是唯一执行资格依据
 - `retry_queue.json`：失败项重试队列
 - `xhs_safety_state.json`：共享会话状态；`security_halted` 不能由 `--resume` 清除，也不保存 cookie、token 或签名 URL
 
@@ -414,8 +436,9 @@ python scripts\run_reassign_batch.py classification.json run_report.json --execu
 - `scripts/ocr_note_images.py`：对完整图片集合逐张下载并执行 OCR；任一图片失败时不使用部分 OCR 文本分类。缓存复用还要求 `ocr_run_fingerprint` 一致；该指纹绑定实际 provider、Tesseract 语言和 Swift OCR 脚本版本。
 - `scripts/classify_items.py`：生成分类建议。
 - `scripts/build_existing_boards_inventory.py`：从已有专辑 JSON 生成排除清单。
-- `scripts/build_created_boards.py`：核对目标专辑是否已存在。
-- `scripts/run_reassign_batch.py`：默认 dry-run；真实执行必须传 `--execute --max-moves-per-session <1–200>`，达到上限只落盘。安全异常会写 `xhs_safety_state.json` 并阻止续跑；它不自动生成全专辑成员关系。
+- `scripts/capture_board_snapshot.py`：在用户本轮授权的浏览器中，通过前端 `yC + U_ + Ks` 只读生成全部专辑成员快照；分页或数量不完整会明确标记。
+- `scripts/build_created_boards.py`：用 `classification.json` 和真实 `board_snapshot.json` 核对本次目标专辑是否存在。
+- `scripts/run_reassign_batch.py`：没有两份专辑证据时只输出不可执行的分类预览；同时传入 `--board-snapshot` 和 `--created-boards` 且硬闸门通过后才输出 dry-run。真实执行还必须传 `--execute --max-moves-per-session <1–200>`，达到上限只落盘。
 - `scripts/verify_board_membership.py`：只读抓取全部专辑成员，并核验一批已执行移动的来源、目标和全局唯一性。
 - `scripts/verify_classification_membership.py`：移动完成后只读复抓全部专辑，核验完整分类中所有已放行视频都只出现一次且位于目标专辑；空目标、低置信度和待复核视频单独列出。
 - `scripts/build_retry_queue.py`：从运行报告生成重试队列。

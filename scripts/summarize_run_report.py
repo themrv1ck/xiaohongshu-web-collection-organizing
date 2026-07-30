@@ -14,11 +14,15 @@ def main():
     statuses = Counter(item.get('status', 'unknown') for item in report.get('processed', []))
     summary = {
         'mode': report.get('mode'),
+        'ready_for_execute': report.get('ready_for_execute', False),
+        'blockers': report.get('blockers', []),
+        'board_validation_status': report.get('board_validation_status', 'not_checked'),
+        'membership_validation_status': report.get('membership_validation_status', 'not_checked'),
         'visible_count': report.get('visible_count'),
         'processed_count': len(report.get('processed', [])),
         'status_counts': dict(sorted(statuses.items())),
         'error_count': len(report.get('errors', [])),
-        'missing_boards': report.get('missing_boards', []),
+        'missing_boards': report.get('missing_boards'),
         'board_counts_before': report.get('board_counts_before', {}),
         'board_counts_after': report.get('board_counts_after', {}),
     }

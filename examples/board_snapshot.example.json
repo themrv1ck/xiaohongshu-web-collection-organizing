@@ -1,0 +1,59 @@
+{
+  "generated_at": "2026-07-30T00:00:00Z",
+  "mode": "read_only",
+  "source": {
+    "browser": "safari",
+    "user_id": "111111111111111111111111",
+    "expected_url_substring": "/user/profile/",
+    "calls": [
+      "yC (read board/user)",
+      "U_ (read board detail)",
+      "Ks (read board/note)"
+    ],
+    "writes_performed": false
+  },
+  "boards": [
+    {
+      "id": "333333333333333333333333",
+      "name": "穿搭发型与品味",
+      "privacy": 0,
+      "declared_total": 0,
+      "accessible_unique_count": 0,
+      "declared_vs_accessible_delta": 0,
+      "page_count": 1,
+      "note_ids": []
+    },
+    {
+      "id": "222222222222222222222222",
+      "name": "滑雪",
+      "privacy": 0,
+      "declared_total": 1,
+      "accessible_unique_count": 1,
+      "declared_vs_accessible_delta": 0,
+      "page_count": 1,
+      "note_ids": [
+        "694d3390000000002203ae33"
+      ]
+    }
+  ],
+  "membership": {
+    "694d3390000000002203ae33": [
+      {
+        "board_id": "222222222222222222222222",
+        "board_name": "滑雪"
+      }
+    ]
+  },
+  "validation": {
+    "board_count": 2,
+    "board_names_unique": true,
+    "pagination_cursor_invariants_passed": true,
+    "accessible_note_occurrences": 1,
+    "accessible_unique_note_ids_across_boards": 1,
+    "duplicate_note_ids": [],
+    "multi_board_note_ids": [],
+    "within_board_duplicates": [],
+    "count_mismatch_boards": [],
+    "full_membership_complete": true
+  }
+}

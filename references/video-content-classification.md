@@ -309,10 +309,10 @@ python3 scripts/classify_items.py \
   --require-visual-analysis \
   --video-analysis video_analysis_visual.json
 
-python3 scripts/run_reassign_batch.py classification.json run_report.json
+python3 scripts/run_reassign_batch.py classification.json classification_preview.json
 ```
 
-最后一条命令只是 dry-run，不会修改小红书账号。
+最后一条命令只是分类预览，不会修改小红书账号，也不代表专辑和成员关系已经核验。真实 dry-run 前必须再生成 `board_snapshot.json`、`created_boards.json`，并确认报告为 `ready_for_execute=true`。
 
 上面并行启用的图文 OCR 仍遵守完整图片契约：列表页图片只能标为 observed 且 `image_urls_complete=false`，详情默认不访问，只有明确传 `--allow-detail-requests --max-items <1–200>` 才请求选定范围。详情 `noteData.type` 才是权威类型，只有详情 `noteData.imageList` 可声明图片集合完整。详情补齐遇到 `security_blocked` 时必须停止、写入 `xhs_safety_state.json`，且不能 `--resume` 重发；OCR 缓存只有在 `image_set_sha256` 与 `ocr_run_fingerprint` 同时一致时才可复用。该图文规则不得被用于根据视频封面、标题或简介猜测视频内容。
 
@@ -331,13 +331,17 @@ python3 scripts/run_reassign_batch.py classification.json run_report.json
 
 用户没有确认分类和目标专辑时，不得传 `--execute`。确认一次“开启视频内容分类”不等于授权真实移动收藏。
 
-生成 execute 清单前，必须先用 `U_` + `Ks` 完整分页核对全部专辑成员关系；`run_reassign_batch.py` 不会自动推断来源。已在目标专辑的条目标记 `already_in_target` 后排除并保持零写入；未归档条目的 `source_board_id` 留空；已在其他专辑的条目必须写入真实 `source_board_id`。多来源、来源不明确或分页不完整时停止复核。
+生成 execute 清单前，必须用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 完整分页生成 `board_snapshot.json`，再运行 `build_created_boards.py classification.json board_snapshot.json created_boards.json`。将两份证据传给 `run_reassign_batch.py` 后，脚本才会机械分流：已在目标专辑的标记 `already_in_target` 后排除并保持零写入；未归档条目的 `source_board_id` 留空；已在其他专辑的写入真实 `source_board_id`。多来源、来源不明确或分页不完整时硬闸门阻止执行。
 
 确认后使用 Arc 真实移动时，还必须先为独立工作标签页取得稳定的 Arc `window id`、`tab id`、预先写入 `window.name` 的稳定 marker，以及预期 URL 片段。执行器通过 `--arc-tab-marker` 核验该 `window.name`；任一缺失或不唯一就中止：
 
 ```bash
 python3 scripts/run_reassign_batch.py classification.json run_report.json \
-  --execute --browser arc --max-moves-per-session <本次明确范围> \
+  --board-snapshot board_snapshot.json \
+  --created-boards created_boards.json \
+  --execute --browser arc --user-id '<user-id>' \
+  --expected-url-substring '<expected-path>' \
+  --max-moves-per-session <本次明确范围> \
   --arc-window-id '<window-id>' \
   --arc-tab-id '<tab-id>' \
   --arc-tab-marker '<window-name-marker>' \

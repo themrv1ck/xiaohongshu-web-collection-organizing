@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, build_browser_job, choose_backend, execute_batch, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job  # noqa: E402
+from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, build_browser_job, choose_backend, execute_batch, execution_binding_blockers, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_execution_preflight  # noqa: E402
 from extract_visible_items import arc_js_macos, extract_with_js  # noqa: E402
 from xhs_ocr_common import detect_ocr_provider, infer_board, load_taxonomy, run_tesseract_ocr  # noqa: E402
 
@@ -174,7 +174,7 @@ function createTransactionModel(options) {
             with self.assertRaisesRegex(RuntimeError, 'chi_sim'):
                 run_tesseract_ocr(Path('/tmp/not-used.png'), languages='chi_sim+eng')
 
-    def test_dry_run_report_and_retry_queue(self):
+    def test_classification_preview_cannot_be_mistaken_for_execution_dry_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             classification = tmp_path / 'classification.json'
@@ -192,8 +192,15 @@ function createTransactionModel(options) {
             ], ensure_ascii=False), encoding='utf-8')
             self.run_script('run_reassign_batch.py', str(classification), str(report))
             data = json.loads(report.read_text(encoding='utf-8'))
-            self.assertEqual(data['mode'], 'dry_run')
-            self.assertEqual(data['processed'][0]['status'], 'planned')
+            self.assertEqual(data['mode'], 'classification_preview')
+            self.assertFalse(data['ready_for_execute'])
+            self.assertEqual(data['missing_boards'], None)
+            self.assertEqual(data['blockers'], [
+                'board_validation_not_run',
+                'membership_validation_not_run',
+            ])
+            self.assertEqual(data['processed'][0]['status'], 'preview_only')
+            self.assertEqual(data['processed'][0]['membership_state'], 'not_checked')
             self.assertEqual(data['processed'][0]['source_board_id'], 'source-board-1')
             self.assertEqual(data['processed'][1]['status'], 'needs_review')
             self.run_script('build_retry_queue.py', str(report), str(retry))
@@ -318,7 +325,291 @@ function createTransactionModel(options) {
             data = json.loads(out.read_text(encoding='utf-8'))
             self.assertEqual(data['confirmed'], ['滑雪'])
             self.assertEqual(data['missing'], ['体态纠正与康复'])
+            self.assertNotIn('', data['confirmed'])
+            self.assertNotIn('', data['missing'])
             self.assertTrue(data['action_required'])
+
+    def test_build_created_boards_accepts_classification_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            classification = tmp_path / 'classification.json'
+            snapshot = tmp_path / 'board_snapshot.json'
+            out = tmp_path / 'created_boards.json'
+            classification.write_text(json.dumps([
+                {'id': 'a' * 24, 'target_board': '滑雪'},
+                {'id': 'b' * 24, 'target_board': '体态纠正与康复'},
+                {'id': 'c' * 24, 'title': '不应成为专辑名', 'target_board': ''},
+            ], ensure_ascii=False), encoding='utf-8')
+            snapshot.write_text(json.dumps({
+                'boards': [
+                    {'id': 'd' * 24, 'name': '滑雪', 'note_ids': []},
+                ],
+            }, ensure_ascii=False), encoding='utf-8')
+            self.run_script(
+                'build_created_boards.py',
+                str(classification),
+                str(snapshot),
+                str(out),
+            )
+            data = json.loads(out.read_text(encoding='utf-8'))
+            self.assertEqual(data['confirmed'], ['滑雪'])
+            self.assertEqual(data['missing'], ['体态纠正与康复'])
+            self.assertNotIn('不应成为专辑名', data['missing'])
+
+    def test_verified_dry_run_resolves_membership_and_is_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            classification = tmp_path / 'classification.json'
+            snapshot = tmp_path / 'board_snapshot.json'
+            created = tmp_path / 'created_boards.json'
+            report = tmp_path / 'run_report.json'
+            target_a = 'a' * 24
+            target_b = 'b' * 24
+            already_id = '1' * 24
+            cross_id = '2' * 24
+            unassigned_id = '3' * 24
+            classification.write_text(json.dumps([
+                {
+                    'id': already_id, 'title': '已在目标',
+                    'target_board': '专辑A', 'confidence': 'high',
+                },
+                {
+                    'id': cross_id, 'title': '跨专辑',
+                    'target_board': '专辑B', 'confidence': 'high',
+                },
+                {
+                    'id': unassigned_id, 'title': '未归档',
+                    'target_board': '专辑B', 'confidence': 'medium',
+                },
+            ], ensure_ascii=False), encoding='utf-8')
+            snapshot.write_text(json.dumps({
+                'generated_at': '2026-07-30T00:00:00Z',
+                'mode': 'read_only',
+                'source': {
+                    'browser': 'safari',
+                    'user_id': 'f' * 24,
+                    'expected_url_substring': '/user/profile/',
+                    'writes_performed': False,
+                },
+                'boards': [
+                    {
+                        'id': target_a, 'name': '专辑A',
+                        'declared_total': 2, 'accessible_unique_count': 2,
+                        'declared_vs_accessible_delta': 0, 'page_count': 1,
+                        'note_ids': [already_id, cross_id],
+                    },
+                    {
+                        'id': target_b, 'name': '专辑B',
+                        'declared_total': 0, 'accessible_unique_count': 0,
+                        'declared_vs_accessible_delta': 0, 'page_count': 1,
+                        'note_ids': [],
+                    },
+                ],
+                'membership': {},
+                'validation': {
+                    'board_count': 2,
+                    'board_names_unique': True,
+                    'pagination_cursor_invariants_passed': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': True,
+                },
+            }, ensure_ascii=False), encoding='utf-8')
+            created.write_text(json.dumps({
+                'confirmed': ['专辑A', '专辑B'],
+                'created': [],
+                'missing': [],
+                'failed': [],
+                'action_required': '',
+            }, ensure_ascii=False), encoding='utf-8')
+            self.run_script(
+                'run_reassign_batch.py',
+                str(classification),
+                str(report),
+                '--board-snapshot',
+                str(snapshot),
+                '--created-boards',
+                str(created),
+            )
+            data = json.loads(report.read_text(encoding='utf-8'))
+            self.assertEqual(data['mode'], 'dry_run')
+            self.assertTrue(data['ready_for_execute'])
+            self.assertEqual(data['blockers'], [])
+            self.assertEqual(data['missing_boards'], [])
+            self.assertEqual(data['board_validation_status'], 'verified')
+            self.assertEqual(data['membership_validation_status'], 'verified')
+            rows = {row['id']: row for row in data['processed']}
+            self.assertEqual(rows[already_id]['status'], 'skipped')
+            self.assertEqual(rows[already_id]['membership_state'], 'already_in_target')
+            self.assertEqual(rows[cross_id]['status'], 'planned')
+            self.assertEqual(rows[cross_id]['membership_state'], 'in_other_board')
+            self.assertEqual(rows[cross_id]['source_board_id'], target_a)
+            self.assertEqual(rows[unassigned_id]['status'], 'planned')
+            self.assertEqual(rows[unassigned_id]['membership_state'], 'not_in_any_board')
+            self.assertEqual(rows[unassigned_id]['source_board_id'], '')
+
+    def test_verified_dry_run_blocks_missing_target_board(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            classification = tmp_path / 'classification.json'
+            snapshot = tmp_path / 'board_snapshot.json'
+            created = tmp_path / 'created_boards.json'
+            report = tmp_path / 'run_report.json'
+            classification.write_text(json.dumps([
+                {
+                    'id': '1' * 24, 'title': '目标缺失',
+                    'target_board': '不存在的专辑', 'confidence': 'high',
+                },
+            ], ensure_ascii=False), encoding='utf-8')
+            snapshot.write_text(json.dumps({
+                'mode': 'read_only',
+                'source': {'browser': 'safari', 'writes_performed': False},
+                'boards': [{
+                    'id': 'a' * 24, 'name': '专辑A',
+                    'declared_total': 0, 'page_count': 1, 'note_ids': [],
+                }],
+                'validation': {
+                    'pagination_cursor_invariants_passed': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': True,
+                },
+            }, ensure_ascii=False), encoding='utf-8')
+            created.write_text(json.dumps({
+                'confirmed': [],
+                'created': [],
+                'missing': ['不存在的专辑'],
+                'failed': [],
+            }, ensure_ascii=False), encoding='utf-8')
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'run_reassign_batch.py'),
+                    str(classification),
+                    str(report),
+                    '--board-snapshot',
+                    str(snapshot),
+                    '--created-boards',
+                    str(created),
+                ],
+                cwd=str(ROOT),
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            data = json.loads(report.read_text(encoding='utf-8'))
+            self.assertEqual(data['mode'], 'dry_run_blocked')
+            self.assertFalse(data['ready_for_execute'])
+            self.assertEqual(data['missing_boards'], ['不存在的专辑'])
+            self.assertIn('missing_target_board:不存在的专辑', data['blockers'])
+
+    def test_preflight_blocks_incomplete_or_ambiguous_membership(self):
+        note_id = '1' * 24
+        board_a = 'a' * 24
+        board_b = 'b' * 24
+        result = prepare_execution_preflight(
+            [{
+                'id': note_id,
+                'title': '成员关系不明确',
+                'target_board': '专辑A',
+                'confidence': 'high',
+            }],
+            {
+                'mode': 'read_only',
+                'source': {'browser': 'safari', 'writes_performed': False},
+                'boards': [
+                    {
+                        'id': board_a, 'name': '专辑A',
+                        'declared_total': 1, 'page_count': 1,
+                        'note_ids': [note_id],
+                    },
+                    {
+                        'id': board_b, 'name': '专辑B',
+                        'declared_total': 1, 'page_count': 1,
+                        'note_ids': [note_id],
+                    },
+                ],
+                'validation': {
+                    'pagination_cursor_invariants_passed': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': False,
+                },
+            },
+            {
+                'confirmed': ['专辑A', '专辑B'],
+                'missing': [],
+            },
+            allow_low_confidence=False,
+        )
+        self.assertFalse(result['ready_for_execute'])
+        self.assertIn('full_membership_incomplete', result['blockers'])
+        self.assertIn(f'ambiguous_membership:{note_id}', result['blockers'])
+        self.assertEqual(result['resolved_items'][0]['membership_state'], 'ambiguous')
+
+    def test_execute_without_preflight_evidence_is_blocked_before_browser(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            classification = tmp_path / 'classification.json'
+            report = tmp_path / 'run_report.json'
+            classification.write_text(json.dumps([
+                {
+                    'id': '1' * 24, 'title': '不允许直接执行',
+                    'target_board': '滑雪', 'confidence': 'high',
+                },
+            ], ensure_ascii=False), encoding='utf-8')
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'run_reassign_batch.py'),
+                    str(classification),
+                    str(report),
+                    '--execute',
+                    '--browser',
+                    'safari',
+                    '--max-moves-per-session',
+                    '1',
+                ],
+                cwd=str(ROOT),
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            data = json.loads(report.read_text(encoding='utf-8'))
+            self.assertEqual(data['mode'], 'execute_blocked')
+            self.assertFalse(data['ready_for_execute'])
+            self.assertEqual(data['blockers'], [
+                'board_validation_not_run',
+                'membership_validation_not_run',
+            ])
+
+    def test_execute_binding_must_match_snapshot_browser_user_page_and_safety_session(self):
+        safety_state = str(Path('/tmp/xhs-safety-state.json'))
+        source = {
+            'browser': 'safari',
+            'user_id': '1' * 24,
+            'expected_url_substring': '/user/profile/',
+            'safety_state': safety_state,
+        }
+        args = type('Args', (), {
+            'browser': 'safari',
+            'user_id': '1' * 24,
+            'expected_url_substring': '/user/profile/',
+            'arc_expected_url_substring': '',
+            'safety_state': safety_state,
+        })()
+        self.assertEqual(execution_binding_blockers(source, args), [])
+
+        changed = type('Args', (), {
+            'browser': 'chrome',
+            'user_id': '2' * 24,
+            'expected_url_substring': '/explore',
+            'arc_expected_url_substring': '',
+            'safety_state': '/tmp/other-safety-state.json',
+        })()
+        self.assertEqual(execution_binding_blockers(source, changed), [
+            'snapshot_browser_changed',
+            'snapshot_user_changed',
+            'snapshot_page_binding_changed',
+            'snapshot_safety_session_changed',
+        ])
 
     def test_resume_filters_successful_items_and_preserves_report_rows(self):
         classification = [

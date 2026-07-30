@@ -275,7 +275,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 `source_lists` / `source_primary` 从输入条目透传，用于区分收藏、点赞或二者都有。图文 OCR 关闭时，普通条目必须使用 `classification_basis=metadata_only` 和 `ocr_status=skipped`；开启且完整图片集合逐张 OCR 成功时为 `metadata_and_ocr`。图片集合不完整或任一图片失败时，图文行必须使用 `classification_basis=image_ocr_incomplete`、空目标专辑和 `review_state=image_ocr_incomplete`，不得使用部分 OCR 文本。成功图文行从 `ocr_results.json` 透传同一个非空 `ocr_run_fingerprint`；非图文、跳过或没有成功 OCR 的行该字段为空。视频开关开启后，视频行必须使用 `classification_basis=video_content`，并从 `video_analysis.json` 透传 `video_analysis_basis`、`visual_status` 和 provider identity。转写或所选 analysis provider 失败时不得根据简介/OCR 补分类。
 
-execute 前必须另做一次全部专辑的完整 `U_` + `Ks` 成员关系核对；`run_reassign_batch.py` 不会自动推断来源。执行清单字段必须满足：
+真实 dry-run 和 execute 前必须先用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 生成完整 `board_snapshot.json`，再生成 `created_boards.json`。两份证据必须同时传给 `run_reassign_batch.py`；否则只能得到 `classification_preview`、`ready_for_execute=false`、`missing_boards=null`。硬闸门通过后，执行清单字段必须满足：
 
 - 已在目标专辑：从执行清单排除，或保留 `excluded=true`、`exclude_reason=already_in_target`，确保零写入。
 - 不在任何专辑：`source_board`、`source_board_id` 都为空，执行器使用直接 `d0`。
@@ -382,9 +382,13 @@ execute 前必须另做一次全部专辑的完整 `U_` + `Ks` 成员关系核�
 {"confirmed":["穿搭发型与品味","滑雪"],"created":[],"missing":["体态纠正与康复"],"failed":[],"action_required":"Create missing boards manually in Xiaohongshu before running --execute."}
 ```
 
+### `board_snapshot.json`
+
+由 `capture_board_snapshot.py` 通过当前授权的小红书前端只读生成。`mode` 必须是 `read_only`、`source.writes_performed=false`、`validation.full_membership_complete=true`；每个专辑必须包含真实 id、声明数量、完整分页数量和 `note_ids`。任一分页未完成、数量不一致或成员重复都会阻止 dry-run。
+
 ### `run_report.json`
 
-未归档成功项应出现 `note_move:CALLED`、`verify:note_present`。跨专辑成功项应出现 `transaction:uncollect`、`transaction:recollect`、`transaction:move`、`transaction:target_verified`。跨专辑非安全失败会严格回滚到真实 `source_board_id`；回滚成功仍是失败。Python 每次只提交一条，首个错误行先写入报告再停止整批。安全验证或页面绑定失效后立即停写，不追加回滚写操作。
+没有两份专辑证据时，报告必须是 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，所有可分类项只能是 `preview_only`，不能是 `planned`。真实 dry-run 只有同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才可提交用户确认。未归档成功项应出现 `note_move:CALLED`、`verify:note_present`。跨专辑成功项应出现 `transaction:uncollect`、`transaction:recollect`、`transaction:move`、`transaction:target_verified`。跨专辑非安全失败会严格回滚到真实 `source_board_id`；回滚成功仍是失败。Python 每次只提交一条，首个错误行先写入报告再停止整批。安全验证或页面绑定失效后立即停写，不追加回滚写操作。
 
 ```json
 {"started_at":"2026-04-17T01:17:03Z","mode":"execute","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4个技能直接出活","target_board":"滑雪","status":"success","attempt":1,"events":["board:FOUND:滑雪","note_move:CALLED","verify:note_present"],"error":"","verified":true}],"errors":[],"missing_boards":[],"board_counts_before":{"滑雪":76},"board_counts_after":{"滑雪":77}}

@@ -27,6 +27,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 允许的动作：
 - 可核对目标专辑是否已存在，并把缺失专辑写入 `created_boards.json`；创建、删除、重命名专辑必须另行取得用户明确授权。
+- 可通过 `capture_board_snapshot.py` 调用当前小红书前端的 `yC + U_ + Ks`，只读生成完整 `board_snapshot.json`；该文件是执行 dry-run 的强制证据。
 - 可通过前端真实 API `note/move` 路径完成重新归档；真实执行必须显式传 `--execute`。
 - 只要下一步明确，就持续推进到全量完成、失败项入队、最终核验，不要在中间阶段只做总结就停止。
 
@@ -34,6 +35,8 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - 所有收藏笔记不允许删除；“取消收藏”只能作为重新加入目标专辑的中间动作，必须确保最终仍被收藏并归入目标专辑。
 - 选择“点赞”或“我全都要”时，不得取消点赞、删除互动记录或把点赞来源静默丢弃；抓取和报告中必须保留 `source_lists` / `source_primary`，能区分笔记来自收藏、点赞或二者都有。
 - 不得把未分类、抓取失败或移动失败的笔记静默丢弃；必须写入 `retry_queue.json` / `run_report.json`。
+- 没有 `board_snapshot.json` 和 `created_boards.json` 时，`run_reassign_batch.py` 只会生成 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`；不得把分类预览称为 dry-run，不得用 `missing_boards=null` 或空值声称目标专辑已存在。
+- WorkBuddy 的最终说明必须逐字服从 `run_report.json` 的 `ready_for_execute` 与 `blockers`。只有 `ready_for_execute=true` 才能向用户展示可执行计划；任何其他状态都必须停止，禁止声称产物可直接复用执行。
 - 删除或清理专辑前必须先核验该专辑内笔记已迁移或无需保留在该专辑；不得因专辑分类重构导致笔记丢失。
 - 不得把完整小红书 URL query、`xsec_token`、cookie、signed media URL、`sign` 参数或任何疑似凭据写入模型上下文、正式报告、Telegram/Discord 回复或日志摘要；只保留标准 `/explore/<note_id>`、标题、作者、公开计数和分类所需普通文本。历史上完整 `xsec_token` 链接曾触发 GPT `cyber_policy` 误判。
 
@@ -186,13 +189,13 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
    - 长批次中，ASR 与持久 provider worker 各自只加载一次模型；转写与分析 checkpoint 必须原子写盘。正式分类默认要求分析结果覆盖全部明确视频；`--allow-partial-video-analysis` 只用于显式抽样测试。
    - `video_analysis.json` 只保存分类所需的极简内容 memo（主要内容、短摘要、目标专辑、置信度、理由）；视觉修复成功项另保存帧时间戳、帧/OCR 哈希和完整时轴覆盖证据，不生成额外报告或 HTML。
    - 视频转写、覆盖率校验或 analysis provider 失败时，先保留空目标。开启视觉模块后，任一明确视频的真实帧证据不完整就不得标记为完成；未开启视觉模块时，成功项也必须标为 `transcript_only`。转写与所选分析路径都失败时，必须留下 `video_content_unavailable` 且 `target_board` 为空；禁止回退标题、简介、作者、封面 OCR 或任何猜测。
-6. 读取或核对专辑，写入 `created_boards.json`。缺失专辑只记录为 `missing`，不自动创建。
-7. 生成执行清单前，先用 `U_` + `Ks` 完整分页读取全部专辑成员关系；`run_reassign_batch.py` 不会自动推断来源专辑。
+6. 在用户本轮明确授权的浏览器上运行 `scripts/capture_board_snapshot.py board_snapshot.json --browser <浏览器> --user-id <当前账号> --expected-url-substring <当前页面片段>`，通过前端 `yC + U_ + Ks` 完整分页读取全部专辑成员；随后运行 `scripts/build_created_boards.py classification.json board_snapshot.json created_boards.json`。缺失专辑只记录为 `missing`，不自动创建。`board_snapshot.validation.full_membership_complete` 不是 `true` 时停止。
+7. 生成执行清单时必须同时传入上述两份证据：`scripts/run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json`。脚本会机械完成成员关系分流，WorkBuddy 不得自行猜测：
    - 已在目标专辑：从执行清单排除并标记 `already_in_target`，零写入。
    - 不在任何专辑：保留空 `source_board_id`，允许用 `d0` 加入目标专辑。
    - 已在另一个专辑：必须写入核验得到的真实 `source_board_id`；多来源、来源不明确或分页不完整时停止并人工复核。
-   - 完成成员关系分流后，再运行 `scripts/run_reassign_batch.py classification.json run_report.json` 做 dry-run；dry-run 不改账号。
-8. 用户确认分类、目标专辑和风险后，才允许运行 `scripts/run_reassign_batch.py classification.json run_report.json --execute --browser <用户本轮明确授权的浏览器> --max-moves-per-session <1–200>`。`auto` 会直接拒绝执行，禁止自动控制 Chrome 或其他外部浏览器。移动上限是人工检查断点，不是平台安全保证；到上限后只落盘，不自动进入下一段。Arc 写入必须绑定不变的 `window id + tab id + --arc-tab-marker（预先写入 window.name 的稳定标记）+ expected URL substring`，少任一项就中止。
+   - 只有报告同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]`，才是可执行 dry-run；否则停止。
+8. 用户确认分类、成员关系分流、目标专辑和风险后，才允许运行 `scripts/run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json --execute --browser <用户本轮明确授权的浏览器> --user-id <同一账号> --expected-url-substring <同一页面片段> --max-moves-per-session <1–200>`。执行浏览器、账号、页面片段和共享安全会话必须与快照完全一致；缺少证据或绑定变化会在接触浏览器前拒绝。`auto` 会直接拒绝执行，禁止自动控制 Chrome 或其他外部浏览器。移动上限是人工检查断点，不是平台安全保证；到上限后只落盘，不自动进入下一段。Arc 写入还必须绑定不变的 `window id + tab id + --arc-tab-marker（预先写入 window.name 的稳定标记）+ --arc-expected-url-substring`，少任一项就中止。
    - Arc execute JavaScript 必须注入页面 main world；隔离世界只负责创建/轮询隐藏 DOM 状态节点，结果通过 DOM bridge 返回，禁止把运行态挂到共享 `window` 全局。
    - 从 `window.__INITIAL_STATE__.board.boardListData` 读取专辑列表；前端 API 必须从 Rspack `req.m` 按精确 endpoint 字面量唯一解析 `LN/B1/d0/Ks/yC/U_`，匹配为 0 或多个都中止，禁止猜压缩后的导出名。
    - 未归档条目才直接调用 `d0({targetBoardId, notesId})`；跨专辑条目只有显式提供且不同于目标的真实 `source_board_id` 时才启用事务，执行器不会自动推断。
@@ -259,6 +262,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - `video_analysis.json`（仅视频内容分类开启时）
 - `classification.json`
 - `existing_boards_inventory.json`
+- `board_snapshot.json`
 - `created_boards.json`
 - `run_report.json`
 - `retry_queue.json`
@@ -301,8 +305,8 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 ## 最低回归链路
 - 修改脚本后先跑 `python3 -m compileall -q .`。
 - 跑 `python3 -m unittest discover -s tests -p 'test_*.py'`，当前核心用例应覆盖 resume 过滤、报告 chunk 合并、抓取 manifest 写盘。
-- 再跑无副作用 smoke：`python3 scripts/classify_items.py examples/visible_items.example.json /tmp/xhs-classification-smoke.json --skip-ocr` 和 `python3 scripts/run_reassign_batch.py /tmp/xhs-classification-smoke.json /tmp/xhs-run-report-smoke.json`。
-- 最后做真实网页登录态只读探针与 dry-run：抓取到 `/tmp/xhs-visible-probe.json`，分类到 `/tmp/xhs-classification-probe.json`，再生成 `/tmp/xhs-run-report-probe.json`；没有用户明确授权前不得加 `--execute`。
+- 再跑无副作用 smoke：`python3 scripts/classify_items.py examples/visible_items.example.json /tmp/xhs-classification-smoke.json --skip-ocr` 和 `python3 scripts/run_reassign_batch.py /tmp/xhs-classification-smoke.json /tmp/xhs-run-report-smoke.json`；后者必须得到 `mode=classification_preview`、`ready_for_execute=false`，不能得到 `planned`。
+- 最后做真实网页登录态只读探针与硬闸门 dry-run：抓取到 `/tmp/xhs-visible-probe.json`，分类到 `/tmp/xhs-classification-probe.json`，只读生成 `/tmp/xhs-board-snapshot-probe.json` 与 `/tmp/xhs-created-boards-probe.json`，再生成 `/tmp/xhs-run-report-probe.json`；只有报告 `ready_for_execute=true` 才算通过。没有用户明确授权前不得加 `--execute`。
 
 ## 核验方式
 1. 已有专辑策略核验：如果用户选择不移动已有专辑内容，必须先建立排除清单，`classification.json` / `run_report.json` 中不得出现这些专辑内笔记的移动事件，只能处理专辑外收藏。
@@ -360,9 +364,9 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 不要只给建议或只检查本机目录；要主动完成发布闭环：同步 GitHub、跑发布前验证、再用新下载版复核。推荐流程：
 
 1. 临时 clone 公开仓库，而不是直接在本机安装目录里提交：`git clone https://github.com/<owner>/<repo>.git /tmp/<work>/repo`。
-2. 从本机 skill 目录同步完整可发布内容到 clone，排除 `.git/`、`__pycache__/`、`*.pyc` 和运行产物 `visible_items.json` / `crawl_manifest.json` / `image_items.json` / `ocr_results.json` / `video_transcripts.json` / `video_analysis.json` / `classification.json` / `created_boards.json` / `run_report.json` / `retry_queue.json`。
+2. 从本机 skill 目录同步完整可发布内容到 clone，排除 `.git/`、`__pycache__/`、`*.pyc` 和运行产物 `visible_items.json` / `crawl_manifest.json` / `image_items.json` / `ocr_results.json` / `video_transcripts.json` / `video_analysis.json` / `classification.json` / `classification_preview.json` / `board_snapshot.json` / `created_boards.json` / `run_report.json` / `retry_queue.json`。
 3. 检查 diff，尤其是 `SKILL.md`、`README.md`、`references/`、`scripts/`；如果新增 reference 被 `SKILL.md` 引用，必须确保文件也被同步。
-4. 在 clone 中跑发布前验证：`python3 -m compileall -q .`、`python3 -m unittest discover -s tests -p 'test_*.py'`、`check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` dry-run、`build_retry_queue.py`、`summarize_run_report.py`，并用临时 `HERMES_HOME` 验证 `hermes skills list` 能识别。
+4. 在 clone 中跑发布前验证：`python3 -m compileall -q .`、`python3 -m unittest discover -s tests -p 'test_*.py'`、`check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` 分类预览、`build_retry_queue.py`、`summarize_run_report.py`，并用临时 `HERMES_HOME` 验证 `hermes skills list` 能识别；无浏览器证据的报告必须是 `classification_preview`、`ready_for_execute=false`。
 5. 提交并推送 main 后，不要立即宣布完成；重新 `git clone --depth 1` 和下载 `main.zip`，再比较新下载版与本机 skill 目录是否无差异，并重复关键 smoke。
 6. 最终回复必须给出 commit hash、验证项目和公开发布口径；仍要提醒真实移动收藏需要用户已登录并显式 `--execute`。
 
@@ -376,7 +380,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 2. 下载检查：至少覆盖 `git clone --depth 1` 和 GitHub `main.zip` 下载/解压两条路径。
 3. 临时安装检查：创建临时 `HERMES_HOME`，把下载后的 skill 放到 `skills/social-media/xiaohongshu-web-collection-organizing/`，运行 `hermes skills list` 确认可识别。
 4. 静态检查：运行 `python3 -m compileall -q <repo>`，确认脚本无语法错误。
-5. 示例烟测：用 examples/templates 跑无副作用脚本，例如 `check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` dry-run、`build_retry_queue.py`、`summarize_run_report.py`；涉及真实网页/收藏移动的脚本必须显式传 `--execute`，不要在未授权环境中执行。
+5. 示例烟测：用 examples/templates 跑无副作用脚本，例如 `check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` 分类预览、`build_retry_queue.py`、`summarize_run_report.py`；涉及 `capture_board_snapshot.py` 或真实收藏移动的脚本必须先获得当前浏览器授权，真实移动还必须显式传 `--execute`。
 6. 本机最新版对比：如果本机 skill 目录和 GitHub 下载版本不同，必须明确提醒“GitHub 版本落后/不一致”，不能把本机已修复能力误报成外部用户可用能力。
 7. 发布判断：README 必须包含安装命令、浏览器权限、登录态要求、可直接运行脚本、真实移动入口和限制；否则结论应是“可下载和基础可跑，但不建议直接对外宣传为任何人下载即用”。
 

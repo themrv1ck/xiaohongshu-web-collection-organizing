@@ -26,12 +26,12 @@
    python3 scripts/check_environment.py
    python3 -m unittest discover -s tests -p 'test_*.py'
    python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs_classification_skip.json
-   python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_run_report_dry.json
+   python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_classification_preview.json
    python3 scripts/build_retry_queue.py examples/run_report.example.json /tmp/xhs_retry_queue.json
    python3 scripts/summarize_run_report.py examples/run_report.example.json /tmp/xhs_summary.json
    ```
 
-   `build_created_boards.py` 需要三个参数；第二个参数是“现有专辑列表 JSON”，不是输出路径，例如：
+   无浏览器证据的 `run_reassign_batch.py` 必须输出 `classification_preview`、`ready_for_execute=false`，不能输出可执行 dry-run。`build_created_boards.py` 需要三个参数；第二个参数是“现有专辑列表或 `board_snapshot.json`”，不是输出路径，例如：
 
    ```bash
    printf '{"boards":["杂项灵感","滑雪"]}\n' > /tmp/xhs_existing_boards.json
@@ -40,7 +40,8 @@
 
 5. **有副作用功能不应盲测**
    - `extract_visible_items.py` 依赖已登录浏览器和页面状态，可在用户授权浏览器环境中测。
-   - `run_reassign_batch.py` 会实际整理/移动收藏，只有在用户明确授权真实小红书账号操作时才执行。
+   - `capture_board_snapshot.py` 依赖用户本轮授权的已登录浏览器，只读调用前端 `yC + U_ + Ks`。
+   - `run_reassign_batch.py --execute` 会实际整理/移动收藏；没有 `board_snapshot.json` 和 `created_boards.json` 时必须在接触浏览器前拒绝。
 
 ## 必查差异
 
@@ -60,7 +61,7 @@ diff -qr ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing <do
 - `.git/`
 - `__pycache__/`
 - `*.pyc`
-- 本地运行产物：`visible_items.json`、`crawl_manifest.json`、`ocr_results.json`、`video_transcripts.json`、`video_analysis.json`、`.video-content-cache/`、`classification.json`、`created_boards.json`、`run_report.json`、`retry_queue.json`
+- 本地运行产物：`visible_items.json`、`crawl_manifest.json`、`ocr_results.json`、`video_transcripts.json`、`video_analysis.json`、`.video-content-cache/`、`classification.json`、`classification_preview.json`、`board_snapshot.json`、`created_boards.json`、`run_report.json`、`retry_queue.json`
 
 ## 发布结论标准
 

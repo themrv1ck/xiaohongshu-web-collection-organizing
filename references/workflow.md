@@ -12,11 +12,11 @@
 11. 视频开关开启时：`scripts/transcribe_video_items.py` 需要 `--allow-video-access` 加明确 `--video-id` 或 `--max-videos <1–200>`；每段落盘后等待用户明确开始下一段。随后用明确的 `--analysis-provider` 运行 `scripts/analyze_video_transcripts.py` -> `video_analysis.json`。
 12. `capabilities.visual_analysis.ready=true` 时，`scripts/analyze_video_visuals.py --all-videos` 必须同时带 `--allow-video-access --max-videos <1–200>`；只处理这一段明确视频的完整时轴真实帧。完成所有本地保存段后再作完整分类。该能力关闭时只能使用合格文字稿，并标记 `transcript_only`，不声称检查过画面。MiMo-VL 视频入口不读音轨；声音来自平台字幕或 ASR。
 13. `scripts/classify_items.py`；图文 OCR 开启时输入 `image_items.json` 和 `ocr_results.json`，关闭时输入 `visible_items.json` 并传 `--skip-ocr`。`classification.json` 必须包含 `ocr_run_fingerprint`：只有完整图文 OCR 成功行透传与 OCR 结果相同的非空指纹，非图文、跳过或未成功 OCR 的行必须为空。视频开关开启时同时传 `--classify-video-by-content --video-analysis <最终分析文件>`；视觉模块开启时还必须传 `--require-visual-analysis`。
-14. `scripts/build_created_boards.py`。
-15. 在授权浏览器中用 `U_` + `Ks` 完整分页读取全部专辑成员关系并生成执行清单；这一步不由 `run_reassign_batch.py` 自动完成。已在目标专辑的条目标记 `already_in_target` 后排除，未归档条目的 `source_board_id` 留空，已在其他专辑的条目写入真实 `source_board_id`；多来源或分页不完整时停止复核。
-16. 展示分类、成员关系分流、低置信度和失败项，取得用户确认。
-17. `scripts/run_reassign_batch.py`（默认 dry-run，不改账号）。
-18. 再次确认后才能加 `--execute --max-moves-per-session <1–200>`；达到上限后保存报告、等待用户检查，不自动进入下一段。安全验证、登录页、绑定丢失或状态不确定会写 `xhs_safety_state.json`，旧状态下不得续跑；随后运行 `scripts/build_retry_queue.py` 和 `scripts/summarize_run_report.py`。
+14. 在用户本轮授权的浏览器中运行 `scripts/capture_board_snapshot.py`，通过前端 `yC + U_ + Ks` 完整分页生成 `board_snapshot.json`；只要 `full_membership_complete` 不是 `true` 就停止。
+15. 运行 `scripts/build_created_boards.py classification.json board_snapshot.json created_boards.json`，再把两份证据交给 `run_reassign_batch.py` 机械生成成员关系分流：已在目标专辑的标记 `already_in_target` 后排除，未归档的 `source_board_id` 留空，已在其他专辑的写入真实 `source_board_id`；多来源、目标缺失或分页不完整时脚本必须阻止。
+16. 运行带 `--board-snapshot board_snapshot.json --created-boards created_boards.json` 的 dry-run。只有 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才展示分类、成员关系分流、低置信度和失败项并取得用户确认。缺少证据时的 `classification_preview` 不是 dry-run。
+17. 再次确认后才能在同一命令中加 `--execute --max-moves-per-session <1–200>`；仍必须传入两份证据。达到上限后保存报告、等待用户检查，不自动进入下一段。安全验证、登录页、绑定丢失或状态不确定会写 `xhs_safety_state.json`，旧状态下不得续跑；随后运行 `scripts/build_retry_queue.py` 和 `scripts/summarize_run_report.py`。
+18. WorkBuddy 只能根据 `run_report.json` 的 `ready_for_execute` 和 `blockers` 描述状态；禁止从 `missing_boards` 的空值自行推断专辑存在。
 19. 执行完成后运行 `scripts/verify_classification_membership.py`，只读复抓全部专辑；已放行视频必须全局恰好出现一次并位于目标专辑，未决视频必须单独报告且不移动。
 
 视频开关开启后，Video Transcript Extractor + MiMo ASR 生成文字稿，明确选择的 analysis provider 生成分类所需的极简内容 memo。视觉模块开启时，复用 ffmpeg + macOS Vision + provider 查看每一条明确视频的完整时轴真实帧。视频链路只产出文字稿、分类 memo 和必要证据 JSON；转写和所选分析路径都失败时不得回退简介分类。
@@ -25,7 +25,10 @@
 
 ```bash
 python3 scripts/run_reassign_batch.py classification.json run_report.json \
-  --execute --browser arc \
+  --board-snapshot board_snapshot.json \
+  --created-boards created_boards.json \
+  --execute --browser arc --user-id '<user-id>' \
+  --expected-url-substring '<expected-path>' \
   --max-moves-per-session <本次明确范围> \
   --arc-window-id '<window-id>' \
   --arc-tab-id '<tab-id>' \

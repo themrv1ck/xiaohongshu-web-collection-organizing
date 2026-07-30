@@ -2,6 +2,10 @@
   "started_at": "2026-04-17T01:17:03Z",
   "finished_at": "2026-04-17T01:17:38Z",
   "mode": "execute",
+  "ready_for_execute": true,
+  "blockers": [],
+  "board_validation_status": "verified",
+  "membership_validation_status": "verified",
   "visible_count": 11,
   "processed": [
     {

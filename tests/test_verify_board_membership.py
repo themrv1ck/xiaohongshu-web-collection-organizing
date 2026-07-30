@@ -13,6 +13,7 @@ SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
 from run_reassign_batch import BOARD_VERIFICATION_JS, LIVE_API_RESOLVER_JS  # noqa: E402
+from capture_board_snapshot import validate_args as validate_snapshot_capture_args  # noqa: E402
 from verify_board_membership import (  # noqa: E402
     MembershipContractError,
     build_snapshot_job,
@@ -150,6 +151,30 @@ class VerifyBoardMembershipTests(unittest.TestCase):
             setattr(broken, field, '')
             with self.subTest(field=field), self.assertRaises(MembershipContractError):
                 validate_arc_locator(broken)
+
+    def test_snapshot_capture_requires_explicit_browser_user_and_expected_url(self):
+        args = argparse.Namespace(
+            browser='safari',
+            user_id='1' * 24,
+            expected_url_substring='/user/profile/',
+            verify_pages=100,
+            timeout_sec=300,
+            arc_window_id='',
+            arc_tab_id='',
+            arc_tab_marker='',
+            arc_expected_url_substring='',
+        )
+        self.assertEqual(validate_snapshot_capture_args(args), 'safari')
+
+        missing_url = copy.copy(args)
+        missing_url.expected_url_substring = ''
+        with self.assertRaisesRegex(MembershipContractError, 'expected-url-substring'):
+            validate_snapshot_capture_args(missing_url)
+
+        invalid_user = copy.copy(args)
+        invalid_user.user_id = 'not-a-user-id'
+        with self.assertRaisesRegex(MembershipContractError, '24-character'):
+            validate_snapshot_capture_args(invalid_user)
 
     def test_strict_success_is_160_target_38_source_absent_and_no_duplicates(self):
         contract, result, args = self.fixture()

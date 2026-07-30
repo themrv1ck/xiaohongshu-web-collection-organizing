@@ -87,11 +87,11 @@ python3 scripts/extract_visible_items.py segment-001-collection.json --backend m
 python3 -m compileall -q .
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs_classification_source_smoke.json
-python3 scripts/run_reassign_batch.py /tmp/xhs_classification_source_smoke.json /tmp/xhs_run_report_source_smoke.json
+python3 scripts/run_reassign_batch.py /tmp/xhs_classification_source_smoke.json /tmp/xhs_classification_preview_source_smoke.json
 ```
 
 检查点：
 
 - 单元测试包含来源合并/去重覆盖。
 - `classification.json` 透传 `source_lists` / `source_primary`。
-- `run_report.json` 透传 `source_lists` / `source_primary`。
+- 分类预览报告透传 `source_lists` / `source_primary`，且必须标记 `ready_for_execute=false`。

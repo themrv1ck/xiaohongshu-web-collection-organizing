@@ -14,7 +14,10 @@ def normalize_board_names(value):
     names = []
     for item in value or []:
         if isinstance(item, dict):
-            name = item.get('name') or item.get('title')
+            if 'target_board' in item:
+                name = item.get('target_board')
+            else:
+                name = item.get('name') or item.get('title')
         else:
             name = item
         name = str(name or '').strip()

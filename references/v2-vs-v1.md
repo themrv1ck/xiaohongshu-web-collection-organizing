@@ -180,8 +180,8 @@ python3 -m compileall -q .
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/check_environment.py --capability-preflight
 python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs-classification.json
-python3 scripts/run_reassign_batch.py /tmp/xhs-classification.json /tmp/xhs-run-report.json
-python3 scripts/build_retry_queue.py /tmp/xhs-run-report.json /tmp/xhs-retry-queue.json
+python3 scripts/run_reassign_batch.py /tmp/xhs-classification.json /tmp/xhs-classification-preview.json
+python3 scripts/build_retry_queue.py /tmp/xhs-classification-preview.json /tmp/xhs-retry-queue.json
 ```
 
-真实浏览器读取和移动不属于自动发布测试。它们只能在用户当前回合明确授权的已登录浏览器中进行，并且真实移动必须再次得到明确授权。
+上述批处理烟测必须得到 `mode=classification_preview`、`ready_for_execute=false`；不能把它称为 dry-run。真实 `board_snapshot.json`、硬闸门 dry-run 和移动不属于自动发布测试，只能在用户当前回合明确授权的已登录浏览器中进行，并且真实移动必须再次得到明确授权。
