@@ -6,7 +6,8 @@
   "collect_wrapper_retry_wait_ms": 75000,
   "banner_wait_ms": 8000,
   "js_timeout_ms": 15000,
-  "ocr_every_item": true,
+  "image_ocr_enabled": false,
+  "ocr_provider": "auto",
   "ocr_timeout_sec": 20,
   "ocr_force_refresh": false
 }

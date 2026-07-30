@@ -59,4 +59,4 @@ end tell
 - Safari 的 JXA `Application("Safari").doJavaScript(...)` 可能不回显；传统 AppleScript `tell application "Safari" to do JavaScript ...` 更可靠。
 - 页面可能弹出“广告屏蔽插件”提示；这是 UI 遮挡，不代表未登录。优先点击“我知道了”，必要时先处理遮挡再继续。
 - 不要泄露 cookies、xsec_token、signed URL；日志和回复只描述页面状态，不复制敏感参数。
-- `.collect-wrapper` 在 Safari 中可触发收藏/取消收藏，但是否出现“加入专辑”banner 需页面实测；若 banner 未出现，不要宣称已入目标专辑，只能记录为待重试。
+- `.collect-wrapper` 在 Safari 中可触发收藏/取消收藏，但是否出现“加入专辑”banner 需页面实测；若 banner 未出现，不要宣称已入目标专辑，只能记录为待人工复核并在新会话中重新开始。

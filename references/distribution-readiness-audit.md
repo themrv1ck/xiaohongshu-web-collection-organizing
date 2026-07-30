@@ -60,7 +60,7 @@ diff -qr ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing <do
 - `.git/`
 - `__pycache__/`
 - `*.pyc`
-- 本地运行产物：`visible_items.json`、`ocr_results.json`、`classification.json`、`created_boards.json`、`run_report.json`、`retry_queue.json`
+- 本地运行产物：`visible_items.json`、`crawl_manifest.json`、`ocr_results.json`、`video_transcripts.json`、`video_analysis.json`、`.video-content-cache/`、`classification.json`、`created_boards.json`、`run_report.json`、`retry_queue.json`
 
 ## 发布结论标准
 

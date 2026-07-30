@@ -1,0 +1,38 @@
+[
+  {
+    "id": "694d3390000000002203ae33",
+    "status": "success",
+    "content_type": "video",
+    "source_url": "https://www.xiaohongshu.com/explore/694d3390000000002203ae33",
+    "source_kind": "mimo_audio",
+    "transcript_sha256": "aaf9c61a99dd4c0b7f8bced208796f564362ed64240c8b7e4221c056c2c9a363",
+    "segment_count": 2,
+    "char_count": 47,
+    "segments": [
+      {
+        "start": 0.0,
+        "end": 12.4,
+        "text": "先说明固定器角度会怎样影响站姿。"
+      },
+      {
+        "start": 12.4,
+        "end": 28.0,
+        "text": "再根据前后脚习惯调整角度，不要照搬别人的设置，并给出具体数值。"
+      }
+    ],
+    "coverage": {
+      "video_duration_seconds": 28.0,
+      "transcript_first_start": 0.0,
+      "transcript_last_end": 28.0,
+      "transcript_covered_duration": 28.0,
+      "transcript_coverage_ratio": 1.0,
+      "coverage_threshold": 0.3,
+      "transcript_segment_count": 2,
+      "transcript_plain_text_char_count": 47,
+      "transcript_source": "mimo_audio",
+      "transcript_quality_reason": "coverage_ok",
+      "transcript_quality_passed": true
+    },
+    "error": ""
+  }
+]

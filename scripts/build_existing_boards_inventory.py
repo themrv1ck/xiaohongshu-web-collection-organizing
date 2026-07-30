@@ -39,7 +39,7 @@ def extract_boards(data: Any) -> Tuple[List[str], Dict[str, str]]:
             board_name = normalize_text(entry)
         elif isinstance(entry, dict):
             board_name = normalize_text(entry.get('name') or entry.get('title'))
-            notes = entry.get('notes') or []
+            notes = entry.get('notes') or entry.get('note_ids') or []
         else:
             continue
 

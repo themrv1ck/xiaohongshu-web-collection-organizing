@@ -1,12 +1,23 @@
 # 失败恢复与续跑
 
-- 永远先读旧 `run_report.json`
-- `status=success` 直接跳过
-- `status=failed` 进入 `retry_queue.json`
-- 每成功一条立即写盘
-- `.collect-wrapper` 首次等 45 秒，二次等 75 秒
-- banner 未出现则重发鼠标事件
-- AppleEvent / JXA 超时后当前条失败、整批继续
-- `ocr_results.json` 已存在且条目 `status=ok` 时，默认直接复用，不重复 OCR
-- 如需全量重跑 OCR，执行 `scripts/ocr_cover_images.py --force` 或 `scripts/classify_items.py --force-ocr`
-- 中途终止后只补跑未成功条目
+- 同一次整理的每次小红书访问都必须共用一份 `xhs_safety_state.json`。下游脚本会继承输入文件旁已有的状态；工件分散在不同目录时，所有访问命令必须显式传同一个 `--safety-state <路径>`。它不保存 cookie、token 或完整签名 URL。
+- `state=active` 时，普通本地续跑可以复用已成功且输入没有变化的结果。
+- `state=security_halted` 时，任何会访问小红书的采集、详情补齐、视频、移动或只读核验都会在开始前拒绝；`--resume` 不能清除或绕过它。
+- 安全停机的触发条件包括：安全验证、异常/频繁访问、登录页、Arc 页面绑定丢失、浏览器状态桥消失，以及写入状态不确定。
+- 触发后立刻落盘当前结果和停止原因；不刷新、不自动滚动、不点验证、不切换 UA/代理/IP、不模拟真人行为，也不重试当前条。
+- 用户在平台内完成必要处理后，必须使用新的安全状态文件开始新的会话；旧文件保留审计记录。
+
+## 分段规则
+
+- 列表采集默认被动模式：一次只读当前已显示卡片，最多 200 条，写入独立分段文件和 manifest；不会自动进入下一段。
+- 图文详情、视频和移动都必须由用户明确指定本次范围，最多 200 条；达到上限后只保存本地结果，等待用户检查和再次开始。
+- 200 是程序的防误操作上限，不是平台公开的安全阈值，也不能保证不会出现验证。
+- 分类、去重和专辑规划尽量只在本地完成；移动只按已经审阅的本地分类结果进行。
+
+## 本地结果复用
+
+- `image_items.json` 只有详情 `noteData.type` 确认为图文、`image_enrichment_status=ok`、`image_list_source=mobile_ssr_note_data.imageList`、`image_urls_complete=true` 且图片集合完整时才可复用。
+- `enrich_note_images.py` 默认不请求详情；只有明确传 `--allow-detail-requests --max-items <n>` 才会访问选定范围。安全停机后不得继续 OCR。
+- `ocr_results.json` 只有条目 `status=ok`、完整性计数一致、`image_set_sha256` 与当前图片集合一致，且 `ocr_run_fingerprint` 与本次运行一致时才可复用。
+- 视频转写、画面分析和移动同样只复用本地完整成功项；安全停机或输入变化时不作猜测性补救。
+- `retry_queue.json` 中 `retry_eligible=false` 的项必须人工处理后再开新会话；普通失败也先人工复核，再明确开始新的会话。

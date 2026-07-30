@@ -9,11 +9,11 @@ Use this workflow for a single Xiaohongshu note URL when the goal is analysis/re
 
 ## Workflow
 
-1. Try the browser URL first to see whether the page is accessible and whether login/IP risk blocks rendering.
-   - If browser navigation returns a security/login/IP-risk page, do not stop.
-   - Continue with server-rendered/mobile-page extraction below.
+1. Try the user-authorized browser URL first to see whether the page is accessible and whether login/IP risk blocks rendering.
+   - If it returns a security, login, or IP-risk page, stop this session and preserve the observed state.
+   - Do not switch to direct/mobile HTML extraction, reload, or retry as a fallback; the user must handle the platform state before a new session begins.
 
-2. Fetch the note HTML directly with a mobile user-agent.
+2. Only when the page is accessible and the user has explicitly approved this one direct request, fetch the note HTML.
 
    ```python
    import requests
@@ -67,7 +67,7 @@ Use this workflow for a single Xiaohongshu note URL when the goal is analysis/re
 
 ## Pitfalls
 
-- Xiaohongshu browser rendering may show “IP 存在风险 / 300012” even when direct mobile HTML fetch succeeds.
+- “IP 存在风险 / 300012” is a hard stop, not a reason to try another request path.
 - Meta tags can be empty; do not conclude content is unavailable until checking `window.__SETUP_SERVER_STATE__`.
 - The note body may be duplicated in multiple inline script states; prefer the parsed JSON state.
 - Comments can contain the highest-value product signals; always inspect nested `subComments`.
