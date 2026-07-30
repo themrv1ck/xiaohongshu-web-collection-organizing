@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +15,10 @@ sys.path.insert(0, str(SCRIPTS))
 
 from workbuddy_bridge import (  # noqa: E402
     approval_digest,
+    capture_action,
     execute_action,
+    login_action,
+    metadata_quality,
     status_action,
     validate_run_id,
     validate_xhs_url,
@@ -94,6 +98,133 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             validate_xhs_url(collection.replace('tab=fav', 'tab=liked'), 'collection')
         with self.assertRaisesRegex(RuntimeError, 'xiaohongshu.com'):
             validate_xhs_url('https://example.com/?tab=fav', 'collection')
+
+    def test_login_detects_own_profile_and_returns_collection_url_without_user_closing(self):
+        target_user_id = '66d19b54000000001d03a93d'
+        own_profile_url = f'https://www.xiaohongshu.com/user/profile/{target_user_id}'
+
+        class FakePage:
+            def __init__(self, own_url=''):
+                self.own_url = own_url
+                self.url = 'about:blank'
+                self.closed = False
+                self.visited = []
+
+            def goto(self, url, **_kwargs):
+                self.url = url
+                self.visited.append(url)
+
+            def evaluate(self, _script):
+                return self.own_url
+
+            def close(self):
+                self.closed = True
+
+            def is_closed(self):
+                return self.closed
+
+        primary = FakePage(own_profile_url)
+        stale = FakePage()
+
+        class FakeContext:
+            def __init__(self):
+                self.pages = [primary, stale]
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        context = FakeContext()
+
+        class FakePlaywright:
+            def __init__(self):
+                self.chromium = types.SimpleNamespace(
+                    launch_persistent_context=lambda *_args, **_kwargs: context
+                )
+
+        class FakePlaywrightManager:
+            def __enter__(self):
+                return FakePlaywright()
+
+            def __exit__(self, *_args):
+                return False
+
+        fake_playwright = types.ModuleType('playwright')
+        fake_playwright.__path__ = []
+        fake_sync_api = types.ModuleType('playwright.sync_api')
+        fake_sync_api.sync_playwright = lambda: FakePlaywrightManager()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch.dict(
+                    sys.modules,
+                    {
+                        'playwright': fake_playwright,
+                        'playwright.sync_api': fake_sync_api,
+                    },
+                ),
+            ):
+                result = login_action(60, 'collection')
+
+            expected = f'{own_profile_url}?tab=fav&subTab=note'
+            self.assertEqual(result['target_page_url'], expected)
+            self.assertEqual(result['source'], 'collection')
+            self.assertTrue(result['browser_closed_by_tool'])
+            self.assertTrue(context.closed)
+            self.assertTrue(stale.closed)
+            self.assertEqual(primary.visited[-1], expected)
+            saved = json.loads(
+                (data_dir / 'last_login.json').read_text(encoding='utf-8')
+            )
+            self.assertEqual(saved['target_page_url'], expected)
+
+    def test_capture_rejects_busy_profile_before_creating_run(self):
+        target_url = (
+            'https://www.xiaohongshu.com/user/profile/'
+            '66d19b54000000001d03a93d?tab=fav&subTab=note'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            profile = data_dir / 'playwright-profile'
+            profile.mkdir()
+            (profile / 'SingletonLock').write_text('busy', encoding='utf-8')
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch(
+                    'workbuddy_bridge.BrowserRunner',
+                    side_effect=AssertionError('browser must not launch'),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, '专用浏览器仍在使用'):
+                    capture_action(
+                        'locked-run',
+                        'collection',
+                        target_url,
+                        10,
+                        True,
+                    )
+            self.assertFalse((data_dir / 'runs' / 'locked-run').exists())
+
+    def test_metadata_quality_rejects_id_only_capture(self):
+        empty = metadata_quality([{
+            'id': '66d19b54000000001d03a93d',
+            'title': '',
+            'user': '',
+            'desc': '',
+            'card_text': '',
+            'tags': [],
+        }])
+        usable = metadata_quality([{
+            'id': '66d19b54000000001d03a93d',
+            'title': '2026 年先读这 10 本书',
+            'user': 'BetterLiving编辑手记',
+        }])
+        self.assertEqual(empty['usable_item_count'], 0)
+        self.assertEqual(empty['unusable_item_count'], 1)
+        self.assertEqual(usable['usable_item_count'], 1)
+        self.assertEqual(usable['unusable_item_count'], 0)
 
     def test_approval_digest_changes_when_plan_changes(self):
         with tempfile.TemporaryDirectory() as tmp:

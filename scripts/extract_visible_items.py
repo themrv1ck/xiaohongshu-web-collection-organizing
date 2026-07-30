@@ -144,17 +144,31 @@ ITEMS_JS = r'''JSON.stringify({
     const titleLink = section.querySelector('a.title') || section.querySelector('a[href*="/explore/"]') || section.querySelector('a[href*="/user/profile/"]');
     const coverLink = section.querySelector('a.cover') || section.querySelector('a[href*="/explore/"]') || section.querySelector('a[href*="/user/profile/"]');
     const rawHref = (titleLink && titleLink.href) || (coverLink && coverLink.href) || section.querySelector('a')?.href || '';
-    const title = ((titleLink && titleLink.innerText) || section.querySelector('[class*=title]')?.innerText || '').trim().replace(/\s+/g, ' ');
     const m = rawHref.match(/\/([a-f0-9]{24})(?:\?|$)/i) || (section.getAttribute('data-note-id') || '').match(/([a-f0-9]{24})/i);
     const id = m ? m[1] : '';
     if (!rawHref || !id) return null;
+    const structuredCard = structuredCards.get(id) || {};
+    const domTitle = (titleLink && titleLink.innerText) || section.querySelector('[class*=title]')?.innerText || '';
+    const title = String(domTitle || structuredCard.displayTitle || structuredCard.title || '').trim().replace(/\s+/g, ' ');
     const img = section.querySelector('img');
     const userEl = section.querySelector('[class*=author] [class*=name], [class*=user] [class*=name], .author, .user');
     const descEl = section.querySelector('[class*=desc], [class*=content], [class*=text]');
-    const cardText = (section.innerText || '').trim().replace(/\s+/g, ' ');
+    const user = String(
+      (userEl && userEl.innerText)
+      || structuredCard.user?.nickname
+      || structuredCard.user?.nickName
+      || ''
+    ).trim().replace(/\s+/g, ' ');
+    const desc = String(
+      (descEl && descEl.innerText)
+      || structuredCard.desc
+      || structuredCard.description
+      || ''
+    ).trim().replace(/\s+/g, ' ');
+    const cardText = String(section.innerText || [title, user, desc].filter(Boolean).join(' '))
+      .trim().replace(/\s+/g, ' ');
     const hashTags = Array.from(cardText.matchAll(/#([^#\s]+)/g)).map(match => match[1]);
     const structuredType = structuredTypeForSection(section, id);
-    const structuredCard = structuredCards.get(id) || {};
     const rawImageList = Array.isArray(structuredCard.imageList)
       ? structuredCard.imageList
       : Array.isArray(structuredCard.images) ? structuredCard.images : [];
@@ -170,8 +184,8 @@ ITEMS_JS = r'''JSON.stringify({
       image_count: null,
       image_urls_complete: false,
       image_list_source: rawImageList.length ? 'collection_card_observed_images' : 'collection_card_cover_only',
-      user: ((userEl && userEl.innerText) || '').trim().replace(/\s+/g, ' '),
-      desc: ((descEl && descEl.innerText) || '').trim().replace(/\s+/g, ' '),
+      user,
+      desc,
       tags: hashTags,
       card_text: cardText,
       content_type: normalizeType(structuredType.value),

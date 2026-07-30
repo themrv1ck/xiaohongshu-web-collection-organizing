@@ -8,9 +8,13 @@ import { z } from 'zod';
 
 
 const skillRoot = path.resolve(
-  process.env.XHS_SKILL_ROOT || path.join(import.meta.dirname, '..'),
+  process.env.CODEBUDDY_PLUGIN_ROOT || path.join(import.meta.dirname, '..'),
 );
-const pluginData = path.resolve(process.env.CODEBUDDY_PLUGIN_DATA || '');
+const pluginDataArgument = process.argv[2];
+const pluginData = pluginDataArgument ? path.resolve(pluginDataArgument) : '';
+const playwrightProfile = path.join(pluginData, 'playwright-profile');
+const pythonVenv = path.join(pluginData, 'python-venv');
+const playwrightBrowsers = path.join(pluginData, 'playwright-browsers');
 const bridge = path.join(skillRoot, 'scripts', 'workbuddy_bridge.py');
 
 
@@ -18,7 +22,7 @@ function requirePluginEnvironment() {
   if (process.env.XHS_HOST !== 'workbuddy') {
     throw new Error('XHS_HOST 必须由 WorkBuddy Plugin 设置为 workbuddy。');
   }
-  if (!process.env.CODEBUDDY_PLUGIN_DATA || !process.env.XHS_PLAYWRIGHT_PROFILE) {
+  if (!pluginDataArgument) {
     throw new Error('WorkBuddy Plugin 持久化目录未注入。');
   }
   if (!existsSync(bridge)) {
@@ -37,11 +41,9 @@ function commandReady(command) {
 
 
 function venvPython() {
-  const configured = process.env.XHS_PYTHON_VENV;
-  if (!configured) return null;
   const executable = process.platform === 'win32'
-    ? path.join(configured, 'Scripts', 'python.exe')
-    : path.join(configured, 'bin', 'python');
+    ? path.join(pythonVenv, 'Scripts', 'python.exe')
+    : path.join(pythonVenv, 'bin', 'python');
   return existsSync(executable) ? executable : null;
 }
 
@@ -78,11 +80,11 @@ function runBridge(action, args = [], timeoutMs = 600_000) {
       env: {
         ...process.env,
         XHS_HOST: 'workbuddy',
+        XHS_SKILL_ROOT: skillRoot,
         CODEBUDDY_PLUGIN_DATA: pluginData,
-        XHS_PLAYWRIGHT_PROFILE: process.env.XHS_PLAYWRIGHT_PROFILE,
-        PLAYWRIGHT_BROWSERS_PATH:
-          process.env.PLAYWRIGHT_BROWSERS_PATH ||
-          path.join(pluginData, 'playwright-browsers'),
+        XHS_PLAYWRIGHT_PROFILE: playwrightProfile,
+        XHS_PYTHON_VENV: pythonVenv,
+        PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -153,7 +155,7 @@ function toolError(error) {
 const server = new McpServer(
   {
     name: 'xiaohongshu-workbuddy',
-    version: '1.0.0',
+    version: '1.1.0',
   },
   {
     instructions:
@@ -208,20 +210,21 @@ server.registerTool(
 server.registerTool(
   'xhs_workbuddy_login',
   {
-    title: '打开小红书专用登录浏览器',
+    title: '登录并定位小红书整理范围',
     description:
-      '在用户本轮明确授权后，打开可见的 Playwright Chromium。用户登录并打开目标页后关闭窗口，登录态只保存在插件独立 profile。',
+      '在用户本轮明确授权后打开可见的专用 Chromium。用户只需完成登录；插件自动找到当前账号、进入所选收藏或点赞页、返回精确 URL 并关闭自己的浏览器。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确同意打开专用浏览器'),
+      source: z.enum(['collection', 'liked']).describe('用户已选择的整理范围'),
       timeout_seconds: z.number().int().min(60).max(900).default(600),
     }),
   },
-  async ({ browser_authorized, timeout_seconds }) => {
+  async ({ browser_authorized, source, timeout_seconds }) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
       return toolResult(await runBridge(
         'login',
-        ['--timeout-sec', String(timeout_seconds)],
+        ['--source', source, '--timeout-sec', String(timeout_seconds)],
         (timeout_seconds + 30) * 1000,
       ));
     } catch (error) {

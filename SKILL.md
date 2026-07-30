@@ -15,11 +15,12 @@ This is the umbrella for Xiaohongshu web workflows. Use the collection/liked org
 
 1. 浏览器阶段只允许调用上述 `xhs_workbuddy_*` 工具。禁止直接运行 `osascript`、Safari/Arc/Chrome Apple Events、Computer Use、CDP，禁止调用脚本时传 `--browser safari|arc|chrome` 或 `--backend macos-*`。
 2. 先调用 `xhs_workbuddy_status`。若 `install_required=true`，先向用户说明需要把 Python Playwright 与 Chromium 下载到插件持久化目录并取得明确同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)`，随后再次调用 status。
-3. 首次登录前取得当前回合打开专用浏览器的明确授权，再调用 `xhs_workbuddy_login(browser_authorized=true)`。用户在可见的专用 Chromium 中登录小红书、打开目标收藏/点赞页，然后关闭专用浏览器窗口；登录态只保存在插件自己的 `CODEBUDDY_PLUGIN_DATA/playwright-profile`。
-4. 抓取前取得对精确页面 URL 的授权，再调用 `xhs_workbuddy_capture`。它只在专用 Chromium 中打开这个精确 URL，然后被动读取当前可见段；不会自动滚动、点击或写账号。快速整理传 `quick_classify=true`；轻度/深度整理传 `false`，再让既有 OCR/视频链路把最终结果写到工具返回的 `run_dir/classification.json`。
-5. 分类完成后只能调用 `xhs_workbuddy_prepare` 生成真实 `board_snapshot.json`、`created_boards.json` 和硬闸门 `run_report.json`。只有工具返回 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 和非空 `approval_digest`，才可向用户展示逐条“当前专辑 → 目标专辑”。
-6. 用户明确确认逐条映射与本次移动上限后，原样传回 `approval_digest`，并调用 `xhs_workbuddy_execute(browser_authorized=true,user_confirmed=true,...)`。任何分类、专辑证据或计划变化都会让 digest 失效，并在打开浏览器前拒绝执行。
-7. 如果六个工具缺少任何一个，结论是“WorkBuddy Plugin 未安装或未加载”。停止并要求安装/重载插件；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
+3. 范围、整理深度和本段上限确定后，只询问一次：“允许打开 WorkBuddy 专用浏览器，并只读整理本次所选范围（最多 N 条）吗？”这次授权覆盖本轮 `login → capture → prepare` 三个只读阶段；不得在三个阶段之间重复索要授权。
+4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的专用 Chromium 完成登录；插件必须自动识别当前账号、进入所选收藏/点赞页、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放。不得要求用户打开目标页、关闭窗口或复制 URL。
+5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,...)`，不得再次询问或让用户粘贴地址。抓取只读取该精确页面的当前可见段，不滚动、不点击、不写账号。快速整理传 `quick_classify=true`；轻度/深度整理传 `false`，再让既有 OCR/视频链路把最终结果写到工具返回的 `run_dir/classification.json`。
+6. 分类完成后立即调用 `xhs_workbuddy_prepare` 生成真实 `board_snapshot.json`、`created_boards.json` 和硬闸门 `run_report.json`。只有工具返回 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0` 和非空 `approval_digest`，才可向用户展示逐条“当前专辑 → 目标专辑”并请求执行确认。若 `planned_move_count=0`，直接展示已在正确专辑和待人工复核的条目，禁止请求执行。
+7. 用户明确确认逐条映射与本次移动上限后，原样传回 `approval_digest`，并调用 `xhs_workbuddy_execute(browser_authorized=true,user_confirmed=true,...)`。任何分类、专辑证据或计划变化都会让 digest 失效，并在打开浏览器前拒绝执行。
+8. 如果六个工具缺少任何一个，且当前环境存在 `WORKBUDDY_CONFIG_DIR`，不要让普通用户寻找连接器页面、编辑 JSON 或处理 MCP 名词。只说明：“小红书插件需要一次性启用；回复‘启用’后，我只会启用 `xiaohongshu-organizer`，然后你重开一次 WorkBuddy。”用户明确回复“启用”后，运行 `python3 scripts/enable_workbuddy_mcp.py`；脚本只能把这一项加入 WorkBuddy 白名单，必须保留其他设置。若返回 `restart_required=true`，只让用户完全退出并重开 WorkBuddy，再重发原请求。若该项已存在但工具仍缺失，直接让用户重开 WorkBuddy，不重复修改。其他宿主仍按“WorkBuddy Plugin 未安装或未加载”停止；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
 
 WorkBuddy 路径由插件显式注入 `XHS_HOST=workbuddy`；三个已有浏览器入口会再次在代码层强制为 Playwright 自带 `chromium`、可见窗口和插件独立 profile，并拒绝 CDP、headless 与其他 `user-data-dir`。这条约束与选择 GLM、Hy3 或其他模型无关。完整安装和工具合同见 `references/workbuddy-plugin.md`。
 

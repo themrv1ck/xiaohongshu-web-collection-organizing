@@ -95,6 +95,10 @@
 
 加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意依赖下载后才安装 Playwright Chromium。首次使用会打开一个与 Safari、Arc、系统 Chrome 完全分开的可见 Chromium，用户只需在这里登录一次小红书。
 
+正常使用时，用户不需要寻找收藏页 URL、复制地址或手动关闭浏览器。插件会从小红书前端的“我”入口定位当前账号，自动进入用户已选择的收藏/点赞范围，完成只读抓取与 dry-run 后关闭自己的浏览器。只有真正移动收藏前才会再次请求逐条确认。
+
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前修复版插件版本为 `1.1.0`。
+
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
 ```bash

@@ -10,7 +10,10 @@ const data = path.resolve(
 );
 const transport = new StdioClientTransport({
   command: 'node',
-  args: [path.join(root, 'server', 'xhs-workbuddy-mcp.mjs')],
+  args: [
+    path.join(root, 'server', 'xhs-workbuddy-mcp.mjs'),
+    data,
+  ],
   cwd: root,
   env: {
     ...process.env,
@@ -41,6 +44,17 @@ try {
   ];
   if (JSON.stringify(names) !== JSON.stringify(expected)) {
     throw new Error(`MCP tools mismatch: ${JSON.stringify(names)}`);
+  }
+  const login = listed.tools.find((tool) => tool.name === 'xhs_workbuddy_login');
+  const loginRequired = login?.inputSchema?.required || [];
+  const loginSources = login?.inputSchema?.properties?.source?.enum || [];
+  if (
+    !loginRequired.includes('browser_authorized')
+    || !loginRequired.includes('source')
+    || JSON.stringify(loginSources) !== JSON.stringify(['collection', 'liked'])
+    || login.description.includes('关闭窗口')
+  ) {
+    throw new Error(`MCP login contract mismatch: ${JSON.stringify(login)}`);
   }
   const result = await client.callTool({
     name: 'xhs_workbuddy_status',

@@ -592,6 +592,7 @@ def initial_report(classification: List[Dict[str, Any]], mode: str) -> Dict[str,
         'mode': mode,
         'ready_for_execute': False,
         'blockers': [],
+        'warnings': [],
         'board_validation_status': 'not_checked',
         'membership_validation_status': 'not_checked',
         'visible_count': len(classification),
@@ -716,6 +717,7 @@ def prepare_execution_preflight(
     allow_low_confidence: bool,
 ) -> Dict[str, Any]:
     blockers: List[str] = []
+    warnings: List[str] = []
     if not isinstance(board_snapshot, dict):
         raise ExecutionPreflightError('board_snapshot must be an object')
     source = board_snapshot.get('source')
@@ -732,8 +734,8 @@ def prepare_execution_preflight(
         validation = {}
     if validation.get('pagination_cursor_invariants_passed') is not True:
         blockers.append('board_pagination_incomplete')
-    if validation.get('full_membership_complete') is not True:
-        blockers.append('full_membership_incomplete')
+    if validation.get('board_names_unique') is False:
+        blockers.append('board_names_not_unique')
     if validation.get('within_board_duplicates'):
         blockers.append('within_board_duplicates')
     if not isinstance(boards, list) or not boards:
@@ -772,7 +774,7 @@ def prepare_execution_preflight(
         declared_total = board.get('declared_total')
         accessible_total = len(set(normalized_note_ids))
         if declared_total != accessible_total:
-            blockers.append(f'board_count_mismatch:{board_name}')
+            warnings.append(f'board_display_count_mismatch:{board_name}')
         board_counts[board_name] = accessible_total
         board_count_checks[board_name] = {
             'declared_total': declared_total,
@@ -860,11 +862,17 @@ def prepare_execution_preflight(
             missing_targets.add(target)
     blockers.extend(f'missing_target_board:{name}' for name in sorted(missing_targets))
     blockers = list(dict.fromkeys(blockers))
+    warnings = list(dict.fromkeys(warnings))
     ready = not blockers
     return {
         'ready_for_execute': ready,
         'blockers': blockers,
-        'board_validation_status': 'verified' if ready else 'blocked',
+        'warnings': warnings,
+        'board_validation_status': (
+            'verified_with_warnings'
+            if ready and warnings
+            else 'verified' if ready else 'blocked'
+        ),
         'membership_validation_status': 'verified' if ready else 'blocked',
         'missing_boards': sorted(missing_targets),
         'required_target_boards': sorted(required_targets),

@@ -35,6 +35,17 @@ RUN_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
 NOTE_ID_RE = re.compile(r'^[0-9a-f]{24}$', re.IGNORECASE)
 SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
 ALLOWED_SOURCES = {'collection', 'liked', 'custom'}
+LOGIN_SOURCES = {'collection', 'liked'}
+PROFILE_LOCK_NAMES = ('SingletonLock', 'SingletonSocket', 'SingletonCookie')
+OWN_PROFILE_LINK_JS = r"""
+() => {
+  const links = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'));
+  const own = links.find((link) => (link.textContent || '').trim() === '我');
+  if (!own) return '';
+  const href = own.getAttribute('href') || '';
+  return new URL(href, window.location.origin).href;
+}
+"""
 
 
 def utc_now() -> str:
@@ -109,6 +120,75 @@ def validate_xhs_url(value: str, source: str = 'custom') -> str:
     if source == 'liked' and tab not in {'liked', 'like'}:
         raise RuntimeError('点赞范围必须提供带 tab=liked 的个人点赞页 URL。')
     return raw
+
+
+def profile_lock_paths(profile: Path) -> List[Path]:
+    return [
+        profile / name
+        for name in PROFILE_LOCK_NAMES
+        if (profile / name).exists() or (profile / name).is_symlink()
+    ]
+
+
+def require_profile_available() -> None:
+    profile = workbuddy_profile_path()
+    busy = profile_lock_paths(profile)
+    if busy:
+        names = ', '.join(path.name for path in busy)
+        raise RuntimeError(
+            f'WorkBuddy 专用浏览器仍在使用同一登录目录（{names}）。'
+            '插件已停止，未创建运行产物；请结束上一条浏览器任务后重试。'
+        )
+
+
+def wait_for_profile_release(profile: Path, timeout_sec: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if not profile_lock_paths(profile):
+            return
+        time.sleep(0.1)
+    busy = ', '.join(path.name for path in profile_lock_paths(profile))
+    raise RuntimeError(
+        f'WorkBuddy 专用浏览器退出后未释放登录目录（{busy}）。'
+        '插件已停止，不能继续抓取。'
+    )
+
+
+def profile_user_id(value: str) -> str:
+    parsed = urlparse(str(value or '').strip())
+    match = re.fullmatch(r'/user/profile/([0-9a-fA-F]{24})/?', parsed.path)
+    return match.group(1) if match else ''
+
+
+def target_page_url(user_id: str, source: str) -> str:
+    if source not in LOGIN_SOURCES:
+        raise RuntimeError('登录入口只接受 collection 或 liked。')
+    tab = 'fav' if source == 'collection' else 'liked'
+    return (
+        f'https://www.xiaohongshu.com/user/profile/{user_id}'
+        f'?tab={tab}&subTab=note'
+    )
+
+
+def metadata_quality(items: Any) -> Dict[str, int]:
+    rows = items if isinstance(items, list) else []
+    usable = 0
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        if any([
+            str(item.get('title') or '').strip(),
+            str(item.get('desc') or '').strip(),
+            str(item.get('card_text') or '').strip(),
+            str(item.get('user') or '').strip(),
+            item.get('tags') if isinstance(item.get('tags'), list) else [],
+        ]):
+            usable += 1
+    return {
+        'item_count': len(rows),
+        'usable_item_count': usable,
+        'unusable_item_count': len(rows) - usable,
+    }
 
 
 def browser_args(url: str = '') -> argparse.Namespace:
@@ -210,18 +290,20 @@ def setup_action() -> Dict[str, Any]:
     }
 
 
-def login_action(timeout_sec: int) -> Dict[str, Any]:
+def login_action(timeout_sec: int, source: str) -> Dict[str, Any]:
     require_workbuddy()
     if timeout_sec < 60 or timeout_sec > 900:
         raise RuntimeError('timeout_sec 必须在 60 到 900 秒之间。')
+    if source not in LOGIN_SOURCES:
+        raise RuntimeError('source 必须是 collection 或 liked。')
+    require_profile_available()
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
         raise RuntimeError('Playwright 尚未安装；先调用 xhs_workbuddy_setup。') from exc
 
     profile = workbuddy_profile_path()
-    last_url = 'https://www.xiaohongshu.com/explore'
-    closed_by_user = False
+    selected_url = ''
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             str(profile),
@@ -229,32 +311,55 @@ def login_action(timeout_sec: int) -> Dict[str, Any]:
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(last_url, wait_until='domcontentloaded', timeout=60000)
+            for stale_page in list(context.pages):
+                if stale_page is not page:
+                    stale_page.close()
+            page.goto(
+                'https://www.xiaohongshu.com/explore',
+                wait_until='domcontentloaded',
+                timeout=60000,
+            )
             deadline = time.monotonic() + timeout_sec
             while time.monotonic() < deadline:
-                pages = context.pages
-                if not pages:
-                    closed_by_user = True
-                    break
-                try:
-                    last_url = pages[0].url or last_url
-                except Exception:
-                    closed_by_user = True
+                if page.is_closed():
+                    raise RuntimeError(
+                        '专用浏览器被提前关闭。无需手动关闭窗口；'
+                        '请重试并只完成小红书登录。'
+                    )
+                own_profile = str(page.evaluate(OWN_PROFILE_LINK_JS) or '').strip()
+                user_id = profile_user_id(own_profile)
+                if user_id:
+                    selected_url = target_page_url(user_id, source)
+                    page.goto(
+                        selected_url,
+                        wait_until='domcontentloaded',
+                        timeout=60000,
+                    )
+                    validate_xhs_url(page.url or selected_url, source)
                     break
                 time.sleep(1)
-            if not closed_by_user:
-                raise RuntimeError('等待登录超时。请重试，并在登录完成后关闭专用浏览器窗口。')
+            if not selected_url:
+                raise RuntimeError(
+                    '等待登录超时。请在专用浏览器完成小红书登录；'
+                    '插件会自动进入所选范围并关闭窗口。'
+                )
         finally:
             try:
                 context.close()
             except Exception:
                 pass
+    wait_for_profile_release(profile)
     result = {
         'ok': True,
-        'closed_by_user': True,
-        'last_url': last_url,
+        'source': source,
+        'target_page_url': selected_url,
+        'completion_reason': 'authenticated_target_page_detected',
+        'browser_closed_by_tool': True,
         'profile': str(profile),
-        'next_action': '把已登录账号的收藏页或点赞页完整 URL 交给抓取工具。',
+        'next_action': (
+            '直接把 target_page_url 传给 xhs_workbuddy_capture；'
+            '不要让用户关闭窗口或复制 URL。'
+        ),
         'finished_at': utc_now(),
     }
     write_private_json(plugin_data_dir() / 'last_login.json', result)
@@ -272,24 +377,25 @@ def capture_action(
     checked_url = validate_xhs_url(page_url, source)
     if not isinstance(segment_limit, int) or isinstance(segment_limit, bool) or not 1 <= segment_limit <= 200:
         raise RuntimeError('segment_limit 必须是 1 到 200 的整数。')
-    directory = run_dir_for(run_id, create=True)
-    visible = directory / 'visible_items.json'
-    manifest = directory / 'crawl_manifest.json'
-    safety = resolve_safety_state_path('', visible)
-    ensure_active_session(
-        safety,
-        stage='capture',
-        policy={
-            'capture_mode': 'passive',
-            'auto_scroll': False,
-            'auto_navigation': False,
-            'auto_retry': False,
-            'workbuddy_exact_url_open': checked_url,
-        },
-    )
+    require_profile_available()
     args = browser_args(checked_url)
     runner = BrowserRunner('playwright', args)
     try:
+        directory = run_dir_for(run_id, create=True)
+        visible = directory / 'visible_items.json'
+        manifest = directory / 'crawl_manifest.json'
+        safety = resolve_safety_state_path('', visible)
+        ensure_active_session(
+            safety,
+            stage='capture',
+            policy={
+                'capture_mode': 'passive',
+                'auto_scroll': False,
+                'auto_navigation': False,
+                'auto_retry': False,
+                'workbuddy_exact_url_open': checked_url,
+            },
+        )
         result = extract_with_capture_mode(
             runner.eval,
             visible,
@@ -302,8 +408,18 @@ def capture_action(
             segment_limit,
             safety,
         )
+        quality = metadata_quality(load_json(visible))
+        result['metadata_quality'] = quality
+        if quality['item_count'] > 0 and quality['usable_item_count'] == 0:
+            raise RuntimeError(
+                '抓取到了笔记 ID，但标题、作者和卡片文字全部为空；'
+                '页面结构已变化，已停止分类，不能生成空的整理方案。'
+            )
     finally:
-        runner.close()
+        try:
+            runner.close()
+        finally:
+            wait_for_profile_release(workbuddy_profile_path())
     result.update({
         'run_id': directory.name,
         'run_dir': str(directory),
@@ -384,6 +500,7 @@ def prepare_action(
         raise RuntimeError('expected_url_substring 必须是 page_url 中的稳定片段。')
     if not isinstance(verify_pages, int) or isinstance(verify_pages, bool) or not 1 <= verify_pages <= 200:
         raise RuntimeError('verify_pages 必须是 1 到 200 的整数。')
+    require_profile_available()
 
     snapshot = directory / 'board_snapshot.json'
     created = directory / 'created_boards.json'
@@ -420,14 +537,22 @@ def prepare_action(
         details = proc.stderr.strip() or proc.stdout.strip() or f'exit={proc.returncode}'
         raise RuntimeError(f'dry-run 未生成 run_report.json：{details}')
     report = load_json(report_path)
+    planned_move_count = sum(
+        1
+        for row in report.get('processed', [])
+        if isinstance(row, dict) and row.get('status') == 'planned'
+    )
+    approval_path = directory / 'approval.json'
+    approval_path.unlink(missing_ok=True)
     digest = None
     if (
         report.get('mode') == 'dry_run'
         and report.get('ready_for_execute') is True
         and report.get('blockers') == []
+        and planned_move_count > 0
     ):
         digest = approval_digest(directory, report)
-        write_private_json(directory / 'approval.json', {
+        write_private_json(approval_path, {
             'approval_digest': digest,
             'basis': approval_basis(directory, report),
             'created_at': utc_now(),
@@ -439,13 +564,25 @@ def prepare_action(
         'mode': report.get('mode'),
         'ready_for_execute': report.get('ready_for_execute') is True,
         'blockers': report.get('blockers'),
+        'warnings': report.get('warnings', []),
+        'board_validation_status': report.get('board_validation_status'),
+        'membership_validation_status': report.get('membership_validation_status'),
+        'planned_move_count': planned_move_count,
         'processed': report.get('processed'),
         'approval_digest': digest,
         'report': str(report_path),
         'next_action': (
             '向用户展示每条“当前专辑 → 目标专辑”和移动上限；用户明确确认后才能调用 execute。'
-            if digest else
-            '硬闸门未通过；停止，不得调用 execute。'
+            if digest
+            else (
+                '没有可执行移动；展示已在正确专辑和待人工复核的条目，不得调用 execute。'
+                if (
+                    report.get('mode') == 'dry_run'
+                    and report.get('ready_for_execute') is True
+                    and report.get('blockers') == []
+                )
+                else '硬闸门未通过；停止，不得调用 execute。'
+            )
         ),
     }
 
@@ -482,6 +619,7 @@ def execute_action(
     expected = str(expected_url_substring or '').strip()
     if not expected or expected not in checked_url:
         raise RuntimeError('expected_url_substring 必须是 page_url 中的稳定片段。')
+    require_profile_available()
 
     classification = directory / 'classification.json'
     snapshot = directory / 'board_snapshot.json'
@@ -524,6 +662,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     login = sub.add_parser('login')
     login.add_argument('--timeout-sec', type=int, default=600)
+    login.add_argument('--source', choices=sorted(LOGIN_SOURCES), required=True)
 
     capture = sub.add_parser('capture')
     capture.add_argument('--run-id', default='')
@@ -557,7 +696,7 @@ def main() -> None:
         elif args.action == 'setup':
             result = setup_action()
         elif args.action == 'login':
-            result = login_action(args.timeout_sec)
+            result = login_action(args.timeout_sec, args.source)
         elif args.action == 'capture':
             result = capture_action(
                 args.run_id,

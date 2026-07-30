@@ -73,14 +73,22 @@ class ImageOcrTests(unittest.TestCase):
         )
 
     @staticmethod
-    def evaluate_collection_items_js(note_card):
+    def evaluate_collection_items_js(
+        note_card,
+        *,
+        dom_title='测试图文',
+        dom_text='测试图文 #测试',
+    ):
         note_id = str(note_card['noteId'])
         script = f'''
 const noteCard = {json.dumps(note_card, ensure_ascii=False)};
-const link = {{href: "https://www.xiaohongshu.com/explore/{note_id}", innerText: "测试图文"}};
+const link = {{
+  href: "https://www.xiaohongshu.com/explore/{note_id}",
+  innerText: {json.dumps(dom_title, ensure_ascii=False)}
+}};
 const image = {{currentSrc: "https://ci.xiaohongshu.com/{note_id}-cover.jpg", src: ""}};
 const section = {{
-  innerText: "测试图文 #测试",
+  innerText: {json.dumps(dom_text, ensure_ascii=False)},
   __vueParentComponent: null,
   getAttribute(name) {{ return name === "data-index" ? "0" : ""; }},
   querySelector(selector) {{
@@ -112,6 +120,28 @@ process.stdout.write(eval({json.dumps(ITEMS_JS)}));
             timeout=10,
         )
         return json.loads(proc.stdout)
+
+    def test_collection_card_uses_structured_metadata_when_dom_text_is_empty(self):
+        note_id = '66d19b54000000001d03a93d'
+        data = self.evaluate_collection_items_js(
+            {
+                'noteId': note_id,
+                'type': 'normal',
+                'displayTitle': '2026 年先读这 10 本书',
+                'user': {'nickname': 'BetterLiving编辑手记'},
+            },
+            dom_title='',
+            dom_text='',
+        )
+
+        self.assertEqual(len(data['items']), 1)
+        item = data['items'][0]
+        self.assertEqual(item['title'], '2026 年先读这 10 本书')
+        self.assertEqual(item['user'], 'BetterLiving编辑手记')
+        self.assertEqual(
+            item['card_text'],
+            '2026 年先读这 10 本书 BetterLiving编辑手记',
+        )
 
     def test_complete_multi_image_set_keeps_per_image_results_and_aggregates_text(self):
         def fake_ocr(_provider, image_path, _swift_script, _tesseract_lang):

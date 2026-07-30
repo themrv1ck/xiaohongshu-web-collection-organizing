@@ -96,9 +96,9 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
         if board['declared_vs_accessible_delta'] != 0
     ]
     snapshot['validation']['count_mismatch_boards'] = count_mismatch_boards
+    snapshot['validation']['display_count_consistent'] = not count_mismatch_boards
     snapshot['validation']['full_membership_complete'] = all([
         snapshot['validation']['pagination_cursor_invariants_passed'],
-        not count_mismatch_boards,
         not snapshot['validation']['within_board_duplicates'],
     ])
     write_json(output_path, snapshot)

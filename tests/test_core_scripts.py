@@ -501,7 +501,7 @@ function createTransactionModel(options) {
             self.assertEqual(data['missing_boards'], ['不存在的专辑'])
             self.assertIn('missing_target_board:不存在的专辑', data['blockers'])
 
-    def test_preflight_blocks_incomplete_or_ambiguous_membership(self):
+    def test_preflight_blocks_ambiguous_membership(self):
         note_id = '1' * 24
         board_a = 'a' * 24
         board_b = 'b' * 24
@@ -540,9 +540,53 @@ function createTransactionModel(options) {
             allow_low_confidence=False,
         )
         self.assertFalse(result['ready_for_execute'])
-        self.assertIn('full_membership_incomplete', result['blockers'])
         self.assertIn(f'ambiguous_membership:{note_id}', result['blockers'])
         self.assertEqual(result['resolved_items'][0]['membership_state'], 'ambiguous')
+
+    def test_preflight_treats_completed_api_pagination_as_membership_evidence(self):
+        note_id = '1' * 24
+        board_id = 'a' * 24
+        result = prepare_execution_preflight(
+            [{
+                'id': note_id,
+                'title': '已归档条目',
+                'target_board': '专辑A',
+                'confidence': 'high',
+            }],
+            {
+                'mode': 'read_only',
+                'source': {'browser': 'playwright', 'writes_performed': False},
+                'boards': [{
+                    'id': board_id,
+                    'name': '专辑A',
+                    'declared_total': 2,
+                    'page_count': 1,
+                    'note_ids': [note_id],
+                }],
+                'validation': {
+                    'board_names_unique': True,
+                    'pagination_cursor_invariants_passed': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': True,
+                },
+            },
+            {
+                'confirmed': ['专辑A'],
+                'missing': [],
+            },
+            allow_low_confidence=False,
+        )
+        self.assertTrue(result['ready_for_execute'])
+        self.assertEqual(result['blockers'], [])
+        self.assertEqual(
+            result['warnings'],
+            ['board_display_count_mismatch:专辑A'],
+        )
+        self.assertEqual(result['board_validation_status'], 'verified_with_warnings')
+        self.assertEqual(
+            result['resolved_items'][0]['membership_state'],
+            'already_in_target',
+        )
 
     def test_execute_without_preflight_evidence_is_blocked_before_browser(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -30987,15 +30987,19 @@ var StdioServerTransport = class {
 
 // server.mjs
 var skillRoot = path.resolve(
-  process3.env.XHS_SKILL_ROOT || path.join(import.meta.dirname, "..")
+  process3.env.CODEBUDDY_PLUGIN_ROOT || path.join(import.meta.dirname, "..")
 );
-var pluginData = path.resolve(process3.env.CODEBUDDY_PLUGIN_DATA || "");
+var pluginDataArgument = process3.argv[2];
+var pluginData = pluginDataArgument ? path.resolve(pluginDataArgument) : "";
+var playwrightProfile = path.join(pluginData, "playwright-profile");
+var pythonVenv = path.join(pluginData, "python-venv");
+var playwrightBrowsers = path.join(pluginData, "playwright-browsers");
 var bridge = path.join(skillRoot, "scripts", "workbuddy_bridge.py");
 function requirePluginEnvironment() {
   if (process3.env.XHS_HOST !== "workbuddy") {
     throw new Error("XHS_HOST \u5FC5\u987B\u7531 WorkBuddy Plugin \u8BBE\u7F6E\u4E3A workbuddy\u3002");
   }
-  if (!process3.env.CODEBUDDY_PLUGIN_DATA || !process3.env.XHS_PLAYWRIGHT_PROFILE) {
+  if (!pluginDataArgument) {
     throw new Error("WorkBuddy Plugin \u6301\u4E45\u5316\u76EE\u5F55\u672A\u6CE8\u5165\u3002");
   }
   if (!existsSync(bridge)) {
@@ -31010,9 +31014,7 @@ function commandReady(command) {
   return result.status === 0;
 }
 function venvPython() {
-  const configured = process3.env.XHS_PYTHON_VENV;
-  if (!configured) return null;
-  const executable = process3.platform === "win32" ? path.join(configured, "Scripts", "python.exe") : path.join(configured, "bin", "python");
+  const executable = process3.platform === "win32" ? path.join(pythonVenv, "Scripts", "python.exe") : path.join(pythonVenv, "bin", "python");
   return existsSync(executable) ? executable : null;
 }
 function bootstrapPython() {
@@ -31043,9 +31045,11 @@ function runBridge(action, args = [], timeoutMs = 6e5) {
       env: {
         ...process3.env,
         XHS_HOST: "workbuddy",
+        XHS_SKILL_ROOT: skillRoot,
         CODEBUDDY_PLUGIN_DATA: pluginData,
-        XHS_PLAYWRIGHT_PROFILE: process3.env.XHS_PLAYWRIGHT_PROFILE,
-        PLAYWRIGHT_BROWSERS_PATH: process3.env.PLAYWRIGHT_BROWSERS_PATH || path.join(pluginData, "playwright-browsers")
+        XHS_PLAYWRIGHT_PROFILE: playwrightProfile,
+        XHS_PYTHON_VENV: pythonVenv,
+        PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
@@ -31112,7 +31116,7 @@ function toolError(error51) {
 var server = new McpServer(
   {
     name: "xiaohongshu-workbuddy",
-    version: "1.0.0"
+    version: "1.1.0"
   },
   {
     instructions: "\u5728 WorkBuddy \u4E2D\u53EA\u80FD\u8C03\u7528\u672C\u670D\u52A1\u5668\u7BA1\u7406\u5C0F\u7EA2\u4E66\u6D4F\u89C8\u5668\u9636\u6BB5\u3002\u5148 status\uFF1B\u7F3A\u4F9D\u8D56\u65F6\u7ECF\u7528\u6237\u540C\u610F\u540E setup\uFF1B\u9996\u6B21\u767B\u5F55\u7528 login\uFF1B\u6293\u53D6\u7528 capture\uFF1B\u771F\u5B9E\u5206\u7C7B\u5B8C\u6210\u540E\u7528 prepare\uFF1B\u53EA\u6709 prepare \u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u4E14\u7528\u6237\u786E\u8BA4\u6620\u5C04\u548C\u4E0A\u9650\u540E\u624D\u53EF execute\u3002\u7981\u6B62\u8C03\u7528 Safari\u3001Arc\u3001\u7CFB\u7EDF Chrome\u3001CDP \u6216 osascript\u3002"
@@ -31154,19 +31158,20 @@ server.registerTool(
 server.registerTool(
   "xhs_workbuddy_login",
   {
-    title: "\u6253\u5F00\u5C0F\u7EA2\u4E66\u4E13\u7528\u767B\u5F55\u6D4F\u89C8\u5668",
-    description: "\u5728\u7528\u6237\u672C\u8F6E\u660E\u786E\u6388\u6743\u540E\uFF0C\u6253\u5F00\u53EF\u89C1\u7684 Playwright Chromium\u3002\u7528\u6237\u767B\u5F55\u5E76\u6253\u5F00\u76EE\u6807\u9875\u540E\u5173\u95ED\u7A97\u53E3\uFF0C\u767B\u5F55\u6001\u53EA\u4FDD\u5B58\u5728\u63D2\u4EF6\u72EC\u7ACB profile\u3002",
+    title: "\u767B\u5F55\u5E76\u5B9A\u4F4D\u5C0F\u7EA2\u4E66\u6574\u7406\u8303\u56F4",
+    description: "\u5728\u7528\u6237\u672C\u8F6E\u660E\u786E\u6388\u6743\u540E\u6253\u5F00\u53EF\u89C1\u7684\u4E13\u7528 Chromium\u3002\u7528\u6237\u53EA\u9700\u5B8C\u6210\u767B\u5F55\uFF1B\u63D2\u4EF6\u81EA\u52A8\u627E\u5230\u5F53\u524D\u8D26\u53F7\u3001\u8FDB\u5165\u6240\u9009\u6536\u85CF\u6216\u70B9\u8D5E\u9875\u3001\u8FD4\u56DE\u7CBE\u786E URL \u5E76\u5173\u95ED\u81EA\u5DF1\u7684\u6D4F\u89C8\u5668\u3002",
     inputSchema: external_exports.object({
       browser_authorized: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u5728\u5F53\u524D\u56DE\u5408\u660E\u786E\u540C\u610F\u6253\u5F00\u4E13\u7528\u6D4F\u89C8\u5668"),
+      source: external_exports.enum(["collection", "liked"]).describe("\u7528\u6237\u5DF2\u9009\u62E9\u7684\u6574\u7406\u8303\u56F4"),
       timeout_seconds: external_exports.number().int().min(60).max(900).default(600)
     })
   },
-  async ({ browser_authorized, timeout_seconds }) => {
+  async ({ browser_authorized, source, timeout_seconds }) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
       return toolResult(await runBridge(
         "login",
-        ["--timeout-sec", String(timeout_seconds)],
+        ["--source", source, "--timeout-sec", String(timeout_seconds)],
         (timeout_seconds + 30) * 1e3
       ));
     } catch (error51) {
