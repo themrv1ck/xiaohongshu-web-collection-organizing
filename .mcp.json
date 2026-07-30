@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "xiaohongshu-organizer": {
+      "command": "node",
+      "args": [
+        "${CODEBUDDY_PLUGIN_ROOT}/server/xhs-workbuddy-mcp.mjs"
+      ],
+      "env": {
+        "XHS_HOST": "workbuddy",
+        "XHS_SKILL_ROOT": "${CODEBUDDY_PLUGIN_ROOT}",
+        "CODEBUDDY_PLUGIN_DATA": "${CODEBUDDY_PLUGIN_DATA}",
+        "XHS_PLAYWRIGHT_PROFILE": "${CODEBUDDY_PLUGIN_DATA}/playwright-profile",
+        "XHS_PYTHON_VENV": "${CODEBUDDY_PLUGIN_DATA}/python-venv",
+        "PLAYWRIGHT_BROWSERS_PATH": "${CODEBUDDY_PLUGIN_DATA}/playwright-browsers"
+      }
+    }
+  }
+}

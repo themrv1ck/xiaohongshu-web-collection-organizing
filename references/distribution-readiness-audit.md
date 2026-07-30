@@ -15,11 +15,17 @@
    - 运行：`HERMES_HOME=<tmp> hermes skills list`。
    - 预期：显示 `xiaohongshu-web-collection-organizing`，category 为 `social-media`，status enabled。
 
-3. **脚本基础质量**
+3. **可被 WorkBuddy 作为 Plugin 识别**
+   - `codebuddy plugin validate <repo>` 通过。
+   - `codebuddy plugin validate <repo>/.codebuddy-plugin/marketplace.json` 通过。
+   - 在临时 `CODEBUDDY_CONFIG_DIR` 中添加本地 marketplace 并安装 `xiaohongshu-organizer@xiaohongshu-skill-marketplace`。
+   - `cd workbuddy-plugin-src && npm ci && npm run build && npm run test:mcp` 通过；六个 `xhs_workbuddy_*` 工具齐全，status 返回 `host=workbuddy` 与 `browser_backend=playwright`。
+
+4. **脚本基础质量**
    - 运行：`python3 -m compileall -q <repo>`。
    - 无输出且 exit 0 才算语法检查通过。
 
-4. **无副作用 smoke tests**
+5. **无副作用 smoke tests**
    在下载后的 repo 中运行：
 
    ```bash
@@ -38,7 +44,7 @@
    python3 scripts/build_created_boards.py templates/board_taxonomy.template.json /tmp/xhs_existing_boards.json /tmp/xhs_created_boards.json
    ```
 
-5. **有副作用功能不应盲测**
+6. **有副作用功能不应盲测**
    - `extract_visible_items.py` 依赖已登录浏览器和页面状态，可在用户授权浏览器环境中测。
    - `capture_board_snapshot.py` 依赖用户本轮授权的已登录浏览器，只读调用前端 `yC + U_ + Ks`。
    - `run_reassign_batch.py --execute` 会实际整理/移动收藏；没有 `board_snapshot.json` 和 `created_boards.json` 时必须在接触浏览器前拒绝。
@@ -66,8 +72,9 @@ diff -qr ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing <do
 ## 发布结论标准
 
 - **可以说“可下载”**：GitHub API、clone、zip 都成功。
-- **可以说“可安装”**：临时 `HERMES_HOME` 下 `hermes skills list` 能识别。
+- **可以说“Hermes 可安装”**：临时 `HERMES_HOME` 下 `hermes skills list` 能识别。
+- **可以说“WorkBuddy Plugin 可安装”**：插件/市场清单、临时市场安装和 MCP smoke 全部通过。
 - **可以说“基础可跑”**：compileall 和无副作用 smoke tests 通过。
-- **可以说“适合发给别人直接用”**：除以上外，README 还必须写清：安装命令、macOS/浏览器前置、Chrome Apple Events JavaScript 或 Safari 路径、登录态要求、哪些脚本可直接运行、真实移动入口、真实移动收藏的风险和授权边界。
+- **可以说“适合发给 WorkBuddy 用户直接用”**：除以上外，README 还必须写清插件安装、专用 Playwright 首次下载、独立登录态、六个 MCP 工具顺序、真实移动风险和授权边界；不得再要求 WorkBuddy 用户修复 Safari Automation。
 
 如果 README 不足或 GitHub 版本落后，最终结论应为：**可下载和基础可跑，但不建议宣传为任何人下载即用；先同步最新版并补 README。**

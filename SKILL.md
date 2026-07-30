@@ -1,11 +1,27 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: Reorganize a logged-in Xiaohongshu web 收藏 / 点赞 / 专辑 library, classify saved notes, or batch reassign notes through browser automation. macOS supports Arc/Chrome/Safari plus Vision OCR; Windows supports Chrome/Edge plus Tesseract/EasyOCR. It can optionally classify videos from verified transcripts and full-timeline visual evidence through an explicitly selected analysis provider. Use when the user asks to inspect or organize Xiaohongshu favorites, liked notes, videos, or boards. It defaults to dry-run and requires confirmation before account changes.
+description: Reorganize a logged-in Xiaohongshu web 收藏 / 点赞 / 专辑 library, classify saved notes, or batch reassign notes through browser automation. WorkBuddy must use the bundled WorkBuddy Plugin MCP plus its dedicated Playwright Chromium profile; macOS direct use supports Arc/Chrome/Safari plus Vision OCR, and Windows direct use supports Chrome/Edge plus Tesseract/EasyOCR. It can optionally classify videos from verified transcripts and full-timeline visual evidence through an explicitly selected analysis provider. Use when the user asks to inspect or organize Xiaohongshu favorites, liked notes, videos, or boards. It defaults to dry-run and requires confirmation before account changes.
 ---
 
 # 小红书工作流 Skill
 
 This is the umbrella for Xiaohongshu web workflows. Use the collection/liked organizing sections for logged-in favorites, liked notes, and board cleanup; use the single-note research section below for one shared note URL.
+
+## WorkBuddy 固定入口（优先于下面所有浏览器说明）
+
+先检查当前工具集中是否同时存在 `xhs_workbuddy_status`、`xhs_workbuddy_setup`、`xhs_workbuddy_login`、`xhs_workbuddy_capture`、`xhs_workbuddy_prepare`、`xhs_workbuddy_execute`。六个工具同时存在，才视为已检测到 WorkBuddy Plugin；不得用进程名、应用标题、环境猜测或模型自述判断宿主。
+
+检测到 WorkBuddy Plugin 后：
+
+1. 浏览器阶段只允许调用上述 `xhs_workbuddy_*` 工具。禁止直接运行 `osascript`、Safari/Arc/Chrome Apple Events、Computer Use、CDP，禁止调用脚本时传 `--browser safari|arc|chrome` 或 `--backend macos-*`。
+2. 先调用 `xhs_workbuddy_status`。若 `install_required=true`，先向用户说明需要把 Python Playwright 与 Chromium 下载到插件持久化目录并取得明确同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)`，随后再次调用 status。
+3. 首次登录前取得当前回合打开专用浏览器的明确授权，再调用 `xhs_workbuddy_login(browser_authorized=true)`。用户在可见的专用 Chromium 中登录小红书、打开目标收藏/点赞页，然后关闭专用浏览器窗口；登录态只保存在插件自己的 `CODEBUDDY_PLUGIN_DATA/playwright-profile`。
+4. 抓取前取得对精确页面 URL 的授权，再调用 `xhs_workbuddy_capture`。它只在专用 Chromium 中打开这个精确 URL，然后被动读取当前可见段；不会自动滚动、点击或写账号。快速整理传 `quick_classify=true`；轻度/深度整理传 `false`，再让既有 OCR/视频链路把最终结果写到工具返回的 `run_dir/classification.json`。
+5. 分类完成后只能调用 `xhs_workbuddy_prepare` 生成真实 `board_snapshot.json`、`created_boards.json` 和硬闸门 `run_report.json`。只有工具返回 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 和非空 `approval_digest`，才可向用户展示逐条“当前专辑 → 目标专辑”。
+6. 用户明确确认逐条映射与本次移动上限后，原样传回 `approval_digest`，并调用 `xhs_workbuddy_execute(browser_authorized=true,user_confirmed=true,...)`。任何分类、专辑证据或计划变化都会让 digest 失效，并在打开浏览器前拒绝执行。
+7. 如果六个工具缺少任何一个，结论是“WorkBuddy Plugin 未安装或未加载”。停止并要求安装/重载插件；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
+
+WorkBuddy 路径由插件显式注入 `XHS_HOST=workbuddy`；三个已有浏览器入口会再次在代码层强制为 Playwright 自带 `chromium`、可见窗口和插件独立 profile，并拒绝 CDP、headless 与其他 `user-data-dir`。这条约束与选择 GLM、Hy3 或其他模型无关。完整安装和工具合同见 `references/workbuddy-plugin.md`。
 
 ## 单篇笔记研究 / note research
 
@@ -36,7 +52,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - 选择“点赞”或“我全都要”时，不得取消点赞、删除互动记录或把点赞来源静默丢弃；抓取和报告中必须保留 `source_lists` / `source_primary`，能区分笔记来自收藏、点赞或二者都有。
 - 不得把未分类、抓取失败或移动失败的笔记静默丢弃；必须写入 `retry_queue.json` / `run_report.json`。
 - 没有 `board_snapshot.json` 和 `created_boards.json` 时，`run_reassign_batch.py` 只会生成 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`；不得把分类预览称为 dry-run，不得用 `missing_boards=null` 或空值声称目标专辑已存在。
-- WorkBuddy 的最终说明必须逐字服从 `run_report.json` 的 `ready_for_execute` 与 `blockers`。只有 `ready_for_execute=true` 才能向用户展示可执行计划；任何其他状态都必须停止，禁止声称产物可直接复用执行。
+- WorkBuddy 的最终说明必须逐字服从 `xhs_workbuddy_prepare` 返回值及其 `run_report.json` 的 `mode`、`ready_for_execute` 与 `blockers`。只有 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 且存在 `approval_digest` 才能展示可执行计划；任何其他状态都必须停止，禁止声称产物可直接复用执行。
 - 删除或清理专辑前必须先核验该专辑内笔记已迁移或无需保留在该专辑；不得因专辑分类重构导致笔记丢失。
 - 不得把完整小红书 URL query、`xsec_token`、cookie、signed media URL、`sign` 参数或任何疑似凭据写入模型上下文、正式报告、Telegram/Discord 回复或日志摘要；只保留标准 `/explore/<note_id>`、标题、作者、公开计数和分类所需普通文本。历史上完整 `xsec_token` 链接曾触发 GPT `cyber_policy` 误判。
 
@@ -162,7 +178,8 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
    - **只有图文 OCR 开关已开启时**，运行 `python3 scripts/check_environment.py --ocr`（Windows：`python scripts/check_environment.py --ocr`），读取 `ocr_checked` / `ocr_status` / `ocr_ready` / `ocr_provider` / `tesseract_chi_sim` / `ocr_install_size`。若缺失，按 `references/image-ocr-classification.md` 安装并复验；不得重复询问安装同意，但系统权限窗口仍由用户确认。
    - 图文 OCR 开关未开启时，不得运行 `--ocr`、不得安装 OCR、不得执行 `enrich_note_images.py` 或 `ocr_note_images.py`。PaddleOCR 不是受支持 provider；Tesseract 缺少 `chi_sim` 时不得静默回退英文，EasyOCR 也不得自动作为默认替代。
-   - macOS 不自动选择浏览器。先取得当前回合对具体浏览器的明确授权，再检查该浏览器的小红书登录态和自动化能力；用户选择 Arc 时使用 `--backend macos-arc` / `--browser arc`。
+   - WorkBuddy 先按“WorkBuddy 固定入口”分流，只能使用插件专用 Playwright Chromium；不要检查或请求 Safari/Arc/Chrome 的自动化权限。
+   - 非 WorkBuddy 的 macOS 直接使用路径不自动选择浏览器。先取得当前回合对具体浏览器的明确授权，再检查该浏览器的小红书登录态和自动化能力；用户选择 Arc 时使用 `--backend macos-arc` / `--browser arc`。
    - Windows 默认走 Chrome/Edge + Playwright 或已启动浏览器 CDP；OCR 走 Tesseract 或 EasyOCR，必须使用用户自己的网页登录态，不抓取或复制敏感 token。
    - 如果 Chrome 未登录但用户说“用 Safari”，立即切换 Safari，打开 `https://www.xiaohongshu.com/explore` 并验证 Safari 登录态，不要继续卡在 Chrome。
    - 如果目标浏览器未登录：明确告诉用户需要手动登录；不后台轮询、不自动续跑。用户确认完成后，必须从新的只读会话开始。
@@ -346,6 +363,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - 图文 OCR 开关、体积与安装门禁：`references/image-ocr-classification.md`
 - 视频内容分类开关、依赖与失败边界：`references/video-content-classification.md`
 - Windows Playwright/CDP + OCR 支持：`references/windows-playwright-ocr-notes.md`
+- WorkBuddy Plugin + 专用 Playwright 路径：`references/workbuddy-plugin.md`
 - Safari 自动化补充：`references/safari-web-automation-notes.md`
 - Safari 小红书前端模块/私有接口观察：`references/safari-xhs-private-api-notes.md`
 - Safari 专辑移动前端运行时路径与已验证 payload：`references/safari-xhs-board-move-fallback.md`

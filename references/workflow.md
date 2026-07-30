@@ -1,4 +1,5 @@
 # 执行工作流速查
+0. **先分流 WorkBuddy**：检查六个 `xhs_workbuddy_*` MCP 工具。若同时存在，必须改走 `workbuddy-plugin.md` 的固定顺序；禁止 Safari/Arc/Chrome Apple Events、CDP 和 `osascript`。工具不完整时停止并要求安装/重载插件，不回退外部浏览器。
 1. **先显示欢迎与范围卡片**：说明 Skill 能读取选定的收藏/点赞内容、根据实际内容生成分类建议，并在再次授权后移动笔记；随后让用户回复“收藏”“点赞”或“我全都要”。
 2. **范围回答后自动做本地能力只读预检**：运行 `scripts/check_environment.py --capability-preflight`。只检查文档约定路径、OCR、ASR、本地视觉模型和宿主声明能力；不访问浏览器、不联网、不安装、不加载大模型。先向用户显示找到与未找到的能力，并明确安装决策：缺失 OCR 标“推荐安装”，缺失声音与画面能力标“按需安装”；已找到的能力标“可直接复用”。检查不等于开启。
 3. **预检后显示快速启动档位**：固定提供“快速整理｜只按标题、正文、标签和作者；不做 OCR 或视频识别”“轻度整理｜读取图文全部图片文字；不分析视频”“深度整理｜图文 OCR + 视频语音 + 完整时轴画面”。按钮或选择题必须直接显示完整差异，不得只显示档位名，不得添加“推荐”，也不得默认选中。三档只决定内容识别，不打开浏览器、不移动笔记；若用户回复“自定义”，才进入原来的逐项选择。
@@ -16,7 +17,7 @@
 15. 运行 `scripts/build_created_boards.py classification.json board_snapshot.json created_boards.json`，再把两份证据交给 `run_reassign_batch.py` 机械生成成员关系分流：已在目标专辑的标记 `already_in_target` 后排除，未归档的 `source_board_id` 留空，已在其他专辑的写入真实 `source_board_id`；多来源、目标缺失或分页不完整时脚本必须阻止。
 16. 运行带 `--board-snapshot board_snapshot.json --created-boards created_boards.json` 的 dry-run。只有 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才展示分类、成员关系分流、低置信度和失败项并取得用户确认。缺少证据时的 `classification_preview` 不是 dry-run。
 17. 再次确认后才能在同一命令中加 `--execute --max-moves-per-session <1–200>`；仍必须传入两份证据。达到上限后保存报告、等待用户检查，不自动进入下一段。安全验证、登录页、绑定丢失或状态不确定会写 `xhs_safety_state.json`，旧状态下不得续跑；随后运行 `scripts/build_retry_queue.py` 和 `scripts/summarize_run_report.py`。
-18. WorkBuddy 只能根据 `run_report.json` 的 `ready_for_execute` 和 `blockers` 描述状态；禁止从 `missing_boards` 的空值自行推断专辑存在。
+18. WorkBuddy 只能根据 `xhs_workbuddy_prepare` 返回值及 `run_report.json` 的 `mode`、`ready_for_execute`、`blockers` 和 `approval_digest` 描述状态；禁止从 `missing_boards` 的空值自行推断专辑存在。
 19. 执行完成后运行 `scripts/verify_classification_membership.py`，只读复抓全部专辑；已放行视频必须全局恰好出现一次并位于目标专辑，未决视频必须单独报告且不移动。
 
 视频开关开启后，Video Transcript Extractor + MiMo ASR 生成文字稿，明确选择的 analysis provider 生成分类所需的极简内容 memo。视觉模块开启时，复用 ffmpeg + macOS Vision + provider 查看每一条明确视频的完整时轴真实帧。视频链路只产出文字稿、分类 memo 和必要证据 JSON；转写和所选分析路径都失败时不得回退简介分类。

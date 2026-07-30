@@ -9,6 +9,7 @@
 ## 当前能力
 
 - 可被 Hermes Agent 安装和识别。
+- 可作为 WorkBuddy Plugin 安装；WorkBuddy 浏览器阶段固定使用插件独立的 Playwright Chromium，不依赖 Safari Automation。
 - 核心非视频流程支持 macOS 默认 Python 3.9+，不要求额外 Python 包。
 - 支持 macOS Arc/Chrome/Safari + AppleScript/JXA 抓取收藏页、点赞页或当前小红书列表页。
 - 支持 macOS Swift + Vision OCR。
@@ -41,11 +42,22 @@
 
 ```text
 .
+├── .codebuddy-plugin/
+│   ├── plugin.json
+│   └── marketplace.json
+├── .mcp.json
 ├── SKILL.md
 ├── README.md
 ├── LICENSE
 ├── requirements.txt
 ├── requirements-windows.txt
+├── requirements-workbuddy.txt
+├── server/
+│   └── xhs-workbuddy-mcp.mjs
+├── workbuddy-plugin-src/
+│   ├── package.json
+│   ├── server.mjs
+│   └── smoke.mjs
 ├── scripts/
 │   ├── check_environment.py
 │   ├── extract_visible_items.py
@@ -59,6 +71,8 @@
 │   ├── capture_board_snapshot.py
 │   ├── build_created_boards.py
 │   ├── run_reassign_batch.py
+│   ├── workbuddy_runtime.py
+│   ├── workbuddy_bridge.py
 │   ├── build_retry_queue.py
 │   └── summarize_run_report.py
 ├── templates/
@@ -68,6 +82,29 @@
 ```
 
 ## 安装
+
+### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
+
+在 WorkBuddy 对话中执行：
+
+```text
+/plugin marketplace add themrv1ck/xiaohongshu-web-collection-organizing
+/plugin install xiaohongshu-organizer@xiaohongshu-skill-marketplace
+/reload-plugins
+```
+
+加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意依赖下载后才安装 Playwright Chromium。首次使用会打开一个与 Safari、Arc、系统 Chrome 完全分开的可见 Chromium，用户只需在这里登录一次小红书。
+
+如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
+
+```bash
+export CODEBUDDY_CONFIG_DIR="$HOME/.workbuddy"
+WB_CODEBUDDY="/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"
+"$WB_CODEBUDDY" plugin marketplace add themrv1ck/xiaohongshu-web-collection-organizing
+"$WB_CODEBUDDY" plugin install xiaohongshu-organizer@xiaohongshu-skill-marketplace --scope user
+```
+
+然后完全退出并重新打开 WorkBuddy，或执行 `/reload-plugins`。详细工具顺序见 [`references/workbuddy-plugin.md`](references/workbuddy-plugin.md)。
 
 ### git clone
 
@@ -96,7 +133,14 @@ hermes skills list
 
 - Python 3.9+
 - 已登录小红书网页端
-- Arc / Chrome / Edge / Safari 至少一种浏览器；使用哪个浏览器必须由用户在当前操作中明确指定
+- 非 WorkBuddy 直接使用时需要 Arc / Chrome / Edge / Safari 至少一种浏览器；使用哪个浏览器必须由用户在当前操作中明确指定
+
+WorkBuddy：
+
+- 必须安装 `xiaohongshu-organizer` Plugin，不能只复制 `SKILL.md`
+- 浏览器固定为插件专用 Playwright Chromium
+- 不需要给 WorkBuddy 开 Safari/Arc/Chrome 自动化权限
+- 禁止改用系统浏览器、CDP、headless 或其他登录目录
 
 macOS：
 

@@ -28,7 +28,7 @@ from xhs_safety import (
 
 
 def validate_args(args: argparse.Namespace) -> str:
-    backend = choose_backend(args.browser)
+    backend = choose_backend(args.browser, args)
     require_note_id(args.user_id, '--user-id')
     if not str(args.expected_url_substring or '').strip():
         raise MembershipContractError('--expected-url-substring 不能为空')

@@ -142,6 +142,19 @@ python scripts\extract_visible_items.py segment-001-visible.json --backend playw
 python scripts\extract_visible_items.py segment-001-visible.json --backend playwright --cdp-url http://127.0.0.1:9222 --capture-mode passive --segment-limit 200
 ```
 
+## WorkBuddy
+
+WorkBuddy 是独立路径，不复用上面的 macOS Apple Events 或 Windows CDP：
+
+- 安装并加载 `xiaohongshu-organizer` 插件。
+- MCP 子进程必须有 `XHS_HOST=workbuddy`、`CODEBUDDY_PLUGIN_DATA` 和 `XHS_PLAYWRIGHT_PROFILE`。
+- 先调用 `xhs_workbuddy_status`；缺依赖时经用户同意调用 `xhs_workbuddy_setup`。
+- 浏览器固定为 Playwright 自带 Chromium、可见窗口和插件独立 profile。
+- 禁止 Safari、Arc、系统 Chrome/Edge、CDP、headless 和其他 profile。
+- `xhs_workbuddy_capture` / `prepare` / `execute` 是浏览器阶段唯一入口。
+
+完整合同见 `workbuddy-plugin.md`。
+
 ## Windows OCR 命令
 
 ```powershell

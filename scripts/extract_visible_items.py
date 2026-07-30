@@ -18,6 +18,7 @@ from xhs_safety import (
     mark_security_halted,
     resolve_safety_state_path,
 )
+from workbuddy_runtime import apply_workbuddy_browser_policy
 
 
 def write_private_json(path: Path, data) -> None:
@@ -768,7 +769,9 @@ def extract_macos_arc(out: Path, max_scrolls: int, scroll_pause: float, manifest
     return result
 
 
-def resolve_backend(value: str) -> str:
+def resolve_backend(value: str, args=None) -> str:
+    if args is not None:
+        value = apply_workbuddy_browser_policy(value, args)
     if value == 'auto':
         raise RuntimeError('抓取必须显式指定 --backend macos-arc、macos-chrome、macos-safari 或 playwright；禁止自动选择外部浏览器。')
     return value
@@ -841,7 +844,7 @@ def main():
     if args.capture_mode == 'passive' and (not isinstance(args.segment_limit, int) or not 1 <= args.segment_limit <= 200):
         parser.error('--segment-limit 必须是 1 到 200 的整数')
     safety_state = resolve_safety_state_path(args.safety_state, out)
-    backend = resolve_backend(args.backend)
+    backend = resolve_backend(args.backend, args)
     if backend == 'macos-chrome':
         result = extract_macos_chrome(out, args.max_scrolls, args.scroll_pause, manifest, args.source, args.append_existing, args.capture_mode, args.segment_limit, safety_state)
     elif backend == 'macos-safari':

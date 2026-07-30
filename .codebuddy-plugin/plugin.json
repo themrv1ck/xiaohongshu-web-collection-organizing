@@ -1,0 +1,21 @@
+{
+  "name": "xiaohongshu-organizer",
+  "version": "1.0.0",
+  "description": "在 WorkBuddy 中用独立 Playwright 浏览器安全整理小红书收藏与点赞。",
+  "author": {
+    "name": "themrv1ck"
+  },
+  "homepage": "https://github.com/themrv1ck/xiaohongshu-web-collection-organizing",
+  "repository": "https://github.com/themrv1ck/xiaohongshu-web-collection-organizing",
+  "license": "MIT",
+  "keywords": [
+    "xiaohongshu",
+    "workbuddy",
+    "playwright",
+    "collection-organizing"
+  ],
+  "skills": [
+    "./"
+  ],
+  "mcpServers": "./.mcp.json"
+}

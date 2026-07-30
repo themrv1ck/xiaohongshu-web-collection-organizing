@@ -22,6 +22,7 @@ from xhs_safety import (
     mark_security_halted,
     resolve_safety_state_path,
 )
+from workbuddy_runtime import apply_workbuddy_browser_policy
 
 
 LOGIN_MARKERS = ('手机号登录', '登录后推荐', '马上登录即可', '扫码登录', '验证码登录')
@@ -492,13 +493,13 @@ def parse_browser_job_id(raw: Any) -> str:
 
 class BrowserRunner:
     def __init__(self, backend: str, args: argparse.Namespace):
-        self.backend = backend
+        self.backend = apply_workbuddy_browser_policy(backend, args)
         self.args = args
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
-        if backend == 'playwright':
+        if self.backend == 'playwright':
             self._open_playwright()
 
     def _open_playwright(self) -> None:
@@ -553,7 +554,9 @@ class BrowserRunner:
                 self.playwright.stop()
 
 
-def choose_backend(value: str) -> str:
+def choose_backend(value: str, args: argparse.Namespace = None) -> str:
+    if args is not None:
+        value = apply_workbuddy_browser_policy(value, args)
     if value != 'auto':
         return value
     raise RuntimeError('真实执行必须显式指定 --browser arc、safari、chrome 或 playwright；禁止自动选择外部浏览器。')
@@ -886,7 +889,7 @@ def execution_binding_blockers(snapshot_source: Any, args: argparse.Namespace) -
         return ['snapshot_source_missing']
     blockers = []
     try:
-        backend = choose_backend(args.browser)
+        backend = choose_backend(args.browser, args)
     except RuntimeError:
         return ['browser_not_explicit']
     snapshot_browser = str(snapshot_source.get('browser') or '').strip().lower()
@@ -1361,7 +1364,7 @@ def move_session_limit(args: argparse.Namespace) -> int:
 
 
 def execute_batch(classification: List[Dict[str, Any]], report: Dict[str, Any], args: argparse.Namespace, report_path: Path) -> None:
-    backend = choose_backend(args.browser)
+    backend = choose_backend(args.browser, args)
     arc_selector = {
         '--arc-window-id': str(getattr(args, 'arc_window_id', '') or '').strip(),
         '--arc-tab-id': str(getattr(args, 'arc_tab_id', '') or '').strip(),

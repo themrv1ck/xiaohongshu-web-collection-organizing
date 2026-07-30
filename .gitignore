@@ -24,3 +24,4 @@ existing_boards_inventory.json
 xhs_existing_boards.json
 webui_runs/
 runs/
+workbuddy-plugin-src/node_modules/
