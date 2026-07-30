@@ -1,62 +1,56 @@
 # Safari 小红书网页端自动化补充
 
-## 适用场景
-当 Chrome 未登录小红书、用户明确要求“用 Safari”，或 Chrome 端自动化前提不满足时，可以在 macOS 上用 Safari + AppleScript `do JavaScript` 继续操作。不要因 SKILL.md 原先写 Chrome 前提就停止；先验证 Safari 是否已登录。
+## 何时可以使用 Safari
 
-## 稳定探测
-- 打开：`https://www.xiaohongshu.com/explore`
-- 用户态特征：侧边栏/底部出现“我”，个人主页能打开 `/user/profile/<id>`，页面显示昵称/收藏/专辑。
-- 未登录特征：页面文本出现“手机号登录 / 登录后推荐 / 马上登录即可 / 扫码”。
+只有用户在**当前回合**明确授权 Safari 时，才可以使用它。开始前确认：
 
-## AppleScript 执行模式
-短 JS 可直接：
+1. Safari 已打开；
+2. 用户已登录小红书，并停在收藏、点赞或用户明确指定的页面；
+3. Safari 已开启本 Skill 所需的 JavaScript 能力；
+4. 当前任务已经完成 OCR 选择和分段设置。
+
+Safari 未获授权、未登录或 JavaScript 接入不可确认时，停止并请用户处理；不要改用 Chrome、Arc、其他窗口或未验证的自动化方式。浏览器历史授权和默认浏览器设置都不算本次授权。
+
+## 登录状态探测
+
+- 已登录线索：侧边栏/底部出现“我”，个人页可打开 `/user/profile/<id>`，页面显示昵称、收藏或专辑。
+- 未登录线索：页面出现“手机号登录”“登录后推荐”“马上登录即可”或“扫码”。
+- 广告屏蔽提示只是可能的 UI 遮挡，不等于未登录；先请用户处理遮挡或在当前页面明确允许处理，不能把它当成已完成页面验证。
+
+## AppleScript 执行边界
+
+短 JavaScript 可通过 AppleScript `do JavaScript` 在用户当前授权的标签页执行：
+
 ```bash
 osascript -e 'tell application "Safari" to do JavaScript "document.title" in current tab of front window'
 ```
 
-复杂 JS 不要塞进一行 shell，容易遇到引号/括号转义错误。更稳定的方式：
-1. 把 JS 写入临时 `.js` 文件。
-2. AppleScript 读取文件内容。
-3. `do JavaScript jsCode in current tab of front window`。
+复杂脚本应写入临时 `.js` 文件后由 AppleScript 读取，避免 shell 引号损坏。每个脚本都必须核验它仍在用户指定标签页；不允许根据标题相似度推测其他页面。不要在本 Skill 中输出或保存 cookie、xsec_token、signed URL 或 token。
 
-示例 Python wrapper：
-```python
-import subprocess, tempfile, os
+## 分段读取
 
-def safari_js(js: str) -> str:
-    fd, path = tempfile.mkstemp(suffix='.js')
-    os.write(fd, js.encode())
-    os.close(fd)
-    script = f'''set jsCode to read POSIX file "{path}"
-tell application "Safari"
-  do JavaScript jsCode in current tab of front window
-end tell
-'''
-    res = subprocess.run(['osascript'], input=script, text=True, capture_output=True)
-    os.unlink(path)
-    if res.returncode:
-        raise RuntimeError(res.stderr.strip() or res.stdout.strip())
-    return res.stdout.strip()
-```
+Safari 的单组读取必须遵守用户已设置的每组条数（最大 `200`）和组间暂停分钟数（默认 `3`）。旧的被动采集只读取当前已显示卡片，不自行滚动或进入下一组。
 
-## 创建专辑 UI 路径
-1. 进入个人主页 `/user/profile/<id>`。
-2. 点击顶层“收藏”tab：`.reds-tab-item.sub-tab-list` 中文本为“收藏”。
-3. 点击二级“专辑”tab：`.sub-tab-list .reds-tab-item, .tertiary.left .reds-tab-item` 中文本为“专辑・N”。
-4. 点击 `.create-board`。
-5. 在 `.reds-modal-open .modal` 内填写：
-   - `input.input-content`：专辑标题，例如 `hermes`
-   - `textarea.textarea-content`：简介
-   - 点击 `.btn.done`
-6. 验证页面文本出现 `hermes\n笔记・0` 或 board card 中出现 `hermes`。
+只有用户已一次确认自动继续、当次任务执行器已验证支持受控续组时，任务执行器才可以在当次 Safari 页面接入持续可确认、没有安全状态且用户没有说“暂停”时请求下一组；每组先落盘。不要把暂停描述为规避验证或模仿真人，也不要宣称 Safari 路径已经验证了任何未实际验证的自动滚动行为。
 
-## 收藏页/专辑页结构观察
-- 一级收藏页会同时展示“笔记・N / 专辑・N / 文件・N”。
-- 笔记卡片常用：`.tab-content-item .feeds-container .title`、`.author-wrapper .author`、`.author-wrapper .count`。
-- 专辑卡片常用：`.board-card`、`.board-name .title`、`.desc`。
+## 创建专辑与移动
 
-## 注意事项
-- Safari 的 JXA `Application("Safari").doJavaScript(...)` 可能不回显；传统 AppleScript `tell application "Safari" to do JavaScript ...` 更可靠。
-- 页面可能弹出“广告屏蔽插件”提示；这是 UI 遮挡，不代表未登录。优先点击“我知道了”，必要时先处理遮挡再继续。
-- 不要泄露 cookies、xsec_token、signed URL；日志和回复只描述页面状态，不复制敏感参数。
-- `.collect-wrapper` 在 Safari 中可触发收藏/取消收藏，但是否出现“加入专辑”banner 需页面实测；若 banner 未出现，不要宣称已入目标专辑，只能记录为待重试。
+创建专辑、移动收藏和取消收藏都不是读取授权的一部分。只有分类方案预览、条目审阅（如用户要求）、目标专辑、dry-run 和执行都已单独确认后，才可以在 Safari 中执行写入。
+
+常见 UI 结构仅用于当次页面核验：
+
+1. 个人主页中的“收藏”页签；
+2. “专辑”二级页签；
+3. `.create-board` 创建入口；
+4. 弹窗内的 `input.input-content`、`textarea.textarea-content` 和 `.btn.done`；
+5. 完成后在页面文本或 board card 中确认新专辑名称和笔记数。
+
+选择器不存在、出现多个候选或页面状态不明确时，不猜测、不点击，保留分类方案并请求用户处理。
+
+## 验证与恢复
+
+安全验证、登录页、页面绑定丢失或写入状态不确定时，立刻停止所有 Safari 访问和写入，保存已完成分段与 `xhs_safety_state.json`。请用户在小红书当前页面完成必要处理并回复“继续整理”。
+
+恢复时只检查当前已授权 Safari 标签页是否已回到正确列表；不重读已保存分段、不自动重试触发问题的请求、不切换浏览器。检查通过后才按原有未完成队列继续。
+
+每周任务同样不能复用旧的 Safari 授权：到时间后只准备新内容的分类方案，用户当次确认 Safari 可用后才可以开始读取，且不会自动创建专辑或移动笔记。

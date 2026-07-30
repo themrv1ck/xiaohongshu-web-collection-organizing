@@ -4,10 +4,18 @@
     "title": "到底为什么叫他贵妇？",
     "href": "https://www.xiaohongshu.com/explore/66d19b54000000001d03a93d",
     "cover_image_url": "https://ci.xiaohongshu.com/cover-1.jpg",
+    "image_urls": [
+      "https://ci.xiaohongshu.com/cover-1.jpg"
+    ],
+    "image_count": null,
+    "image_urls_complete": false,
+    "image_list_source": "collection_card_cover_only",
     "user": "穿搭研究所",
     "desc": "男士西装与香水搭配",
     "tags": ["穿搭", "老钱风"],
     "card_text": "到底为什么叫他贵妇？ 男士西装与香水搭配 #穿搭 #老钱风",
+    "content_type": "image",
+    "content_type_source": "xhs_initial_state_note_type",
     "source_lists": ["收藏"],
     "source_primary": "收藏",
     "first_seen": 0
@@ -17,10 +25,18 @@
     "title": "听CASI考官详细拆解什么固定器角度适合你？",
     "href": "https://www.xiaohongshu.com/explore/694d3390000000002203ae33",
     "cover_image_url": "https://ci.xiaohongshu.com/cover-2.jpg",
+    "image_urls": [
+      "https://ci.xiaohongshu.com/cover-2.jpg"
+    ],
+    "image_count": null,
+    "image_urls_complete": false,
+    "image_list_source": "collection_card_cover_only",
     "user": "滑雪教练",
     "desc": "固定器角度与换刃思路",
     "tags": ["滑雪", "CASI"],
     "card_text": "听CASI考官详细拆解什么固定器角度适合你？ 固定器角度与换刃思路 #滑雪 #CASI",
+    "content_type": "video",
+    "content_type_source": "xhs_initial_state_note_type",
     "source_lists": ["点赞"],
     "source_primary": "点赞",
     "first_seen": 1

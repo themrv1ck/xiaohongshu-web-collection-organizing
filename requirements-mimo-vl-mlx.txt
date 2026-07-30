@@ -1,0 +1,9 @@
+mlx-vlm==0.5.0
+mlx==0.32.0
+mlx-lm==0.31.3
+mlx-audio==0.4.5
+transformers==5.12.1
+huggingface-hub==1.23.0
+hf-xet==1.5.1
+httpx[socks]==0.28.1
+opencv-python==5.0.0.93

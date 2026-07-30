@@ -2,21 +2,62 @@
   {
     "id": "66d19b54000000001d03a93d",
     "title": "到底为什么叫他贵妇？",
-    "image_url": "https://ci.xiaohongshu.com/cover-1.jpg",
     "status": "ok",
-    "ocr_text": "老钱风西装 香水推荐",
-    "ocr_lines": ["老钱风西装", "香水推荐"],
+    "ocr_text": "第1张：老钱风西装 第2张：香水推荐",
+    "ocr_lines": [
+      {"text": "老钱风西装", "confidence": 0.94, "image_index": 0},
+      {"text": "香水推荐", "confidence": 0.92, "image_index": 1}
+    ],
     "ocr_confidence": 0.93,
-    "error": ""
-  },
-  {
-    "id": "694d3390000000002203ae33",
-    "title": "听CASI考官详细拆解什么固定器角度适合你？",
-    "image_url": "https://ci.xiaohongshu.com/cover-2.jpg",
-    "status": "ok",
-    "ocr_text": "CASI 固定器角度 换刃",
-    "ocr_lines": ["CASI", "固定器角度", "换刃"],
-    "ocr_confidence": 0.95,
+    "ocr_provider": "swift",
+    "image_count_declared": 3,
+    "image_count_available": 3,
+    "image_count_processed": 3,
+    "image_set_complete": true,
+    "image_set_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "ocr_run_fingerprint": "8888888888888888888888888888888888888888888888888888888888888888",
+    "images": [
+      {
+        "image_index": 0,
+        "status": "ok",
+        "ocr_text": "老钱风西装",
+        "ocr_lines": [
+          {"text": "老钱风西装", "confidence": 0.94, "image_index": 0}
+        ],
+        "ocr_confidence": 0.94,
+        "ocr_provider": "swift",
+        "source_url_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "download_path": "ocr_cache/66d19b54000000001d03a93d-cover.jpg",
+        "image_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "error": ""
+      },
+      {
+        "image_index": 1,
+        "status": "ok",
+        "ocr_text": "香水推荐",
+        "ocr_lines": [
+          {"text": "香水推荐", "confidence": 0.92, "image_index": 1}
+        ],
+        "ocr_confidence": 0.92,
+        "ocr_provider": "swift",
+        "source_url_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "download_path": "ocr_cache/66d19b54000000001d03a93d-page-2.jpg",
+        "image_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "error": ""
+      },
+      {
+        "image_index": 2,
+        "status": "ok",
+        "ocr_text": "",
+        "ocr_lines": [],
+        "ocr_confidence": null,
+        "ocr_provider": "swift",
+        "source_url_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "download_path": "ocr_cache/66d19b54000000001d03a93d-page-3.jpg",
+        "image_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+        "error": ""
+      }
+    ],
     "error": ""
   }
 ]

@@ -1,7 +1,9 @@
-# Safari 小红书：专辑移动回退路径
+# Safari 小红书：专辑移动历史取证（不可执行）
 
-## 触发条件
-当 Safari 网页端满足以下现象时，直接切到此回退路径：
+> 本文仅保留历史页面结构和前端接口取证，不是回退路径，也不得直接运行其中的 JS、点击 UI 或调用接口。当前所有真实移动只能通过 `scripts/run_reassign_batch.py --execute --max-moves-per-session <1–200>`，让统一安全状态、逐条落盘和停机规则生效。
+
+## 历史观察
+Safari 网页端曾出现以下现象：
 - 详情页能点“收藏”，`.collect-wrapper` 图标会在 `#collect` / `#collected` 间切换
 - 但“加入专辑 / 选择专辑 / hermes”弹层不稳定、不出现或抓不到
 - 不能把“已收藏”误判成“已加入目标专辑”
@@ -26,7 +28,7 @@ const boards = state.board.boardListData[key].boards
 
 在该会话里，`hermes` 专辑已能从这里直接读到，且包含真实 `boardId` 与初始条数。
 
-## webpack runtime 回退路径
+## webpack runtime 历史观察
 先暴露运行时：
 ```js
 let req
@@ -52,14 +54,9 @@ ee({ targetBoardId: n, notesId: e.noteId })
 ```
 其中 `ee` 是 `useMoveNoteToBoard()`，内部再调用 `d0(...)`。
 
-## 推荐执行顺序
-1. 从 `window.__INITIAL_STATE__.board.boardListData` 先确认目标专辑存在，并记录 `boardId`
-2. 若详情页收藏态还没打开，先正常点一次收藏
-3. 不再等 UI 弹层，直接复用前端真实 `d0({targetBoardId, notesId})`
-4. 之后再用：
-   - `Ks({params:{boardId,...}})` 或
-   - 页面 state / 专辑页重抓
-   去核验该笔记是否真的进入目标专辑
+## 当前执行规则
+
+不要把这些历史观察当作直接执行说明。先由统一执行器核验目标专辑与来源关系，再按用户明确的本次上限逐条移动；安全验证、登录、页面绑定变化或状态不确定时立即落盘停机，不发额外请求。
 
 ## 核验原则
 - `note/move` 返回空对象 `{}` 不能直接当失败
