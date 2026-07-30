@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">小红书整理 Skill 1.0 与 2.0 对比</title>
+  <desc id="desc">2.0 在 1.0 稳定执行基础上，升级启动体验、全内页 OCR、视频内容分析、被动分段、双重确认和安全熔断。</desc>
+
+  <defs>
+    <linearGradient id="headerGlow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff7f8"/>
+      <stop offset="1" stop-color="#f5f9ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#1f2937" flood-opacity="0.08"/>
+    </filter>
+    <style>
+      .font { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+      .title { font-size: 54px; font-weight: 750; fill: #171a21; letter-spacing: -1px; }
+      .subtitle { font-size: 25px; font-weight: 450; fill: #69707d; }
+      .column-title { font-size: 30px; font-weight: 700; }
+      .row-text { font-size: 25px; font-weight: 600; fill: #252a33; }
+      .row-index { font-size: 18px; font-weight: 750; text-anchor: middle; dominant-baseline: middle; }
+      .tag { font-size: 17px; font-weight: 700; text-anchor: middle; dominant-baseline: middle; }
+      .footer-title { font-size: 23px; font-weight: 750; fill: #ffffff; }
+      .footer-text { font-size: 21px; font-weight: 550; fill: #fff7f8; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#fbfaf7"/>
+  <rect width="1600" height="205" fill="url(#headerGlow)"/>
+  <circle cx="1460" cy="38" r="125" fill="#ff2442" opacity="0.055"/>
+  <circle cx="115" cy="185" r="90" fill="#3377ff" opacity="0.045"/>
+
+  <g class="font">
+    <text class="title" x="800" y="88" text-anchor="middle">小红书整理 Skill：1.0 → 2.0</text>
+    <text class="subtitle" x="800" y="139" text-anchor="middle">从稳定执行，升级到内容理解、清晰体验与安全控制</text>
+
+    <g filter="url(#shadow)">
+      <rect x="65" y="220" width="660" height="600" rx="30" fill="#ffffff"/>
+      <rect x="875" y="220" width="660" height="600" rx="30" fill="#ffffff"/>
+    </g>
+
+    <rect x="65" y="220" width="660" height="92" rx="30" fill="#f0f2f5"/>
+    <path d="M65 282V312H725V282Z" fill="#f0f2f5"/>
+    <text class="column-title" x="395" y="278" text-anchor="middle" fill="#4d5563">1.0｜稳定执行基础</text>
+
+    <rect x="875" y="220" width="660" height="92" rx="30" fill="#ff2442"/>
+    <path d="M875 282V312H1535V282Z" fill="#ff2442"/>
+    <text class="column-title" x="1205" y="278" text-anchor="middle" fill="#ffffff">2.0｜完整升级</text>
+
+    <g>
+      <line x1="96" y1="397" x2="694" y2="397" stroke="#e7e9ed" stroke-width="2"/>
+      <line x1="906" y1="397" x2="1504" y2="397" stroke="#f1d9dd" stroke-width="2"/>
+      <line x1="96" y1="481" x2="694" y2="481" stroke="#e7e9ed" stroke-width="2"/>
+      <line x1="906" y1="481" x2="1504" y2="481" stroke="#f1d9dd" stroke-width="2"/>
+      <line x1="96" y1="565" x2="694" y2="565" stroke="#e7e9ed" stroke-width="2"/>
+      <line x1="906" y1="565" x2="1504" y2="565" stroke="#f1d9dd" stroke-width="2"/>
+      <line x1="96" y1="649" x2="694" y2="649" stroke="#e7e9ed" stroke-width="2"/>
+      <line x1="906" y1="649" x2="1504" y2="649" stroke="#f1d9dd" stroke-width="2"/>
+      <line x1="96" y1="733" x2="694" y2="733" stroke="#e7e9ed" stroke-width="2"/>
+      <line x1="906" y1="733" x2="1504" y2="733" stroke="#f1d9dd" stroke-width="2"/>
+    </g>
+
+    <g>
+      <circle cx="120" cy="354" r="20" fill="#e9ecf1"/>
+      <text class="row-index" x="120" y="354" fill="#5d6572">1</text>
+      <text class="row-text" x="160" y="363">直接进入流程</text>
+
+      <circle cx="930" cy="354" r="20" fill="#fff0f2"/>
+      <text class="row-index" x="930" y="354" fill="#ff2442">1</text>
+      <text class="row-text" x="970" y="363">欢迎页 + 快速 / 轻度 / 深度</text>
+    </g>
+
+    <g>
+      <circle cx="120" cy="438" r="20" fill="#e9ecf1"/>
+      <text class="row-index" x="120" y="438" fill="#5d6572">2</text>
+      <text class="row-text" x="160" y="447">封面 OCR</text>
+
+      <circle cx="930" cy="438" r="20" fill="#fff0f2"/>
+      <text class="row-index" x="930" y="438" fill="#ff2442">2</text>
+      <text class="row-text" x="970" y="447">封面 + 全部内页 OCR</text>
+    </g>
+
+    <g>
+      <circle cx="120" cy="522" r="20" fill="#e9ecf1"/>
+      <text class="row-index" x="120" y="522" fill="#5d6572">3</text>
+      <text class="row-text" x="160" y="531">标题 / 简介分类</text>
+
+      <circle cx="930" cy="522" r="20" fill="#fff0f2"/>
+      <text class="row-index" x="930" y="522" fill="#ff2442">3</text>
+      <text class="row-text" x="970" y="531">字幕 + 语音 + 完整时轴画面</text>
+    </g>
+
+    <g>
+      <circle cx="120" cy="606" r="20" fill="#e9ecf1"/>
+      <text class="row-index" x="120" y="606" fill="#5d6572">4</text>
+      <text class="row-text" x="160" y="615">连续列表抓取</text>
+
+      <circle cx="930" cy="606" r="20" fill="#fff0f2"/>
+      <text class="row-index" x="930" y="606" fill="#ff2442">4</text>
+      <text class="row-text" x="970" y="615">被动分段，每段最多 200 条</text>
+    </g>
+
+    <g>
+      <circle cx="120" cy="690" r="20" fill="#e9ecf1"/>
+      <text class="row-index" x="120" y="690" fill="#5d6572">5</text>
+      <text class="row-text" x="160" y="699">一次确认后执行</text>
+
+      <circle cx="930" cy="690" r="20" fill="#fff0f2"/>
+      <text class="row-index" x="930" y="690" fill="#ff2442">5</text>
+      <text class="row-text" x="970" y="699">分类确认 + 写入确认</text>
+    </g>
+
+    <g>
+      <circle cx="120" cy="774" r="20" fill="#e9ecf1"/>
+      <text class="row-index" x="120" y="774" fill="#5d6572">6</text>
+      <text class="row-text" x="160" y="783">失败记录与续跑</text>
+
+      <circle cx="930" cy="774" r="20" fill="#fff0f2"/>
+      <text class="row-index" x="930" y="774" fill="#ff2442">6</text>
+      <text class="row-text" x="970" y="783">安全熔断 + 页面绑定 + 逐条核验</text>
+    </g>
+
+    <g>
+      <circle cx="800" cy="520" r="34" fill="#171a21"/>
+      <path d="M783 520H814M803 508L816 520L803 532" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <g>
+      <rect x="65" y="855" width="1470" height="108" rx="28" fill="#242832"/>
+      <rect x="92" y="878" width="348" height="38" rx="19" fill="#ff2442"/>
+      <text class="tag" x="266" y="897" fill="#ffffff">2.0 继续保留 1.0 的可靠性合同</text>
+      <text class="footer-text" x="470" y="904">真实移动｜运行报告｜失败队列｜已有专辑排除｜三方核验｜单篇笔记研究</text>
+    </g>
+  </g>
+</svg>
