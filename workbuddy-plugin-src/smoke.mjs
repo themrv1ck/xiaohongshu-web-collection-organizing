@@ -5,7 +5,9 @@ import process from 'node:process';
 
 
 const root = path.resolve(import.meta.dirname, '..');
-const data = path.join('/tmp', 'xhs-workbuddy-mcp-smoke');
+const data = path.resolve(
+  process.env.XHS_SMOKE_DATA || path.join('/tmp', 'xhs-workbuddy-mcp-smoke'),
+);
 const transport = new StdioClientTransport({
   command: 'node',
   args: [path.join(root, 'server', 'xhs-workbuddy-mcp.mjs')],
