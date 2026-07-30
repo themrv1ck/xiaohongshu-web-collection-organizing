@@ -81,6 +81,17 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             self.assertEqual(status['runtime']['host'], 'workbuddy')
             self.assertIn('install_required', status['dependencies'])
 
+    def test_workbuddy_normal_results_forbid_unrequested_visualization(self):
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        contract = next(
+            line for line in skill.splitlines()
+            if '普通整理结果直接在当前对话里用简短纯文本报告' in line
+        )
+        self.assertIn('不调用可视化 Skill', contract)
+        self.assertIn('组件渲染', contract)
+        self.assertIn('present_files', contract)
+        self.assertIn('只有用户明确要求图表、网页或文件交付时才允许', contract)
+
     def test_run_id_cannot_escape_persistent_runs_directory(self):
         for invalid in ('', '../escape', 'a/b', '.hidden', 'x' * 65):
             with self.subTest(invalid=invalid):

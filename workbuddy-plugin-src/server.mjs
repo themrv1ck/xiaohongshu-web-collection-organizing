@@ -155,7 +155,7 @@ function toolError(error) {
 const server = new McpServer(
   {
     name: 'xiaohongshu-workbuddy',
-    version: '1.1.0',
+    version: '1.1.1',
   },
   {
     instructions:

@@ -53,6 +53,8 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 
 `login`、`capture`、`prepare` 是代码内部的安全边界，不得变成让用户关窗口、抄 URL 或理解 profile 的操作说明。
 
+普通整理完成后直接在当前对话里给出简短纯文本结果。不要调用可视化 Skill、组件渲染、HTML、仪表盘或 `present_files`，也不要为了展示现有 JSON 再生成文件；只有用户明确要求图表、网页或文件交付时才允许。
+
 ## 安装
 
 在 WorkBuddy 对话中执行：
