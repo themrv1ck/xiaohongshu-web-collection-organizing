@@ -39,6 +39,8 @@ class ImageOcrTests(unittest.TestCase):
             'image_urls': image_urls,
             'image_count': len(image_urls),
             'image_urls_complete': True,
+            'image_list_source': 'mobile_ssr_note_data.imageList',
+            'image_enrichment_status': 'ok',
         }
 
     @staticmethod
@@ -265,6 +267,27 @@ process.stdout.write(eval({json.dumps(ITEMS_JS)}));
         self.assertEqual(result['images'], [])
         self.assertEqual(result['ocr_text'], '')
         self.assertIn('封面和全部内页图片', result['error'])
+        download.assert_not_called()
+        run_ocr.assert_not_called()
+
+    def test_untrusted_complete_flag_cannot_bypass_authoritative_image_source(self):
+        item = self.complete_image_item(
+            item_id='untrusted-complete-note',
+            image_urls=['https://ci.xiaohongshu.com/observed-cover.jpg'],
+        )
+        item['image_list_source'] = 'collection_card_cover_only'
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('xhs_ocr_common.download_image') as download, \
+                patch('xhs_ocr_common.run_ocr') as run_ocr:
+            result = perform_ocr_for_items(
+                [item],
+                Path(tmp) / 'ocr_results.json',
+                provider='swift',
+            )[0]
+
+        self.assertEqual(result['status'], 'incomplete_image_set')
+        self.assertFalse(result['image_set_complete'])
         download.assert_not_called()
         run_ocr.assert_not_called()
 
@@ -774,6 +797,43 @@ process.stdout.write(eval({json.dumps(ITEMS_JS)}));
 
         fetch.assert_not_called()
         self.assertEqual(rows[0]['image_enrichment_status'], 'detail_request_not_enabled')
+
+    def test_workbuddy_rejects_cookie_less_detail_enrichment(self):
+        with patch.dict('os.environ', {'XHS_HOST': 'workbuddy'}, clear=False), \
+                patch('enrich_note_images.fetch_note_html') as fetch:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                'xhs_workbuddy_capture',
+            ):
+                enrich_note_images_main()
+
+        fetch.assert_not_called()
+
+    def test_workbuddy_capture_artifact_rejects_cookie_less_enrichment_without_host_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            src = directory / 'visible_items.json'
+            out = directory / 'image_items.json'
+            src.write_text('[]', encoding='utf-8')
+            (directory / 'crawl_manifest.json').write_text(
+                json.dumps({'capture_mode': 'workbuddy_segmented'}),
+                encoding='utf-8',
+            )
+            argv = ['enrich_note_images.py', str(src), str(out)]
+            with patch.object(sys, 'argv', argv), \
+                    patch.dict(
+                        'os.environ',
+                        {'XHS_HOST': '', 'WORKBUDDY_CONFIG_DIR': ''},
+                        clear=False,
+                    ), \
+                    patch('enrich_note_images.fetch_note_html') as fetch:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    'organizing_depth=light',
+                ):
+                    enrich_note_images_main()
+
+        fetch.assert_not_called()
 
     def test_security_halt_blocks_later_resume_before_second_detail_request(self):
         items = [{

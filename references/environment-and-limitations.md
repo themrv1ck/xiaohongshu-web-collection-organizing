@@ -151,7 +151,8 @@ WorkBuddy 是独立路径，不复用上面的 macOS Apple Events 或 Windows CD
 - 先调用 `xhs_workbuddy_status`；缺依赖时经用户同意调用 `xhs_workbuddy_setup`。
 - 浏览器固定为 Playwright 自带 Chromium、可见窗口和插件独立 profile。
 - 禁止 Safari、Arc、系统 Chrome/Edge、CDP、headless 和其他 profile。
-- `xhs_workbuddy_capture` / `prepare` / `execute` 是浏览器阶段唯一入口。
+- `xhs_workbuddy_capture` / `prepare` / `execute` 是浏览器阶段唯一入口。轻度整理必须让 capture 在同一登录态会话关闭前取得详情并下载全部图片字节；JSON 只保存相对本地路径和内容 SHA256，签名 URL 不落盘，关闭后再运行本地 OCR。WorkBuddy 禁止调用无登录态 `enrich_note_images.py`。深度整理因尚无视频语音和完整时轴画面证据入口而在浏览器启动前停止，不得用元数据代替。
+- 阶段证据由 MCP 内存 HMAC receipt 自动串联并绑定当前文件哈希；用户无需处理。WorkBuddy/MCP 重启或证据文件变化后，旧 receipt 不能用于真实写入，必须重新 capture 和 prepare。
 
 完整合同见 `workbuddy-plugin.md`。
 

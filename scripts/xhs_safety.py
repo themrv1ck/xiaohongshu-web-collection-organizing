@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib.parse import unquote
 
 
 SAFETY_STATE_FILENAME = "xhs_safety_state.json"
@@ -70,9 +71,132 @@ def resolve_safety_state_path(
     )
 
 
+_SIMPLE_SECRET_KEY = r"(?:xsec[_-]token|xsec[_-]source|signature|sign|web[_-]session)"
+_AUTHORIZATION_KEY = r"authorization"
+_COOKIE_KEY = r"(?:set[-_]cookie|cookie)"
+_XHS_A1_COOKIE_KEY = r"a1"
+_PERSISTED_ERROR_KEYS = frozenset({
+    "error",
+    "errors",
+    "event",
+    "events",
+    "halt",
+    "message",
+    "messages",
+    "safety_halt",
+    "stderr",
+    "stdout",
+})
+
+
+def redact_sensitive_text(value: object) -> str:
+    """Remove Xiaohongshu/session credentials from error text in common formats."""
+    text = " ".join(str(value or "").split())
+    for _ in range(3):
+        decoded = unquote(text)
+        if decoded == text:
+            break
+        text = decoded
+
+    text = re.sub(
+        r"(https?://[^\s?#]+(?:/[^\s?#]*)?)\?[^\s#]+",
+        r"\1?<redacted_query>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"([\"']?{_SIMPLE_SECRET_KEY}[\"']?\s*:\s*)([\"'])[^\"']*\2",
+        r"\1\2<redacted>\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"((?:--)?{_SIMPLE_SECRET_KEY}\s*(?:=|:|\s)\s*)([\"'])[^\"']*\2",
+        r"\1\2<redacted>\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"((?<![\w-])(?:--)?{_SIMPLE_SECRET_KEY}(?![\w-])\s*(?:=|:|\s)\s*)[^\s&,;}}\]]+",
+        r"\1<redacted>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"([\"']?{_AUTHORIZATION_KEY}[\"']?\s*:\s*)([\"'])[^\"']*\2",
+        r"\1\2<redacted>\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"((?<![\w-])(?:--)?{_AUTHORIZATION_KEY}(?![\w-])\s*(?:=|:|\s)\s*)(?:(?:bearer|basic)\s+)?[^\s&,;}}\]]+",
+        r"\1<redacted>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"([\"']?{_COOKIE_KEY}[\"']?\s*:\s*)([\"'])[^\"']*\2",
+        r"\1\2<redacted>\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"((?<![\w-])(?:--)?{_COOKIE_KEY}(?![\w-])\s*(?:=|:|\s)\s*).*$",
+        r"\1<redacted>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"([\"']?{_XHS_A1_COOKIE_KEY}[\"']?\s*:\s*)([\"'])[^\"']*\2",
+        r"\1\2<redacted>\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"((?<![\w-]){_XHS_A1_COOKIE_KEY}(?![\w-])\s*(?:=|:)\s*)([\"'])[^\"']*\2",
+        r"\1\2<redacted>\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"((?<![\w-]){_XHS_A1_COOKIE_KEY}(?![\w-])\s*(?:=|:)\s*)[^\s&,;}}\]]+",
+        r"\1<redacted>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
+def redact_persisted_errors(value: Any, *, _error_context: bool = False) -> Any:
+    """Return a JSON-compatible copy with every persisted error string redacted."""
+    if isinstance(value, Mapping):
+        return {
+            key: redact_persisted_errors(
+                child,
+                _error_context=(
+                    _error_context
+                    or str(key).strip().lower() in _PERSISTED_ERROR_KEYS
+                ),
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            redact_persisted_errors(child, _error_context=_error_context)
+            for child in value
+        ]
+    if isinstance(value, tuple):
+        return [
+            redact_persisted_errors(child, _error_context=_error_context)
+            for child in value
+        ]
+    if _error_context and isinstance(value, str):
+        return redact_sensitive_text(value)
+    return value
+
+
 def _redact_message(value: object) -> str:
-    text = " ".join(str(value or "").split())[:500]
-    return re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?<redacted_query>", text)
+    return redact_sensitive_text(value)[:500]
 
 
 def atomic_write_json(path: Path | str, data: Any) -> None:
@@ -198,8 +322,9 @@ def mark_security_halted(
 
 def classify_safety_error(error: object) -> tuple[str, str] | None:
     """Return a stable reason code only for clear safety / uncertain-state signals."""
-    text = _redact_message(error)
-    lowered = text.lower()
+    raw_text = " ".join(str(error or "").split())
+    text = _redact_message(raw_text)
+    lowered = raw_text.lower()
     markers = (
         ("security_challenge", ("safety_breaker", "securitychallengeerror", "安全验证", "异常访问", "访问异常", "访问过于频繁", "操作过于频繁", "请求过于频繁", "网络环境存在风险", "当前环境存在风险", "拖动滑块", "captcha", "security verification", "abnormal access", "too many requests", "http 403", "http 412", "http 429", "http 461", "code=300012", "code 300012")),
         ("page_binding_lost", (

@@ -16,9 +16,7 @@ from video_content_common import normalize_content_type, redact_sensitive_text
 
 EXPLICIT_TAXONOMY_KEYWORD_RULES = {
     'hermes': ['hermes', 'codex', 'token', 'skill', '自动分类'],
-    '家居装修与收纳': ['家居', '装修', '餐边柜', '镜柜', '台盆柜', '厨房', '豪宅', '收纳', '客厅', '卧室', '极简', '冰箱', '浴室', '咖啡角', '水吧台', '家政柜', '布置', '图纸', '洗漱台', '锅架', '不锈钢锅'],
     '穿搭发型与品味': ['穿搭', '时尚', '男士', '香水', '老钱风', '西装', 'ootd', 'vogue', 'chanel', '高级感', '理发', '发型', '卷发', '发油', '衣服', '鞋', '莫卡辛', 't恤', '贵妇'],
-    '滑雪': ['滑雪', '单板', '雪场', '固定器', '换刃', 'casi'],
     '体态纠正与康复': ['走姿', '呼吸', '康复', '梨状肌', '崴脚', '一字马', '肚腩', '骨盆', '肩胛', '前屈', '拉伸', '呼吸法', '足底', '筋膜炎'],
     '运动训练与体态': ['硬拉', '训练', '腿部力量', '跟练', '跑步动作', '跑步', '攀岩', '倒立', '半马', '深蹲', '卧推', '动物流', '弹跳', '体态'],
     '效率系统与AI': ['app', '小组件', '收藏夹批量管理', '口播神器', '科研写作', '效率', 'ai', 'agent', '智能体', 'notion', '第二大脑', '工作原理'],
@@ -73,6 +71,15 @@ def compute_rule_matches(blob: str, boards):
                 hits.append(word)
         if hits:
             matches.append((board, hits, index))
+    offset = len(EXPLICIT_TAXONOMY_KEYWORD_RULES)
+    for index, board_value in enumerate(boards or []):
+        board = normalize_text(board_value)
+        if (
+            board
+            and board not in EXPLICIT_TAXONOMY_KEYWORD_RULES
+            and board.lower() in blob
+        ):
+            matches.append((board, [board], offset + index))
     matches.sort(key=lambda item: (-len(item[1]), item[2]))
     return [(board, hits) for board, hits, _ in matches]
 
@@ -226,6 +233,18 @@ def resolve_image_urls(item: dict) -> list[str]:
     return urls
 
 
+def resolve_image_files(item: dict) -> list[str]:
+    raw = item.get('image_files')
+    if not isinstance(raw, list):
+        return []
+    files = []
+    for value in raw:
+        candidate = normalize_text(value)
+        if candidate:
+            files.append(candidate)
+    return files
+
+
 def run_swift_ocr(swift_script: Path, image_path: Path):
     swift_bin = shutil.which('swift') or '/usr/bin/swift'
     proc = subprocess.run([swift_bin, str(swift_script), str(image_path)], capture_output=True, text=True)
@@ -352,8 +371,14 @@ def ocr_run_fingerprint(provider: str, tesseract_lang: str, swift_script: Path) 
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()
 
 
-def reusable_ocr_entry(entry: dict, image_urls: list[str], image_hash: str, run_fingerprint: str) -> bool:
-    image_count = len(image_urls)
+def reusable_ocr_entry(
+    entry: dict,
+    image_references: list[str],
+    image_hash: str,
+    run_fingerprint: str,
+    source_image_hashes: Optional[list[str]] = None,
+) -> bool:
+    image_count = len(image_references)
     images = entry.get('images')
     if not (
         entry.get('status') == 'ok'
@@ -367,13 +392,24 @@ def reusable_ocr_entry(entry: dict, image_urls: list[str], image_hash: str, run_
         and len(images) == image_count
     ):
         return False
-    for image_index, (image, image_url) in enumerate(zip(images, image_urls)):
+    if source_image_hashes is not None and len(source_image_hashes) != image_count:
+        return False
+    for image_index, (image, image_reference) in enumerate(zip(images, image_references)):
         if not isinstance(image, dict):
             return False
         if image.get('image_index') != image_index or image.get('status') != 'ok':
             return False
-        if image.get('source_url_sha256') != hashlib.sha256(image_url.encode('utf-8')).hexdigest():
-            return False
+        if source_image_hashes is None:
+            expected = hashlib.sha256(image_reference.encode('utf-8')).hexdigest()
+            if image.get('source_url_sha256') != expected:
+                return False
+        else:
+            expected = source_image_hashes[image_index]
+            if (
+                image.get('source_image_sha256') != expected
+                or image.get('image_sha256') != expected
+            ):
+                return False
     return True
 
 
@@ -416,20 +452,72 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Optional[Path] = 
     for item in image_items:
         item_id = str(item.get('id')).strip()
         image_urls = resolve_image_urls(item)
-        current_image_set_sha256 = image_set_sha256(image_urls)
+        image_files = resolve_image_files(item)
+        local_mode = bool(image_files)
+        local_paths = []
+        local_hashes = []
+        local_contract_valid = True
+        if local_mode:
+            declared_hashes = item.get('image_file_sha256')
+            if (
+                not isinstance(declared_hashes, list)
+                or len(declared_hashes) != len(image_files)
+            ):
+                local_contract_valid = False
+                declared_hashes = []
+            for index, relative_value in enumerate(image_files):
+                try:
+                    relative = Path(relative_value)
+                    if relative.is_absolute() or '..' in relative.parts:
+                        raise ValueError('local image path must be relative')
+                    unresolved = base_dir / relative
+                    if unresolved.is_symlink() or not unresolved.is_file():
+                        raise ValueError('local image path must be a regular file')
+                    candidate = unresolved.resolve(strict=True)
+                    candidate.relative_to(base_dir.resolve(strict=True))
+                    expected_hash = str(declared_hashes[index] or '').strip().lower()
+                    actual_hash = file_sha256(candidate)
+                    if (
+                        not re.fullmatch(r'[0-9a-f]{64}', expected_hash)
+                        or actual_hash != expected_hash
+                        or not cached_image_valid(candidate)
+                    ):
+                        raise ValueError('local image contract failed')
+                    local_paths.append(candidate)
+                    local_hashes.append(actual_hash)
+                except (OSError, ValueError, IndexError):
+                    local_contract_valid = False
+                    break
+        image_references = (
+            [f'sha256:{value}' for value in local_hashes]
+            if local_mode and local_contract_valid
+            else image_urls
+        )
+        current_image_set_sha256 = image_set_sha256(image_references)
         declared_count = item.get('image_count')
         if not isinstance(declared_count, int) or declared_count < 0:
             declared_count = None
         image_set_complete = bool(
             item.get('image_urls_complete') is True
-            and image_urls
-            and declared_count == len(image_urls)
+            and item.get('image_enrichment_status') == 'ok'
+            and item.get('image_list_source') in {
+                'mobile_ssr_note_data.imageList',
+                'workbuddy_authenticated_frontend.noteData.imageList',
+                'workbuddy_authenticated_frontend.noteData.imageList.local_copy',
+            }
+            and image_references
+            and declared_count == len(image_references)
+            and (not local_mode or local_contract_valid)
         )
         if (
             image_set_complete
             and item_id in existing
             and reusable_ocr_entry(
-                existing[item_id], image_urls, current_image_set_sha256, run_fingerprint
+                existing[item_id],
+                image_references,
+                current_image_set_sha256,
+                run_fingerprint,
+                local_hashes if local_mode else None,
             )
             and not force
         ):
@@ -444,7 +532,7 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Optional[Path] = 
             'ocr_confidence': None,
             'ocr_provider': provider,
             'image_count_declared': declared_count,
-            'image_count_available': len(image_urls),
+            'image_count_available': len(image_references),
             'image_count_processed': 0,
             'image_set_complete': image_set_complete,
             'image_set_sha256': current_image_set_sha256,
@@ -462,8 +550,12 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Optional[Path] = 
         all_lines = []
         confidences = []
         failed = False
-        for image_index, image_url in enumerate(image_urls):
-            cache_path = build_cache_path(cache_dir, item_id, image_url)
+        for image_index, image_reference in enumerate(image_references):
+            cache_path = (
+                local_paths[image_index]
+                if local_mode
+                else build_cache_path(cache_dir, item_id, image_reference)
+            )
             image_entry = {
                 'image_index': image_index,
                 'status': 'pending',
@@ -471,16 +563,27 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Optional[Path] = 
                 'ocr_lines': [],
                 'ocr_confidence': None,
                 'ocr_provider': provider,
-                'source_url_sha256': hashlib.sha256(image_url.encode('utf-8')).hexdigest(),
                 'download_path': str(cache_path),
                 'image_sha256': '',
                 'error': '',
             }
+            if local_mode:
+                image_entry['source_image_sha256'] = local_hashes[image_index]
+            else:
+                image_entry['source_url_sha256'] = hashlib.sha256(
+                    image_reference.encode('utf-8')
+                ).hexdigest()
             try:
-                if force or not cached_image_valid(cache_path):
+                if local_mode:
+                    if (
+                        not cached_image_valid(cache_path)
+                        or file_sha256(cache_path) != local_hashes[image_index]
+                    ):
+                        raise RuntimeError('authenticated local image changed before OCR')
+                elif force or not cached_image_valid(cache_path):
                     if cache_path.exists():
                         cache_path.unlink()
-                    download_image(image_url, cache_path, timeout_sec=timeout_sec)
+                    download_image(image_reference, cache_path, timeout_sec=timeout_sec)
                 image_entry['image_sha256'] = file_sha256(cache_path)
                 ocr = run_ocr(provider, cache_path, swift_script, tesseract_lang)
                 image_text = normalize_text(ocr.get('text', ''))

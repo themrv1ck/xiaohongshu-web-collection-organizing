@@ -85,6 +85,8 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.0.4` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+
 在 WorkBuddy 对话中执行：
 
 ```text
@@ -95,9 +97,11 @@
 
 加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意依赖下载后才安装 Playwright Chromium。首次使用会打开一个与 Safari、Arc、系统 Chrome 完全分开的可见 Chromium，用户只需在这里登录一次小红书。
 
-正常使用时，用户不需要寻找收藏页 URL、复制地址或手动关闭浏览器。插件会从小红书前端的“我”入口定位当前账号，自动进入用户已选择的收藏/点赞范围，并在同一个专用 Chromium 会话中自动翻页。默认每 200 条独立保存一组，真实等待 3 分钟后继续，直到前端列表稳定到达末尾。分类体系默认为空；插件先只读取得本次账号真实已有专辑，再只从这些专辑中为本次真实收藏选择目标，不附带任何预设类别。只有真正移动收藏前才会再次请求逐条确认。
+正常使用时，用户不需要寻找收藏页 URL、复制地址或手动关闭浏览器。插件会从小红书前端的“我”入口定位当前账号，自动进入用户已选择的收藏/点赞范围，并在同一个专用 Chromium 会话中自动翻页。WorkBuddy 固定每 200 条独立保存一组，非末组真实等待 3 分钟后继续，直到前端列表稳定到达末尾；只有页面声明总数在每次连读中保持不变、实际条数完全相等且 `page_index ↔ note_id` 一一对应并连续覆盖全部位置才算完整，否则保存断点并停止，绝不会把首屏约 10 条当作全部。`organizing_depth` 是必填档位：快速整理为 `quick`，轻度整理为 `light`。轻度会在关闭同一次登录态浏览器前用进程内原始卡片链接读取全部已授权详情，并通过该 BrowserContext 下载图片字节到权限为 0600 的本地文件，再运行 OCR；Cookie、卡片原始 query、签名图片 URL 和 xsec 始终只存在于浏览器/进程内，不写入 JSON。随后 `prepare` 会再次核验抓取账号、精确 `tab`、前端“我”账号、档位、本地图片内容哈希和 OCR 指纹，证据变化即停止，并直接向模型返回不含 URL、路径或凭据的脱敏 `classification_inputs`；模型无需也不得读取原始运行文件。WorkBuddy 深度整理在视频语音和完整时轴画面证据入口接入前会于浏览器启动前明确停止，不会用视频元数据冒充深度结果；非 WorkBuddy 直接路径仍支持完整深度整理。插件先只读取得本次账号真实已有专辑，再只从这些专辑中为本次真实收藏选择目标，不附带滑雪、家具或其他预设类别。只有真正移动收藏前才会再次请求逐条确认。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.2`。
+`capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证只在当前 MCP 进程内有效，并绑定账号、来源、页面 `tab`、整理档位和实际文件哈希；每次推进与最终 `COMMIT` 前都会重算文件哈希。prepare/execute 的 Python 子进程还必须持有 MCP 通过专用继承 fd 交付的启动绑定；它能阻止普通误调用，但不是抵御同一系统用户恶意代码的独立可信根。执行时先启动本轮专用 Chromium，并只读核验精确页面、`tab` 与前端“我”账号；成功后 Python 才发出 `READY`，MCP 重验并单次消费凭证、回 `COMMIT`，随后才允许第一次写入。参数、文件、浏览器启动或页面绑定在 `READY` 前失败时可安全重试。正式安全边界仍要求 WorkBuddy 用 OS 沙箱和最小终端权限隔离 MCP 与任意同用户代码。
+
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.4`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -475,7 +479,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 
 - `scripts/check_environment.py`：默认只检查基础运行环境；只有传 `--ocr` 才检测图文 OCR，只有传 `--video-content` 才检测视频依赖。
 - `scripts/extract_visible_items.py`：默认被动读取当前浏览器页面已显示的收藏 / 点赞 / 专辑条目，单段最多 200 条；不会自动滚动、刷新或进入下一段。列表页 `content_type` 和图片都只是 observed 线索，图片集合必须保持 `image_urls_complete=false`。
-- `scripts/enrich_note_images.py`：默认不访问详情；只有传 `--allow-detail-requests --max-items <1–200>` 才从笔记详情 `noteData` 读取权威类型，并补齐按原顺序排列的 `noteData.imageList`。遇到 `security_blocked` 时立即写状态并停机。
+- `scripts/enrich_note_images.py`：仅供非 WorkBuddy 直接运行路径使用；默认不访问详情，只有传 `--allow-detail-requests --max-items <1–200>` 才从笔记详情 `noteData` 读取权威类型并补齐图片。WorkBuddy 环境会拒绝该无浏览器登录态入口，轻度整理必须改由 `xhs_workbuddy_capture(organizing_depth=light)` 在同一登录态前端会话内完成。
 - `scripts/transcribe_video_items.py`：只处理明确、用户选定范围的视频；需要 `--allow-video-access` 与明确的 `--video-id` 或 `--max-videos <1–200>`。
 - `scripts/analyze_video_transcripts.py`：通过明确选择的 `codex-cli`、`mimo-vl-mlx` 或 `command` provider，只根据合格文字稿生成视频内容分类 memo。
 - `scripts/analyze_video_visuals.py`：对显式列入的当前视频段按全时轴抽真实帧、逐帧 Vision OCR，再交给所选视觉 provider；`--all-videos` 也必须同时给 `--allow-video-access --max-videos <1–200>`。
@@ -494,7 +498,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 
 ## 安全边界
 
-- 不保存、不打印 cookies、token、xsec、signed URL。
+- Cookie、卡片 query、签名图片地址与 xsec 只留在浏览器/进程内；轻度整理只把已下载的图片字节、相对本地路径和内容 SHA256 写入权限为 0600 的运行目录，不把源 URL 写入 JSON、模型、分类、正式报告或错误输出。
 - 不自动创建、删除、重命名专辑。
 - 不把 `.collect-wrapper` 图标变化当成“已加入目标专辑”。
 - 不把 UI 总数当成完整抓取数。

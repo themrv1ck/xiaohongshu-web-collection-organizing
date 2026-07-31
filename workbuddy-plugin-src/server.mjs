@@ -6,6 +6,17 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
+import {
+  parseBridgeResult,
+  safeBridgeError,
+} from './bridge-security.mjs';
+import { createEvidenceLedger } from './evidence-ledger.mjs';
+import { createLaunchAttestation } from './launch-attestation.mjs';
+import {
+  canonicalPageBinding,
+  receiptBindingsForPage,
+} from './page-binding.mjs';
+
 
 const skillRoot = path.resolve(
   process.env.CODEBUDDY_PLUGIN_ROOT || path.join(import.meta.dirname, '..'),
@@ -16,6 +27,58 @@ const playwrightProfile = path.join(pluginData, 'playwright-profile');
 const pythonVenv = path.join(pluginData, 'python-venv');
 const playwrightBrowsers = path.join(pluginData, 'playwright-browsers');
 const bridge = path.join(skillRoot, 'scripts', 'workbuddy_bridge.py');
+let evidenceLedger;
+
+
+const RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
+const APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+const PLUGIN_VERSION = '2.0.4';
+const MCP_LAUNCH_KEY_FD = 3;
+const MCP_EXECUTE_READY_FD = 4;
+const MCP_EXECUTE_COMMIT_FD = 5;
+
+
+function pageUserId(pageUrl) {
+  const match = new URL(pageUrl).pathname.match(
+    /^\/user\/profile\/([0-9a-fA-F]{24})\/?$/,
+  );
+  if (!match) throw new Error('page_url 必须绑定当前账号的 profile 页。');
+  return match[1].toLowerCase();
+}
+
+
+function captureArtifactNames(organizingDepth) {
+  const names = [
+    'visible_items.json',
+    'crawl_manifest.json',
+    'xhs_safety_state.json',
+  ];
+  if (organizingDepth === 'light') {
+    names.push('image_items.json', 'ocr_results.json');
+  }
+  return names;
+}
+
+
+function inventoryArtifactNames(organizingDepth) {
+  return [...captureArtifactNames(organizingDepth), 'board_snapshot.json'];
+}
+
+
+function planArtifactNames(organizingDepth) {
+  return [
+    ...inventoryArtifactNames(organizingDepth),
+    'classification.json',
+    'created_boards.json',
+    'run_report.json',
+    'approval.json',
+  ];
+}
+
+
+function receiptBindings(userId, pageUrl) {
+  return receiptBindingsForPage(userId, pageUrl);
+}
 
 
 function requirePluginEnvironment() {
@@ -77,11 +140,29 @@ function runBridge(
   timeoutMs = 600_000,
   abortSignal = undefined,
   inputPayload = undefined,
+  launchOptions = {},
 ) {
   requirePluginEnvironment();
   return new Promise((resolve, reject) => {
     const python = pythonFor(action);
-    const child = spawn(python, [bridge, action, ...args], {
+    const attested = ['prepare', 'execute'].includes(action);
+    const bridgeArgs = attested
+      ? [...args, '--mcp-launch-fd', String(MCP_LAUNCH_KEY_FD)]
+      : [...args];
+    const launch = attested
+      ? createLaunchAttestation({
+        action,
+        args: bridgeArgs,
+        inputPayload,
+      })
+      : null;
+    const bridgeInput = launch ? launch.payload : inputPayload;
+    const stdio = action === 'execute'
+      ? ['pipe', 'pipe', 'pipe', 'pipe', 'pipe', 'pipe']
+      : (attested
+        ? ['pipe', 'pipe', 'pipe', 'pipe']
+        : [inputPayload === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe']);
+    const child = spawn(python, [bridge, action, ...bridgeArgs], {
       cwd: skillRoot,
       env: {
         ...process.env,
@@ -92,7 +173,7 @@ function runBridge(
         XHS_PYTHON_VENV: pythonVenv,
         PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers,
       },
-      stdio: [inputPayload === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      stdio,
       windowsHide: true,
       detached: process.platform !== 'win32',
     });
@@ -101,6 +182,7 @@ function runBridge(
     let finished = false;
     let terminationError;
     let forceKillTimer;
+    let executeReady = false;
     const cleanup = () => {
       clearTimeout(timer);
       clearTimeout(forceKillTimer);
@@ -110,7 +192,7 @@ function runBridge(
       if (finished) return;
       finished = true;
       cleanup();
-      reject(error);
+      reject(safeBridgeError(error));
     };
     const signalProcessTree = (signalName) => {
       try {
@@ -163,31 +245,61 @@ function runBridge(
       finished = true;
       cleanup();
       if (terminationError) {
-        reject(terminationError);
+        reject(safeBridgeError(terminationError));
         return;
       }
-      const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
-      let payload;
       try {
-        payload = JSON.parse(lines.at(-1) || '{}');
-      } catch {
-        reject(new Error(`桥接器返回了无效 JSON：${stdout.trim() || stderr.trim()}`));
+        resolve(parseBridgeResult(stdout, stderr, code));
+      } catch (error) {
+        reject(safeBridgeError(error));
         return;
       }
-      if (code !== 0 || payload.ok === false) {
-        reject(new Error(payload.error || stderr.trim() || `bridge exit=${code}`));
-        return;
-      }
-      resolve(payload);
     });
+    if (launch) {
+      const keyPipe = child.stdio[MCP_LAUNCH_KEY_FD];
+      keyPipe.on('error', terminate);
+      keyPipe.end(launch.key, () => launch.key.fill(0));
+    }
+    if (action === 'execute') {
+      if (typeof launchOptions.onExecutePreflightReady !== 'function') {
+        terminate(new Error('execute 缺少 MCP 提交闸门。'));
+        return;
+      }
+      const readyPipe = child.stdio[MCP_EXECUTE_READY_FD];
+      const commitPipe = child.stdio[MCP_EXECUTE_COMMIT_FD];
+      let readyText = '';
+      readyPipe.setEncoding('utf8');
+      readyPipe.on('error', terminate);
+      commitPipe.on('error', terminate);
+      readyPipe.on('data', (chunk) => {
+        if (executeReady) return;
+        readyText += chunk;
+        if (readyText.length > 16) {
+          terminate(new Error('execute 预检握手无效。'));
+          return;
+        }
+        if (!readyText.includes('\n')) return;
+        if (readyText !== 'READY\n') {
+          terminate(new Error('execute 预检握手无效。'));
+          return;
+        }
+        try {
+          launchOptions.onExecutePreflightReady();
+          executeReady = true;
+          commitPipe.end('COMMIT\n');
+        } catch (error) {
+          terminate(error);
+        }
+      });
+    }
     if (abortSignal?.aborted) {
       onAbort();
       return;
     }
     abortSignal?.addEventListener('abort', onAbort, { once: true });
-    if (inputPayload !== undefined) {
+    if (bridgeInput !== undefined) {
       child.stdin.on('error', terminate);
-      child.stdin.end(JSON.stringify(inputPayload));
+      child.stdin.end(JSON.stringify(bridgeInput));
     }
   });
 }
@@ -212,11 +324,12 @@ function toolResult(payload) {
 
 
 function toolError(error) {
+  const safeError = safeBridgeError(error);
   return {
     isError: true,
     content: [{
       type: 'text',
-      text: error instanceof Error ? error.message : String(error),
+      text: safeError.message,
     }],
   };
 }
@@ -225,15 +338,19 @@ function toolError(error) {
 const server = new McpServer(
   {
     name: 'xiaohongshu-workbuddy',
-    version: '2.0.2',
+    version: PLUGIN_VERSION,
   },
   {
     instructions:
       '在 WorkBuddy 中只能调用本服务器管理小红书浏览器阶段。' +
       '先 status；缺依赖时经用户同意后 setup；首次登录用 login；' +
       '抓取在同一浏览器会话中自动翻页，默认每 200 条一组、组间暂停 3 分钟；' +
+      'capture 必须显式传 organizing_depth；quick 不做 OCR，light 在关闭同一浏览器前完成登录态详情补齐并在本地 OCR；' +
+      'deep 因尚无视频语音和完整时轴画面证据入口而在浏览器启动前停止；' +
+      '禁止在 WorkBuddy 中运行无登录态 enrich_note_images.py 或静默改用元数据分类；' +
       'capture 后先调用不带 classification 的 prepare 读取真实已有专辑；' +
       '分类只能从这些真实专辑中选择，不得使用预设主题；再带分类调用 prepare；' +
+      'capture、两次 prepare 和 execute 之间必须自动原样传递 evidence_receipt，用户无需处理；' +
       '没有已有专辑时停止，不得生成默认类别；' +
       '只有 prepare 返回 ' +
       'ready_for_execute=true、blockers=[] 且用户确认映射和上限后才可 execute。' +
@@ -252,7 +369,10 @@ server.registerTool(
   },
   async () => {
     try {
-      return toolResult(await runBridge('status', [], 30_000));
+      return toolResult({
+        ...(await runBridge('status', [], 30_000)),
+        plugin_version: PLUGIN_VERSION,
+      });
     } catch (error) {
       return toolError(error);
     }
@@ -270,10 +390,15 @@ server.registerTool(
       install_dependencies: z.boolean().describe('用户是否明确同意安装和下载 Playwright Chromium'),
     }),
   },
-  async ({ install_dependencies }) => {
+  async ({ install_dependencies }, extra) => {
     try {
       requireTrue(install_dependencies, 'install_dependencies');
-      return toolResult(await runBridge('setup', [], 1_800_000));
+      return toolResult(await runBridge(
+        'setup',
+        [],
+        1_800_000,
+        extra.signal,
+      ));
     } catch (error) {
       return toolError(error);
     }
@@ -293,13 +418,14 @@ server.registerTool(
       timeout_seconds: z.number().int().min(60).max(900).default(600),
     }),
   },
-  async ({ browser_authorized, source, timeout_seconds }) => {
+  async ({ browser_authorized, source, timeout_seconds }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
       return toolResult(await runBridge(
         'login',
         ['--source', source, '--timeout-sec', String(timeout_seconds)],
         (timeout_seconds + 30) * 1000,
+        extra.signal,
       ));
     } catch (error) {
       return toolError(error);
@@ -313,14 +439,13 @@ server.registerTool(
   {
     title: '分组读取小红书完整范围',
     description:
-      '只用插件独立 Playwright Chromium 打开精确页面并在同一会话中自动翻页；默认每 200 条独立保存一组、组间真实暂停 3 分钟，直到前端列表稳定到达末尾。不点击、不刷新、不自动重试、不写账号。',
+      '只用插件独立 Playwright Chromium 打开精确页面并在同一会话中自动翻页；organizing_depth 必填，quick 不做 OCR，light 用同一登录态读取全部详情、下载本地图片字节并 OCR，deep 在视频证据入口接入前于浏览器启动前停止。固定每 200 条独立保存一组、非末组真实暂停 3 分钟；完成后由插件签发会话 receipt，用户无需处理；不导出 Cookie、签名图片 URL 或 xsec。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确授权此精确页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/).optional(),
-      source: z.enum(['collection', 'liked', 'custom']),
+      source: z.enum(['collection', 'liked']),
       page_url: z.string().url(),
-      batch_size: z.number().int().min(1).max(200).default(200),
-      pause_minutes: z.number().int().min(1).default(3),
+      organizing_depth: z.enum(['quick', 'light', 'deep']).describe('必填：quick=快速整理，light=图文完整 OCR；deep 在视频证据入口接入前会于浏览器启动前明确停止'),
     }),
   },
   async ({
@@ -328,24 +453,55 @@ server.registerTool(
     run_id,
     source,
     page_url,
-    batch_size,
-    pause_minutes,
+    organizing_depth,
   }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
+      const safePageUrl = canonicalPageBinding(page_url, source);
       const args = [
         '--source', source,
-        '--page-url', page_url,
-        '--batch-size', String(batch_size),
-        '--pause-minutes', String(pause_minutes),
+        '--page-url', safePageUrl,
+        '--batch-size', '200',
+        '--pause-minutes', '3',
+        '--organizing-depth', organizing_depth,
       ];
+      if (organizing_depth === 'deep') {
+        throw new Error(
+          'WorkBuddy Plugin 当前只支持快速或轻度整理；深度整理需要视频语音和完整时轴画面证据，尚未接入，未打开浏览器。',
+        );
+      }
       if (run_id) args.push('--run-id', run_id);
-      return toolResult(await runBridge(
+      const payload = await runBridge(
         'capture',
         args,
         86_400_000,
         extra.signal,
-      ));
+      );
+      if (payload.ready_for_classification !== true) {
+        return toolResult({
+          ...payload,
+          evidence_receipt: null,
+          receipt_stage: null,
+        });
+      }
+      const capturedRunId = String(payload.run_id || '').trim();
+      const boundPage = receiptBindingsForPage(pageUserId(page_url), page_url);
+      canonicalPageBinding(page_url, source);
+      const issued = evidenceLedger.issue({
+        runId: capturedRunId,
+        stage: 'capture',
+        bindings: {
+          ...boundPage,
+          organizing_depth: organizing_depth,
+        },
+        artifactNames: captureArtifactNames(organizing_depth),
+      });
+      return toolResult({
+        ...payload,
+        evidence_receipt: issued.receipt,
+        receipt_stage: 'capture',
+        receipt_notice: '由 WorkBuddy 自动传给下一阶段，用户无需查看或复制。',
+      });
     } catch (error) {
       return toolError(error);
     }
@@ -358,14 +514,19 @@ server.registerTool(
   {
     title: '生成真实专辑证据与硬闸门 dry-run',
     description:
-      '两阶段固定入口：第一次不传 classification，只读返回本次账号真实已有专辑；模型只能从该清单中分类，没有已有专辑时停止。第二次传入覆盖全部真实 ID 的 classification，工具校验后生成 taxonomy 与硬闸门 dry-run。',
+      '两阶段固定入口：先强制核验完整抓取与所选 OCR 证据。第一次不传 classification，只读返回本次账号真实已有专辑和不含 URL/路径/凭据的完整 classification_inputs；第二次传入覆盖全部真实 ID 的 classification 和用户要确认的 max_moves_per_session，生成硬闸门 dry-run 与 approval_digest。两阶段都必须由 WorkBuddy 自动传递上一阶段 receipt，用户无需处理。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合授权只读核验此页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+      evidence_receipt: z.string().regex(RECEIPT_PATTERN).describe(
+        '插件自动传递的上一阶段 receipt；用户无需查看或复制',
+      ),
       user_id: z.string().regex(/^[0-9a-fA-F]{24}$/),
       page_url: z.string().url(),
-      expected_url_substring: z.string().min(1),
       verify_pages: z.number().int().min(1).max(200).default(100),
+      max_moves_per_session: z.number().int().min(1).max(200).optional().describe(
+        '第二阶段传 classification 时必填；将写入 approval_digest，execute 必须原样使用',
+      ),
       classification: z.array(z.object({
         id: z.string().regex(/^[0-9a-fA-F]{24}$/),
         target_board: z.string().default(''),
@@ -380,33 +541,101 @@ server.registerTool(
   async ({
     browser_authorized,
     run_id,
+    evidence_receipt,
     user_id,
     page_url,
-    expected_url_substring,
     verify_pages,
+    max_moves_per_session,
     classification,
   }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
+      const safePageUrl = canonicalPageBinding(page_url);
       const args = [
         '--run-id', run_id,
         '--user-id', user_id,
-        '--page-url', page_url,
-        '--expected-url-substring', expected_url_substring,
+        '--page-url', safePageUrl,
+        '--expected-url-substring', safePageUrl,
         '--verify-pages', String(verify_pages),
+        '--trusted-evidence-stdin',
       ];
-      let inputPayload;
       if (classification !== undefined) {
-        args.push('--classification-stdin');
-        inputPayload = { classification };
+        if (max_moves_per_session === undefined) {
+          throw new Error(
+            '提交 classification 时必须同时提供用户将确认的 max_moves_per_session。',
+          );
+        }
+        args.push(
+          '--classification-stdin',
+          '--max-moves-per-session', String(max_moves_per_session),
+        );
       }
-      return toolResult(await runBridge(
-        'prepare',
-        args,
-        600_000,
-        extra.signal,
-        inputPayload,
-      ));
+      const expectedStage = classification === undefined ? 'capture' : 'inventory';
+      const trustedEvidence = evidenceLedger.begin({
+        receipt: evidence_receipt,
+        expectedStage,
+        runId: run_id,
+        bindings: receiptBindings(user_id, page_url),
+      });
+      try {
+        const inputPayload = { trusted_evidence: trustedEvidence };
+        if (classification !== undefined) inputPayload.classification = classification;
+        const payload = await runBridge(
+          'prepare',
+          args,
+          600_000,
+          extra.signal,
+          inputPayload,
+        );
+        if (classification === undefined) {
+          const issued = evidenceLedger.advance({
+            receipt: evidence_receipt,
+            nextStage: 'inventory',
+            allowSafetyStateProgress: true,
+            artifactNames: inventoryArtifactNames(
+              trustedEvidence.bindings.organizing_depth,
+            ),
+          });
+          return toolResult({
+            ...payload,
+            evidence_receipt: issued.receipt,
+            receipt_stage: 'inventory',
+            receipt_notice: '由 WorkBuddy 自动传给下一阶段，用户无需查看或复制。',
+          });
+        }
+        if (
+          payload.mode === 'dry_run'
+          && payload.ready_for_execute === true
+          && Array.isArray(payload.blockers)
+          && payload.blockers.length === 0
+          && Number.isInteger(payload.planned_move_count)
+          && payload.planned_move_count > 0
+          && APPROVAL_DIGEST_PATTERN.test(payload.approval_digest || '')
+        ) {
+          const issued = evidenceLedger.advance({
+            receipt: evidence_receipt,
+            nextStage: 'plan',
+            artifactNames: planArtifactNames(
+              trustedEvidence.bindings.organizing_depth,
+            ),
+          });
+          return toolResult({
+            ...payload,
+            evidence_receipt: issued.receipt,
+            receipt_stage: 'plan',
+            receipt_notice: '由 WorkBuddy 在用户确认后自动传给 execute，用户无需查看或复制。',
+          });
+        }
+        evidenceLedger.abort(evidence_receipt);
+        return toolResult({
+          ...payload,
+          evidence_receipt,
+          receipt_stage: 'inventory',
+        });
+      } catch (error) {
+        evidenceLedger.abort(evidence_receipt);
+        throw error;
+      }
     } catch (error) {
       return toolError(error);
     }
@@ -419,39 +648,63 @@ server.registerTool(
   {
     title: '执行用户已确认的小红书整理方案',
     description:
-      '真实写入工具。只有用户已看到逐条“当前专辑→目标专辑”、明确确认本次移动上限，并原样提供 prepare 返回的 approval_digest 时才可调用。任何证据变化都会在打开浏览器前拒绝。',
+      '真实写入工具。只有用户已看到逐条“当前专辑→目标专辑”、明确确认本次移动上限，并原样提供 prepare 返回的 approval_digest、max_moves_per_session 和 verify_pages 时才可调用。WorkBuddy 会自动传递已签名的单次 receipt，用户无需处理；任何证据或参数变化都会在打开浏览器前拒绝。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确授权专用浏览器写入'),
       user_confirmed: z.boolean().describe('用户是否明确确认逐条映射和本次移动上限'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+      evidence_receipt: z.string().regex(RECEIPT_PATTERN).describe(
+        '插件自动传递的 plan receipt；用户无需查看或复制',
+      ),
       user_id: z.string().regex(/^[0-9a-fA-F]{24}$/),
       page_url: z.string().url(),
-      expected_url_substring: z.string().min(1),
       approval_digest: z.string().regex(/^[0-9a-f]{64}$/),
       max_moves_per_session: z.number().int().min(1).max(200),
+      verify_pages: z.number().int().min(1).max(200).describe(
+        '必须原样使用 prepare 返回的 verify_pages',
+      ),
     }),
   },
   async ({
     browser_authorized,
     user_confirmed,
     run_id,
+    evidence_receipt,
     user_id,
     page_url,
-    expected_url_substring,
     approval_digest,
     max_moves_per_session,
-  }) => {
+    verify_pages,
+  }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
       requireTrue(user_confirmed, 'user_confirmed');
-      return toolResult(await runBridge('execute', [
-        '--run-id', run_id,
-        '--user-id', user_id,
-        '--page-url', page_url,
-        '--expected-url-substring', expected_url_substring,
-        '--approval-digest', approval_digest,
-        '--max-moves-per-session', String(max_moves_per_session),
-      ], 1_800_000));
+      const safePageUrl = canonicalPageBinding(page_url);
+      const trustedEvidence = evidenceLedger.begin({
+        receipt: evidence_receipt,
+        expectedStage: 'plan',
+        runId: run_id,
+        bindings: receiptBindings(user_id, page_url),
+      });
+      try {
+        return toolResult(await runBridge('execute', [
+          '--run-id', run_id,
+          '--user-id', user_id,
+          '--page-url', safePageUrl,
+          '--expected-url-substring', safePageUrl,
+          '--approval-digest', approval_digest,
+          '--max-moves-per-session', String(max_moves_per_session),
+          '--verify-pages', String(verify_pages),
+          '--trusted-evidence-stdin',
+        ], 1_800_000, extra.signal, {
+          trusted_evidence: trustedEvidence,
+        }, {
+          onExecutePreflightReady: () => evidenceLedger.commit(evidence_receipt),
+        }));
+      } catch (error) {
+        evidenceLedger.abort(evidence_receipt);
+        throw error;
+      }
     } catch (error) {
       return toolError(error);
     }
@@ -460,5 +713,8 @@ server.registerTool(
 
 
 requirePluginEnvironment();
+evidenceLedger = createEvidenceLedger({
+  runsRoot: path.join(pluginData, 'runs'),
+});
 const transport = new StdioServerTransport();
 await server.connect(transport);

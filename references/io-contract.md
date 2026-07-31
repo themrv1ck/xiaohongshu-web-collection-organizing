@@ -56,10 +56,11 @@
 ]
 ```
 
-- 只有 `image_list_source=mobile_ssr_note_data.imageList`、`image_urls_complete=true`、`image_enrichment_status=ok` 且 `image_count == image_urls.length` 的详情权威图文条目可进入 OCR。
+- 直接运行路径只有 `image_list_source=mobile_ssr_note_data.imageList`、`image_urls_complete=true`、`image_enrichment_status=ok` 且 `image_count == image_urls.length` 的图文条目可进入 OCR。
+- WorkBuddy 不持久化签名图片 URL：其图文条目必须使用 `image_list_source=workbuddy_authenticated_frontend.noteData.imageList.local_copy`，并提供等长的 `image_files` 与 `image_file_sha256`；路径必须是本次运行目录内 `authenticated_images/` 下的普通文件，逐文件内容 SHA256 必须一致，且 `image_count == image_files.length`。
 - 图片集合不完整时必须保留 `image_enrichment_status=error|security_blocked|not_requested|not_requested_after_security_block` 和错误信息；不得只用 `cover_image_url` 或已取得的部分图片继续 OCR。
 - 详情触发 `security_blocked` 时，脚本落盘当前条和后续未请求状态，立即停止详情请求并以非零退出码 `2` 结束；调用方必须停止，不得继续 OCR。
-- `image_urls` 是 OCR 的权威输入顺序；`cover_image_url` 仅保留列表卡片元数据。
+- 非 WorkBuddy 的 `image_urls`、WorkBuddy 的 `image_files` 都按详情原始顺序作为 OCR 输入；WorkBuddy 的 `visible_items.json` 不保留卡片 href、封面 URL 或签名 query。
 
 ### `board_taxonomy.json`
 ```json

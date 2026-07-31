@@ -3,6 +3,7 @@ import argparse
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -161,6 +162,63 @@ class WorkBuddyRuntimeTests(unittest.TestCase):
                 runner = BrowserRunner('auto', browser_args())
             self.assertEqual(runner.backend, 'playwright')
             open_playwright.assert_called_once_with()
+
+    def test_playwright_startup_navigation_failure_closes_created_context(self):
+        class FailingPage:
+            def goto(self, *_args, **_kwargs):
+                raise RuntimeError('navigation failed')
+
+            def wait_for_load_state(self, *_args, **_kwargs):
+                raise AssertionError('must not continue after goto failure')
+
+        page = FailingPage()
+
+        class Context:
+            pages = [page]
+
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        context = Context()
+
+        class Playwright:
+            def __init__(self):
+                self.stopped = False
+                self.chromium = types.SimpleNamespace(
+                    launch_persistent_context=lambda *_args, **_kwargs: context,
+                )
+
+            def stop(self):
+                self.stopped = True
+
+        playwright = Playwright()
+        manager = types.SimpleNamespace(start=lambda: playwright)
+        fake_playwright = types.ModuleType('playwright')
+        fake_playwright.__path__ = []
+        fake_sync_api = types.ModuleType('playwright.sync_api')
+        fake_sync_api.sync_playwright = lambda: manager
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            sys.modules,
+            {
+                'playwright': fake_playwright,
+                'playwright.sync_api': fake_sync_api,
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'navigation failed'):
+                BrowserRunner(
+                    'playwright',
+                    browser_args(
+                        user_data_dir=str(Path(tmp) / 'profile'),
+                        url='https://www.xiaohongshu.com/explore',
+                    ),
+                )
+
+        self.assertTrue(context.closed)
+        self.assertTrue(playwright.stopped)
 
 
 if __name__ == '__main__':

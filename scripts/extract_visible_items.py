@@ -380,25 +380,44 @@ def parse_js_json_result(raw):
     return value
 
 
-def page_position_map(data: Dict) -> Optional[tuple]:
+def page_position_map(data: Dict) -> tuple:
     pairs = []
     for item in data.get('items', []):
         position = item.get('page_index')
         if isinstance(position, int) and position >= 0 and item.get('id'):
             pairs.append((position, str(item['id'])))
-    return tuple(sorted(pairs)) if pairs else None
+    return tuple(sorted(pairs))
+
+
+def stable_snapshot_signature(data: Dict) -> tuple:
+    """Bind a stable virtual-list read to both positions and declared total."""
+    positions = page_position_map(data)
+    declared = data.get('declaredItemCount')
+    if not isinstance(declared, int) or isinstance(declared, bool) or declared < 0:
+        declared = None
+    return positions, declared
+
+
+def declared_item_count(data: Dict) -> Optional[int]:
+    value = data.get('declaredItemCount')
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def read_stable_items_snapshot(js_eval, settle_pause: float = 0.2, max_checks: int = 8):
-    """Read until Xiaohongshu's virtualized card index/id mapping is unchanged twice."""
+    """Read until both virtualized positions and the declared total are stable."""
     data = parse_js_json_result(js_eval(ITEMS_JS))
-    previous = page_position_map(data)
-    if previous is None:
-        return data, 1
+    previous = stable_snapshot_signature(data)
+    initial_declared = declared_item_count(data)
     for check in range(2, max_checks + 1):
         time.sleep(settle_pause)
         candidate = parse_js_json_result(js_eval(ITEMS_JS))
-        current = page_position_map(candidate)
+        if declared_item_count(candidate) != initial_declared:
+            raise RuntimeError(
+                '小红书前端声明总数在同一次稳定读取中发生变化，已停止。'
+            )
+        current = stable_snapshot_signature(candidate)
         if current == previous:
             return candidate, check
         data, previous = candidate, current

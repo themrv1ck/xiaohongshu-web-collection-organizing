@@ -6,18 +6,21 @@ workbuddy_runtime.py 强制进入独立的 Playwright Chromium profile。
 """
 
 import argparse
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import parse_qs, urlparse
 
 from extract_visible_items import (
@@ -25,14 +28,42 @@ from extract_visible_items import (
     read_stable_items_snapshot,
     validate_capture_page,
 )
-from run_reassign_batch import BrowserRunner
+from run_reassign_batch import (
+    BrowserRunner,
+    execute_batch,
+    execution_binding_blockers,
+    initial_report,
+    normalize_classification,
+    prepare_execution_preflight,
+)
+from video_content_common import (
+    normalize_content_type,
+    redact_sensitive_text as redact_content_secret,
+)
 from workbuddy_runtime import (
     apply_workbuddy_browser_policy,
     is_workbuddy_host,
     workbuddy_profile_path,
     workbuddy_runtime_status,
 )
-from xhs_safety import ensure_active_session, resolve_safety_state_path
+from xhs_ocr_common import (
+    detect_ocr_provider,
+    file_sha256,
+    image_set_sha256,
+    image_url_from_value,
+    ocr_run_fingerprint,
+    resolve_image_files,
+    resolve_image_urls,
+    reusable_ocr_entry,
+    supported_image_bytes,
+)
+from xhs_safety import (
+    SafetyHaltedError,
+    ensure_active_session,
+    halt_if_safety_error,
+    mark_security_halted,
+    resolve_safety_state_path,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +76,13 @@ PROFILE_LOCK_NAMES = ('SingletonLock', 'SingletonSocket', 'SingletonCookie')
 MAX_CAPTURE_BATCH_SIZE = 200
 DEFAULT_CAPTURE_BATCH_SIZE = 200
 DEFAULT_CAPTURE_PAUSE_MINUTES = 3
+DEFAULT_DETAIL_REQUEST_INTERVAL_SECONDS = 1.5
 MAX_WORKBUDDY_SCROLLS = 5000
+TRUSTED_EVIDENCE_SCHEMA = 'xhs_workbuddy_trusted_evidence_v1'
+MCP_LAUNCH_ATTESTATION_SCHEMA = 'xhs_workbuddy_launch_attestation_v1'
+MCP_LAUNCH_KEY_FD = 3
+MCP_EXECUTE_READY_FD = 4
+MCP_EXECUTE_COMMIT_FD = 5
 WORKBUDDY_RESET_TOP_JS = r"""
 (async () => {
   window.scrollTo(0, 0);
@@ -56,6 +93,119 @@ WORKBUDDY_RESET_TOP_JS = r"""
   return "ok";
 })()
 """
+
+WORKBUDDY_PERSISTED_ITEM_KEYS = (
+    'id', 'title', 'user', 'desc', 'tags', 'card_text',
+    'content_type', 'content_type_source', 'first_seen', 'page_index',
+    'source_lists', 'source_primary',
+)
+_MCP_EXECUTE_CAPABILITY = object()
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(',', ':'),
+        sort_keys=True,
+    )
+
+
+def read_mcp_launch_key(fd: int = MCP_LAUNCH_KEY_FD) -> bytes:
+    chunks = []
+    total = 0
+    try:
+        while total <= 32:
+            chunk = os.read(fd, 33 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    except OSError as exc:
+        raise RuntimeError('mcp_launch_attestation_fd_missing') from exc
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    key = b''.join(chunks)
+    if not key:
+        raise RuntimeError('mcp_launch_attestation_fd_missing')
+    if len(key) != 32:
+        raise RuntimeError('mcp_launch_attestation_key_invalid')
+    return key
+
+
+def verify_mcp_launch_attestation(
+    action: str,
+    args: List[str],
+    payload: Any,
+    *,
+    key_fd: int = MCP_LAUNCH_KEY_FD,
+) -> None:
+    """Require a per-launch capability delivered outside argv/env/stdin."""
+    key = read_mcp_launch_key(key_fd)
+    if not isinstance(payload, dict):
+        raise RuntimeError('mcp_launch_attestation_missing')
+    attestation = payload.get('launch_attestation')
+    trusted_evidence = payload.get('trusted_evidence')
+    if not isinstance(attestation, dict) or not isinstance(trusted_evidence, dict):
+        raise RuntimeError('mcp_launch_attestation_missing')
+    if attestation.get('schema') != MCP_LAUNCH_ATTESTATION_SCHEMA:
+        raise RuntimeError('mcp_launch_attestation_invalid')
+    nonce = str(attestation.get('nonce') or '')
+    signature = str(attestation.get('signature') or '')
+    if (
+        not re.fullmatch(r'[A-Za-z0-9_-]{24}', nonce)
+        or not re.fullmatch(r'[A-Za-z0-9_-]{43}', signature)
+    ):
+        raise RuntimeError('mcp_launch_attestation_invalid')
+    try:
+        provided = base64.urlsafe_b64decode(signature + '=' * (-len(signature) % 4))
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError('mcp_launch_attestation_invalid') from exc
+    basis = {
+        'schema': MCP_LAUNCH_ATTESTATION_SCHEMA,
+        'nonce': nonce,
+        'action': str(action),
+        'args': [str(value) for value in args],
+        'trusted_evidence': trusted_evidence,
+    }
+    expected = hmac.new(
+        key,
+        canonical_json(basis).encode('utf-8'),
+        hashlib.sha256,
+    ).digest()
+    if len(provided) != len(expected) or not hmac.compare_digest(provided, expected):
+        raise RuntimeError('mcp_launch_attestation_invalid')
+
+
+def await_mcp_execute_commit(
+    *,
+    ready_fd: int = MCP_EXECUTE_READY_FD,
+    commit_fd: int = MCP_EXECUTE_COMMIT_FD,
+) -> None:
+    """Tell MCP local preflight passed, then wait for receipt consumption."""
+    try:
+        os.write(ready_fd, b'READY\n')
+    except OSError as exc:
+        raise RuntimeError('mcp_execute_ready_fd_missing') from exc
+    finally:
+        try:
+            os.close(ready_fd)
+        except OSError:
+            pass
+    try:
+        decision = os.read(commit_fd, 16)
+    except OSError as exc:
+        raise RuntimeError('mcp_execute_commit_fd_missing') from exc
+    finally:
+        try:
+            os.close(commit_fd)
+        except OSError:
+            pass
+    if decision != b'COMMIT\n':
+        raise RuntimeError('mcp_execute_commit_missing')
 WORKBUDDY_SCROLL_AND_SETTLE_JS = r"""
 (async () => {
   const pageState = () => {
@@ -96,6 +246,100 @@ OWN_PROFILE_LINK_JS = r"""
   return new URL(href, window.location.origin).href;
 }
 """
+WORKBUDDY_DETAIL_HREFS_JS = r"""
+JSON.stringify(Array.from(
+  document.querySelectorAll('section.note-item, .note-item, [data-note-id]')
+).map(section => {
+  const anchor = section.querySelector('a[href*="/explore/"]');
+  if (!anchor) return null;
+  const href = anchor.href || anchor.getAttribute('href') || '';
+  const match = href.match(/\/explore\/([a-f0-9]{24})(?:[/?#]|$)/i);
+  if (!match) return null;
+  return {id: match[1], href: new URL(href, window.location.origin).href};
+}).filter(Boolean))
+"""
+WORKBUDDY_DETAIL_STATE_JS = r"""
+noteId => {
+  const unwrap = value => {
+    let current = value;
+    for (let index = 0; index < 5; index += 1) {
+      if (current && typeof current === 'object' && current.__v_isRef === true) {
+        current = current._value !== undefined ? current._value : current._rawValue;
+      } else break;
+    }
+    return current;
+  };
+  const bodyText = (document.body && document.body.innerText) || '';
+  const securityText = `${window.location.origin}${window.location.pathname}\n${bodyText}`.toLowerCase();
+  const securityMarkers = [
+    '安全验证', '异常访问', '访问异常', '访问过于频繁', '操作过于频繁',
+    '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
+    '拖动滑块', 'captcha', 'security verification', 'abnormal access',
+    'too many requests'
+  ];
+  let noteData = null;
+  let stateSource = '';
+  const setup = unwrap(window.__SETUP_SERVER_STATE__);
+  const setupPage = unwrap(setup && setup.LAUNCHER_SSR_STORE_PAGE_DATA);
+  const setupNote = unwrap(setupPage && setupPage.noteData);
+  if (setupNote && typeof setupNote === 'object') {
+    noteData = unwrap(setupNote[noteId]) || setupNote;
+    stateSource = 'setup_server_state';
+  }
+  if (!noteData || typeof noteData !== 'object') {
+    const initial = unwrap(window.__INITIAL_STATE__);
+    const detailMap = unwrap(initial && initial.note && initial.note.noteDetailMap);
+    const entry = unwrap(detailMap && detailMap[noteId]);
+    const detailNote = unwrap(entry && (entry.note || entry.noteData));
+    if (detailNote && typeof detailNote === 'object') {
+      noteData = detailNote;
+      stateSource = 'initial_state_note_detail_map';
+    }
+  }
+  const imageUrl = value => {
+    const current = unwrap(value);
+    if (typeof current === 'string') return current;
+    if (!current || typeof current !== 'object') return '';
+    for (const key of ['urlDefault', 'url', 'urlPre', 'src']) {
+      if (typeof current[key] === 'string' && current[key]) return current[key];
+    }
+    const infoList = unwrap(current.infoList || current.info_list);
+    if (Array.isArray(infoList)) {
+      for (const scene of ['WB_DFT', 'WB_PRV', 'WB_WM']) {
+        const found = infoList.find(info => info && (
+          info.imageScene || info.image_scene
+        ) === scene && info.url);
+        if (found) return found.url;
+      }
+      const fallback = infoList.find(info => info && info.url);
+      if (fallback) return fallback.url;
+    }
+    return '';
+  };
+  const rawImages = unwrap(noteData && noteData.imageList);
+  return {
+    location: `${window.location.origin}${window.location.pathname}`,
+    title: document.title,
+    loginRequired: /手机号登录|登录后推荐|马上登录即可|扫码登录|验证码登录/.test(bodyText),
+    securityMarker: securityMarkers.find(marker => securityText.includes(marker.toLowerCase())) || '',
+    stateSource,
+    noteData: noteData && typeof noteData === 'object' ? {
+      noteId: String(noteData.noteId || noteData.id || ''),
+      type: String(noteData.type || ''),
+      imageList: Array.isArray(rawImages) ? rawImages.map(imageUrl) : null
+    } : null
+  };
+}
+"""
+
+
+class WorkBuddyDetailError(RuntimeError):
+    """Stable detail failure that never includes a transient URL or token."""
+
+    def __init__(self, note_id: str, reason_code: str):
+        self.note_id = str(note_id or '')
+        self.reason_code = str(reason_code or 'detail_failed')
+        super().__init__(f'{self.reason_code}:{self.note_id}')
 
 
 def utc_now() -> str:
@@ -108,6 +352,17 @@ def write_private_json(path: Path, data: Any) -> None:
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     temp.chmod(0o600)
     os.replace(temp, path)
+
+
+def write_private_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + '.tmp')
+    try:
+        temp.write_bytes(data)
+        temp.chmod(0o600)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def load_json(path: Path) -> Any:
@@ -154,6 +409,143 @@ def run_dir_for(run_id: str, *, create: bool = False) -> Path:
     elif not directory.is_dir():
         raise RuntimeError(f'运行目录不存在：{checked}')
     return directory
+
+
+def trusted_artifact_names(stage: str, organizing_depth: str) -> List[str]:
+    names = [
+        'visible_items.json',
+        'crawl_manifest.json',
+        'xhs_safety_state.json',
+    ]
+    if organizing_depth == 'light':
+        names.extend(['image_items.json', 'ocr_results.json'])
+    if stage in {'inventory', 'plan'}:
+        names.append('board_snapshot.json')
+    if stage == 'plan':
+        names.extend([
+            'classification.json',
+            'created_boards.json',
+            'run_report.json',
+            'approval.json',
+        ])
+    return sorted(names)
+
+
+def validate_trusted_evidence(
+    directory: Path,
+    trusted_evidence: Any,
+    *,
+    expected_stage: str,
+    expected_user_id: str,
+    expected_page_url: str,
+) -> Dict[str, Any]:
+    """Recheck the MCP-private receipt hashes before any browser can start."""
+    if not isinstance(trusted_evidence, dict):
+        raise RuntimeError('trusted_evidence_missing')
+    if trusted_evidence.get('schema') != TRUSTED_EVIDENCE_SCHEMA:
+        raise RuntimeError('trusted_evidence_schema_invalid')
+    if trusted_evidence.get('stage') != expected_stage:
+        raise RuntimeError('trusted_evidence_stage_mismatch')
+    if str(trusted_evidence.get('run_id') or '') != directory.name:
+        raise RuntimeError('trusted_evidence_run_mismatch')
+    if not str(trusted_evidence.get('receipt_id') or '').strip():
+        raise RuntimeError('trusted_evidence_receipt_missing')
+    bindings = trusted_evidence.get('bindings')
+    if not isinstance(bindings, dict):
+        raise RuntimeError('trusted_evidence_bindings_invalid')
+    organizing_depth = str(bindings.get('organizing_depth') or '').strip()
+    source = str(bindings.get('source') or '').strip()
+    expected_tab = (
+        parse_qs(urlparse(str(expected_page_url or '')).query).get('tab')
+        or ['']
+    )[0].strip().lower()
+    source_tab_valid = (
+        (source == 'collection' and expected_tab == 'fav')
+        or (source == 'liked' and expected_tab in {'liked', 'like'})
+    )
+    recorded_page_binding = str(bindings.get('page_binding') or '').strip()
+    if (
+        str(bindings.get('user_id') or '').strip().lower()
+        != str(expected_user_id or '').strip().lower()
+        or not source_tab_valid
+        or recorded_page_binding != page_origin_path(expected_page_url)
+        or page_origin_path(recorded_page_binding) != recorded_page_binding
+        or organizing_depth not in {'quick', 'light'}
+        or source not in LOGIN_SOURCES
+    ):
+        raise RuntimeError('trusted_evidence_binding_mismatch')
+    artifacts = trusted_evidence.get('artifacts')
+    expected_names = trusted_artifact_names(expected_stage, organizing_depth)
+    if not isinstance(artifacts, dict) or sorted(artifacts) != expected_names:
+        raise RuntimeError('trusted_evidence_artifacts_invalid')
+    if directory.is_symlink():
+        raise RuntimeError('trusted_evidence_run_directory_unsafe')
+    resolved_directory = directory.resolve(strict=True)
+    runs_root = (plugin_data_dir() / 'runs').resolve(strict=True)
+    try:
+        resolved_directory.relative_to(runs_root)
+    except ValueError as exc:
+        raise RuntimeError('trusted_evidence_run_path_escape') from exc
+    for name in expected_names:
+        expected = artifacts.get(name)
+        if not isinstance(expected, dict):
+            raise RuntimeError(f'trusted_evidence_artifact_invalid:{name}')
+        expected_sha = str(expected.get('sha256') or '').strip().lower()
+        expected_size = expected.get('size')
+        if (
+            not SHA256_RE.fullmatch(expected_sha)
+            or not isinstance(expected_size, int)
+            or isinstance(expected_size, bool)
+            or expected_size < 0
+        ):
+            raise RuntimeError(f'trusted_evidence_artifact_invalid:{name}')
+        artifact = directory / name
+        if artifact.is_symlink() or not artifact.is_file():
+            raise RuntimeError(f'trusted_evidence_artifact_unsafe:{name}')
+        resolved_artifact = artifact.resolve(strict=True)
+        if resolved_artifact.parent != resolved_directory:
+            raise RuntimeError(f'trusted_evidence_artifact_path_escape:{name}')
+        if artifact.stat().st_size != expected_size or sha256_file(artifact) != expected_sha:
+            raise RuntimeError(f'trusted_evidence_changed:{name}')
+    return {
+        'stage': expected_stage,
+        'bindings': dict(bindings),
+        'artifacts': dict(artifacts),
+    }
+
+
+def load_trusted_json_snapshot(
+    directory: Path,
+    trusted_evidence: Dict[str, Any],
+    name: str,
+) -> Any:
+    """Read one already-bound artifact once and verify the exact bytes in memory."""
+    record = trusted_evidence.get('artifacts', {}).get(name)
+    if not isinstance(record, dict):
+        raise RuntimeError(f'trusted_evidence_artifact_invalid:{name}')
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(directory / name, flags)
+    except OSError as exc:
+        raise RuntimeError(f'trusted_evidence_artifact_unsafe:{name}') from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f'trusted_evidence_artifact_unsafe:{name}')
+        with os.fdopen(fd, 'rb', closefd=False) as handle:
+            data = handle.read()
+    finally:
+        os.close(fd)
+    expected_size = record.get('size')
+    expected_sha = str(record.get('sha256') or '').strip().lower()
+    if len(data) != expected_size or hashlib.sha256(data).hexdigest() != expected_sha:
+        raise RuntimeError(f'trusted_evidence_changed:{name}')
+    try:
+        return json.loads(data.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f'trusted_evidence_json_invalid:{name}') from exc
 
 
 def validate_xhs_url(value: str, source: str = 'custom') -> str:
@@ -220,6 +612,105 @@ def target_page_url(user_id: str, source: str) -> str:
     )
 
 
+def page_origin_path(value: str) -> str:
+    parsed = urlparse(str(value or '').strip())
+    tab = (parse_qs(parsed.query).get('tab') or [''])[0].strip().lower()
+    base = f'{parsed.scheme}://{parsed.netloc}{parsed.path}'
+    return f'{base}?tab={tab}' if tab else base
+
+
+def _is_xhs_https_url(value: str) -> bool:
+    parsed = urlparse(str(value or '').strip())
+    host = (parsed.hostname or '').lower()
+    return bool(
+        parsed.scheme == 'https'
+        and (host == 'xiaohongshu.com' or host.endswith('.xiaohongshu.com'))
+    )
+
+
+def _capture_url_tab(value: str) -> str:
+    return (
+        (parse_qs(urlparse(str(value or '')).query).get('tab') or [''])[0]
+        .strip()
+        .lower()
+    )
+
+
+def _halt_capture_binding(
+    safety_state: Path,
+    *,
+    reason_code: str,
+    message: str,
+    error_code: str,
+) -> None:
+    mark_security_halted(
+        safety_state,
+        stage='capture',
+        reason_code=reason_code,
+        message=message,
+    )
+    raise SafetyHaltedError(error_code)
+
+
+def _validate_workbuddy_capture_binding(
+    js_eval,
+    data: Dict[str, Any],
+    expected_page_url: str,
+    source: str,
+    safety_state: Path,
+) -> None:
+    """Bind every list snapshot to the authorized page and logged-in account."""
+    if source not in LOGIN_SOURCES:
+        return
+
+    expected_user_id = profile_user_id(expected_page_url)
+    expected_tab = _capture_url_tab(expected_page_url)
+    live_url = str(data.get('location') or '').strip()
+    live_user_id = profile_user_id(live_url)
+    live_tab = _capture_url_tab(live_url)
+    if (
+        not expected_user_id
+        or not expected_tab
+        or not _is_xhs_https_url(live_url)
+        or live_user_id != expected_user_id
+        or live_tab != expected_tab
+    ):
+        _halt_capture_binding(
+            safety_state,
+            reason_code='page_binding_lost',
+            message='抓取页已离开用户授权的账号或列表范围。',
+            error_code='capture_page_binding_lost',
+        )
+
+    try:
+        own_profile_url = str(js_eval(OWN_PROFILE_LINK_JS) or '').strip()
+    except Exception as exc:
+        mark_security_halted(
+            safety_state,
+            stage='capture',
+            reason_code='account_binding_unavailable',
+            message='无法从前端“我”入口核验当前登录账号。',
+        )
+        raise SafetyHaltedError(
+            'capture_account_binding_unavailable'
+        ) from exc
+    own_user_id = profile_user_id(own_profile_url)
+    if not _is_xhs_https_url(own_profile_url) or not own_user_id:
+        _halt_capture_binding(
+            safety_state,
+            reason_code='account_binding_unavailable',
+            message='前端“我”入口未提供可验证的当前账号。',
+            error_code='capture_account_binding_unavailable',
+        )
+    if own_user_id != expected_user_id:
+        _halt_capture_binding(
+            safety_state,
+            reason_code='account_binding_mismatch',
+            message='当前登录账号与用户授权的收藏页账号不一致。',
+            error_code='capture_account_binding_mismatch',
+        )
+
+
 def metadata_quality(items: Any) -> Dict[str, int]:
     rows = items if isinstance(items, list) else []
     usable = 0
@@ -241,6 +732,697 @@ def metadata_quality(items: Any) -> Dict[str, int]:
     }
 
 
+def redact_sensitive_text(value: object) -> str:
+    """Remove transient page credentials before an error crosses the bridge."""
+    return redact_content_secret(value)[:1000]
+
+
+def _redact_model_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, list):
+        return [_redact_model_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_model_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def sanitize_workbuddy_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep classification metadata while dropping all navigational/image URLs."""
+    sanitized = {
+        key: _redact_model_value(item.get(key))
+        for key in WORKBUDDY_PERSISTED_ITEM_KEYS
+        if key in item
+    }
+    note_id = str(sanitized.get('id') or '').strip()
+    if note_id:
+        sanitized['id'] = note_id
+    return sanitized
+
+
+def _parse_workbuddy_detail_href_rows(raw: Any) -> List[Dict[str, str]]:
+    value = raw
+    for _ in range(2):
+        if not isinstance(value, str):
+            break
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise WorkBuddyDetailError('', 'detail_href_snapshot_invalid') from exc
+    if not isinstance(value, list):
+        raise WorkBuddyDetailError('', 'detail_href_snapshot_invalid')
+    rows: List[Dict[str, str]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        note_id = str(entry.get('id') or '').strip()
+        href = str(entry.get('href') or '').strip()
+        if not NOTE_ID_RE.fullmatch(note_id):
+            continue
+        parsed = urlparse(href)
+        host = (parsed.hostname or '').lower()
+        path_match = re.fullmatch(
+            rf'/explore/{re.escape(note_id)}/?',
+            parsed.path,
+            flags=re.IGNORECASE,
+        )
+        if (
+            parsed.scheme != 'https'
+            or not (host == 'xiaohongshu.com' or host.endswith('.xiaohongshu.com'))
+            or not path_match
+        ):
+            continue
+        rows.append({'id': note_id, 'href': href})
+    return rows
+
+
+def collect_workbuddy_detail_hrefs(
+    js_eval,
+    observed_ids: Set[str],
+    href_sink: Dict[str, str],
+) -> None:
+    """Collect raw card hrefs in memory; callers must never persist the sink."""
+    for row in _parse_workbuddy_detail_href_rows(js_eval(WORKBUDDY_DETAIL_HREFS_JS)):
+        note_id = row['id']
+        if note_id in observed_ids:
+            href_sink[note_id] = row['href']
+
+
+def _detail_status_item(
+    item: Dict[str, Any],
+    status: str,
+    reason_code: str = '',
+) -> Dict[str, Any]:
+    output = sanitize_workbuddy_item(item)
+    item_type = normalize_content_type(item.get('content_type'))
+    output['image_files'] = []
+    output['image_file_sha256'] = []
+    output['image_count'] = 0 if item_type == 'video' else None
+    output['image_urls_complete'] = False
+    output['image_list_source'] = ''
+    output['image_enrichment_status'] = status
+    output['image_enrichment_error'] = reason_code
+    return output
+
+
+def _validate_workbuddy_detail_snapshot(
+    snapshot: Any,
+    note_id: str,
+    safety_state: Path,
+) -> Dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        raise WorkBuddyDetailError(note_id, 'detail_state_invalid')
+    security_marker = str(snapshot.get('securityMarker') or '').strip()
+    if security_marker:
+        mark_security_halted(
+            safety_state,
+            stage='image_enrichment',
+            reason_code='security_challenge',
+            message=f'小红书详情页出现安全提示：{security_marker}',
+        )
+        raise SafetyHaltedError(f'image_enrichment_security_halted:{note_id}')
+    if snapshot.get('loginRequired'):
+        mark_security_halted(
+            safety_state,
+            stage='image_enrichment',
+            reason_code='login_required',
+            message='WorkBuddy 专用浏览器详情页需要重新登录。',
+        )
+        raise SafetyHaltedError(f'image_enrichment_login_required:{note_id}')
+
+    parsed = urlparse(str(snapshot.get('location') or ''))
+    host = (parsed.hostname or '').lower()
+    path_matches = bool(re.fullmatch(
+        rf'/explore/{re.escape(note_id)}/?',
+        parsed.path,
+        flags=re.IGNORECASE,
+    ))
+    if (
+        parsed.scheme != 'https'
+        or not (host == 'xiaohongshu.com' or host.endswith('.xiaohongshu.com'))
+        or not path_matches
+    ):
+        mark_security_halted(
+            safety_state,
+            stage='image_enrichment',
+            reason_code='page_binding_lost',
+            message=f'详情页未保持在已授权笔记：{note_id}',
+        )
+        raise SafetyHaltedError(f'image_enrichment_page_binding_lost:{note_id}')
+
+    state_source = str(snapshot.get('stateSource') or '')
+    if state_source not in {'setup_server_state', 'initial_state_note_detail_map'}:
+        raise WorkBuddyDetailError(note_id, 'detail_state_missing')
+    note_data = snapshot.get('noteData')
+    if not isinstance(note_data, dict):
+        raise WorkBuddyDetailError(note_id, 'detail_note_data_missing')
+    returned_id = str(note_data.get('noteId') or '').strip()
+    if returned_id != note_id:
+        raise WorkBuddyDetailError(note_id, 'detail_note_id_mismatch')
+    detail_type = normalize_content_type(note_data.get('type'))
+    if detail_type == 'unknown':
+        raise WorkBuddyDetailError(note_id, 'detail_content_type_missing')
+    raw_images = note_data.get('imageList')
+    if detail_type == 'image':
+        if not isinstance(raw_images, list) or not raw_images:
+            raise WorkBuddyDetailError(note_id, 'detail_image_list_missing')
+        image_urls = [image_url_from_value(value) for value in raw_images]
+        if any(not url for url in image_urls):
+            raise WorkBuddyDetailError(note_id, 'detail_image_url_missing')
+    else:
+        image_urls = []
+    return {
+        'content_type': detail_type,
+        'image_urls': image_urls,
+        'state_source': state_source,
+    }
+
+
+def _enrich_item_from_workbuddy_detail(
+    item: Dict[str, Any],
+    detail: Dict[str, Any],
+    image_files: Optional[List[str]] = None,
+    image_file_sha256: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    enriched = sanitize_workbuddy_item(item)
+    detail_type = detail['content_type']
+    source = detail['state_source']
+    enriched['content_type'] = detail_type
+    enriched['content_type_source'] = (
+        'workbuddy_authenticated_frontend.noteData.type'
+    )
+    enriched['detail_state_source'] = source
+    if detail_type == 'video':
+        enriched.update({
+            'image_files': [],
+            'image_file_sha256': [],
+            'image_count': 0,
+            'image_urls_complete': False,
+            'image_list_source': '',
+            'image_enrichment_status': 'not_applicable',
+            'image_enrichment_error': '',
+        })
+        return enriched
+    image_files = list(image_files or [])
+    image_file_sha256 = list(image_file_sha256 or [])
+    if (
+        not image_files
+        or len(image_files) != len(detail['image_urls'])
+        or len(image_file_sha256) != len(image_files)
+    ):
+        raise WorkBuddyDetailError(str(item.get('id') or ''), 'detail_image_download_incomplete')
+    enriched.update({
+        'image_files': image_files,
+        'image_file_sha256': image_file_sha256,
+        'image_count': len(image_files),
+        'image_urls_complete': True,
+        'image_list_source': (
+            'workbuddy_authenticated_frontend.noteData.imageList.local_copy'
+        ),
+        'image_enrichment_status': 'ok',
+        'image_enrichment_error': '',
+    })
+    return enriched
+
+
+def _image_suffix(data: bytes) -> str:
+    if data.startswith(b'\xff\xd8\xff'):
+        return '.jpg'
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return '.png'
+    if data.startswith((b'GIF87a', b'GIF89a')):
+        return '.gif'
+    if len(data) >= 12 and data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return '.webp'
+    if len(data) >= 12 and data[4:8] == b'ftyp':
+        return '.heic'
+    return '.img'
+
+
+def download_workbuddy_authenticated_images(
+    runner: BrowserRunner,
+    note_id: str,
+    image_urls: List[str],
+    directory: Path,
+) -> tuple[List[str], List[str]]:
+    """Download with the live BrowserContext; never persist signed source URLs."""
+    files: List[str] = []
+    hashes: List[str] = []
+    created: List[Path] = []
+    try:
+        for index, image_url in enumerate(image_urls):
+            parsed = urlparse(str(image_url or '').strip())
+            host = (parsed.hostname or '').lower()
+            if (
+                parsed.scheme != 'https'
+                or not (
+                    host == 'xiaohongshu.com'
+                    or host.endswith('.xiaohongshu.com')
+                    or host == 'xhscdn.com'
+                    or host.endswith('.xhscdn.com')
+                )
+            ):
+                raise WorkBuddyDetailError(note_id, 'detail_image_host_invalid')
+            response = runner.context.request.get(image_url, timeout=60000)
+            try:
+                if not response.ok:
+                    raise WorkBuddyDetailError(note_id, 'detail_image_download_failed')
+                data = response.body()
+            finally:
+                try:
+                    response.dispose()
+                except Exception:
+                    pass
+            if not supported_image_bytes(data):
+                raise WorkBuddyDetailError(note_id, 'detail_image_bytes_invalid')
+            digest = hashlib.sha256(data).hexdigest()
+            relative = Path('authenticated_images') / (
+                f'{note_id}-{index:03d}-{digest[:12]}{_image_suffix(data)}'
+            )
+            destination = directory / relative
+            if destination.exists():
+                raise WorkBuddyDetailError(note_id, 'detail_image_file_exists')
+            write_private_bytes(destination, data)
+            created.append(destination)
+            files.append(relative.as_posix())
+            hashes.append(digest)
+    except WorkBuddyDetailError:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise WorkBuddyDetailError(
+            note_id,
+            'detail_image_download_failed',
+        ) from exc
+    return files, hashes
+
+
+def enrich_workbuddy_image_items(
+    runner: BrowserRunner,
+    items: List[Dict[str, Any]],
+    detail_hrefs: Dict[str, str],
+    batch_size: int,
+    pause_minutes: int,
+    output: Path,
+    safety_state: Path,
+    *,
+    request_interval: float = DEFAULT_DETAIL_REQUEST_INTERVAL_SECONDS,
+) -> Dict[str, Any]:
+    """Use the capture context for authenticated detail reads, never a new profile."""
+    if not isinstance(batch_size, int) or isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CAPTURE_BATCH_SIZE:
+        raise RuntimeError('图文详情 batch_size 必须是 1 到 200 的整数。')
+    if not isinstance(pause_minutes, int) or isinstance(pause_minutes, bool) or pause_minutes < 1:
+        raise RuntimeError('图文详情 pause_minutes 必须是大于 0 的整数。')
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise RuntimeError('visible_items.json 必须是对象数组。')
+    note_ids = [str(item.get('id') or '').strip() for item in items]
+    if any(not NOTE_ID_RE.fullmatch(note_id) for note_id in note_ids):
+        raise RuntimeError('visible_items.json 含非法 note id，已停止详情补齐。')
+    if len(note_ids) != len(set(note_ids)):
+        raise RuntimeError('visible_items.json 含重复 note id，已停止详情补齐。')
+
+    # 列表 content_type 只是 observed 线索；必须逐条用详情 noteData.type 确认，
+    # 否则被列表误标为 video 的真实图文会绕过 OCR。
+    candidates = list(items)
+    candidate_ids = [str(item['id']) for item in candidates]
+    missing_hrefs = [note_id for note_id in candidate_ids if note_id not in detail_hrefs]
+    if missing_hrefs:
+        missing_set = set(missing_hrefs)
+        candidate_set = set(candidate_ids)
+        rows = []
+        for item in items:
+            note_id = str(item.get('id') or '')
+            if note_id in missing_set:
+                rows.append(_detail_status_item(item, 'error', 'detail_href_missing'))
+            elif note_id in candidate_set:
+                rows.append(_detail_status_item(
+                    item,
+                    'not_requested_after_failure',
+                    'detail_href_set_incomplete',
+                ))
+            else:
+                rows.append(_detail_status_item(item, 'not_applicable'))
+        write_private_json(output, rows)
+        return {
+            'requested': 0,
+            'succeeded': 0,
+            'failed': len(missing_hrefs),
+            'ready_for_ocr': False,
+            'blockers': ['detail_href_set_incomplete'],
+        }
+
+    ensure_active_session(
+        safety_state,
+        stage='image_enrichment',
+        policy={
+            'controller': 'workbuddy_plugin',
+            'browser_backend': 'playwright',
+            'same_capture_context': True,
+            'detail_requests_enabled': True,
+            'detail_batch_size': batch_size,
+            'detail_pause_minutes': pause_minutes,
+            'detail_group_count': (
+                (len(candidates) + batch_size - 1) // batch_size
+                if candidates else 0
+            ),
+            'raw_detail_hrefs_persisted': False,
+            'auto_retry': False,
+        },
+    )
+    results_by_id: Dict[str, Dict[str, Any]] = {}
+    requested = 0
+    succeeded = 0
+    failed = 0
+    blocker = ''
+    detail_page = runner.context.new_page()
+    try:
+        for index, item in enumerate(candidates):
+            note_id = str(item['id'])
+            requested += 1
+            try:
+                detail_page.goto(
+                    detail_hrefs[note_id],
+                    wait_until='domcontentloaded',
+                    timeout=60000,
+                )
+                snapshot = detail_page.evaluate(WORKBUDDY_DETAIL_STATE_JS, note_id)
+                detail = _validate_workbuddy_detail_snapshot(
+                    snapshot,
+                    note_id,
+                    safety_state,
+                )
+                if detail['content_type'] == 'image':
+                    image_files, image_hashes = download_workbuddy_authenticated_images(
+                        runner,
+                        note_id,
+                        list(detail['image_urls']),
+                        output.parent,
+                    )
+                else:
+                    image_files, image_hashes = [], []
+                results_by_id[note_id] = _enrich_item_from_workbuddy_detail(
+                    item,
+                    detail,
+                    image_files,
+                    image_hashes,
+                )
+                detail['image_urls'].clear()
+                succeeded += 1
+            except SafetyHaltedError:
+                results_by_id[note_id] = _detail_status_item(
+                    item,
+                    'security_blocked',
+                    'security_halted',
+                )
+                for remaining in candidates[index + 1:]:
+                    remaining_id = str(remaining['id'])
+                    results_by_id[remaining_id] = _detail_status_item(
+                        remaining,
+                        'not_requested_after_security_block',
+                        'security_halted',
+                    )
+                write_private_json(
+                    output,
+                    [results_by_id[str(row['id'])] for row in items],
+                )
+                raise
+            except WorkBuddyDetailError as exc:
+                results_by_id[note_id] = _detail_status_item(
+                    item,
+                    'error',
+                    exc.reason_code,
+                )
+                failed += 1
+                blocker = exc.reason_code
+                for remaining in candidates[index + 1:]:
+                    remaining_id = str(remaining['id'])
+                    results_by_id[remaining_id] = _detail_status_item(
+                        remaining,
+                        'not_requested_after_failure',
+                        blocker,
+                    )
+                break
+            except Exception as exc:
+                safe_error = redact_sensitive_text(exc)
+                if halt_if_safety_error(
+                    safety_state,
+                    stage='image_enrichment',
+                    error=safe_error,
+                ):
+                    results_by_id[note_id] = _detail_status_item(
+                        item,
+                        'security_blocked',
+                        'security_halted',
+                    )
+                    for remaining in candidates[index + 1:]:
+                        remaining_id = str(remaining['id'])
+                        results_by_id[remaining_id] = _detail_status_item(
+                            remaining,
+                            'not_requested_after_security_block',
+                            'security_halted',
+                        )
+                    write_private_json(
+                        output,
+                        [results_by_id[str(row['id'])] for row in items],
+                    )
+                    raise SafetyHaltedError(
+                        f'image_enrichment_security_halted:{note_id}'
+                    ) from None
+                results_by_id[note_id] = _detail_status_item(
+                    item,
+                    'error',
+                    'detail_navigation_failed',
+                )
+                failed += 1
+                blocker = 'detail_navigation_failed'
+                for remaining in candidates[index + 1:]:
+                    remaining_id = str(remaining['id'])
+                    results_by_id[remaining_id] = _detail_status_item(
+                        remaining,
+                        'not_requested_after_failure',
+                        blocker,
+                    )
+                break
+            write_private_json(
+                output,
+                [
+                    results_by_id.get(
+                        str(row['id']),
+                        _detail_status_item(row, 'pending'),
+                    )
+                    for row in items
+                ],
+            )
+            if index + 1 < len(candidates):
+                if (index + 1) % batch_size == 0:
+                    time.sleep(pause_minutes * 60)
+                elif request_interval > 0:
+                    time.sleep(request_interval)
+    finally:
+        try:
+            detail_page.close()
+        except Exception:
+            pass
+
+    rows = [
+        results_by_id.get(
+            str(item['id']),
+            _detail_status_item(item, 'not_requested_after_failure', blocker),
+        )
+        for item in items
+    ]
+    write_private_json(output, rows)
+    image_rows = [
+        row for row in rows
+        if normalize_content_type(row.get('content_type')) == 'image'
+    ]
+    complete = all(
+        row.get('image_enrichment_status') == 'ok'
+        and row.get('image_urls_complete') is True
+        and isinstance(row.get('image_count'), int)
+        and row.get('image_count') == len(resolve_image_files(row))
+        and row.get('image_count') > 0
+        for row in image_rows
+    )
+    ready_for_ocr = not blocker and complete and succeeded == len(candidates)
+    return {
+        'requested': requested,
+        'succeeded': succeeded,
+        'failed': failed,
+        'detail_group_count': (
+            (len(candidates) + batch_size - 1) // batch_size
+            if candidates else 0
+        ),
+        'ready_for_ocr': ready_for_ocr,
+        'blockers': [blocker] if blocker else ([] if ready_for_ocr else ['image_set_incomplete']),
+    }
+
+
+def validate_workbuddy_local_image_contract(
+    row: Dict[str, Any],
+    directory: Path,
+) -> tuple[List[str], List[str]]:
+    files = resolve_image_files(row)
+    hashes = row.get('image_file_sha256')
+    if not isinstance(hashes, list) or len(hashes) != len(files) or not files:
+        raise RuntimeError(f'图文本地图片清单无效：{row.get("id") or "unknown"}')
+    references: List[str] = []
+    normalized_hashes: List[str] = []
+    root = directory.resolve(strict=True)
+    image_root = (directory / 'authenticated_images').resolve(strict=True)
+    image_root.relative_to(root)
+    for relative_value, expected_value in zip(files, hashes):
+        relative = Path(relative_value)
+        if relative.is_absolute() or '..' in relative.parts:
+            raise RuntimeError('图文本地图片路径越界。')
+        unresolved = directory / relative
+        if unresolved.is_symlink() or not unresolved.is_file():
+            raise RuntimeError('图文本地图片缺失或为符号链接。')
+        resolved = unresolved.resolve(strict=True)
+        resolved.relative_to(image_root)
+        expected = str(expected_value or '').strip().lower()
+        if not SHA256_RE.fullmatch(expected) or file_sha256(resolved) != expected:
+            raise RuntimeError('图文本地图片哈希不一致。')
+        references.append(f'sha256:{expected}')
+        normalized_hashes.append(expected)
+    return references, normalized_hashes
+
+
+def run_workbuddy_ocr(directory: Path, image_items: Path) -> Dict[str, Any]:
+    ocr_results = directory / 'ocr_results.json'
+    provider = detect_ocr_provider('auto')
+    tesseract_lang = 'chi_sim'
+    expected_fingerprint = ocr_run_fingerprint(
+        provider,
+        tesseract_lang,
+        ROOT / 'scripts' / 'ocr_image.swift',
+    )
+    if provider == 'none':
+        return {
+            'ocr_results': str(ocr_results),
+            'ocr_ok': 0,
+            'ocr_failed': sum(
+                1
+                for row in load_json(image_items)
+                if normalize_content_type(row.get('content_type')) == 'image'
+            ),
+            'ready_for_classification': False,
+            'blockers': ['ocr_provider_unavailable'],
+            'ocr_provider': provider,
+            'ocr_tesseract_lang': tesseract_lang,
+            'ocr_expected_fingerprint': expected_fingerprint,
+        }
+    proc = run_command(
+        [
+            sys.executable,
+            str(ROOT / 'scripts' / 'ocr_note_images.py'),
+            str(image_items),
+            str(ocr_results),
+            '--provider',
+            provider,
+        ],
+        allow_failure=True,
+    )
+    image_rows = [
+        row for row in load_json(image_items)
+        if normalize_content_type(row.get('content_type')) == 'image'
+    ]
+    expected_ids = [str(row.get('id') or '') for row in image_rows]
+    expected_counts = {
+        str(row.get('id') or ''): row.get('image_count')
+        for row in image_rows
+    }
+    expected_sources: Dict[str, List[str]] = {}
+    expected_source_hashes: Dict[str, List[str]] = {}
+    try:
+        for row in image_rows:
+            note_id = str(row.get('id') or '')
+            references, hashes = validate_workbuddy_local_image_contract(
+                row,
+                directory,
+            )
+            expected_sources[note_id] = references
+            expected_source_hashes[note_id] = hashes
+    except Exception:
+        return {
+            'ocr_results': str(ocr_results),
+            'ocr_ok': 0,
+            'ocr_failed': len(expected_ids),
+            'ready_for_classification': False,
+            'blockers': ['authenticated_image_contract_invalid'],
+            'ocr_provider': provider,
+            'ocr_tesseract_lang': tesseract_lang,
+            'ocr_expected_fingerprint': expected_fingerprint,
+        }
+    if proc.returncode != 0 or not ocr_results.is_file():
+        return {
+            'ocr_results': str(ocr_results),
+            'ocr_ok': 0,
+            'ocr_failed': len(expected_ids),
+            'ready_for_classification': False,
+            'blockers': ['ocr_process_failed'],
+            'ocr_provider': provider,
+            'ocr_tesseract_lang': tesseract_lang,
+            'ocr_expected_fingerprint': expected_fingerprint,
+        }
+    try:
+        rows = load_json(ocr_results)
+    except Exception:
+        rows = None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        return {
+            'ocr_results': str(ocr_results),
+            'ocr_ok': 0,
+            'ocr_failed': len(expected_ids),
+            'ready_for_classification': False,
+            'blockers': ['ocr_results_invalid'],
+            'ocr_provider': provider,
+            'ocr_tesseract_lang': tesseract_lang,
+            'ocr_expected_fingerprint': expected_fingerprint,
+        }
+    result_ids = [str(row.get('id') or '') for row in rows]
+    valid_by_id = {
+        str(row.get('id') or ''): row
+        for row in rows
+        if isinstance(row, dict) and row.get('id')
+    }
+    valid_ids = {
+        note_id
+        for note_id in expected_ids
+        if note_id in valid_by_id
+        and expected_counts[note_id] == len(expected_sources[note_id])
+        and reusable_ocr_entry(
+            valid_by_id[note_id],
+            expected_sources[note_id],
+            image_set_sha256(expected_sources[note_id]),
+            expected_fingerprint,
+            expected_source_hashes[note_id],
+        )
+    }
+    valid = (
+        len(result_ids) == len(set(result_ids))
+        and result_ids == expected_ids
+        and valid_ids == set(expected_ids)
+    )
+    ocr_ok = len(valid_ids)
+    return {
+        'ocr_results': str(ocr_results),
+        'ocr_ok': ocr_ok,
+        'ocr_failed': len(expected_ids) - ocr_ok,
+        'ready_for_classification': valid,
+        'blockers': [] if valid else ['ocr_results_incomplete'],
+        'ocr_provider': provider,
+        'ocr_tesseract_lang': tesseract_lang,
+        'ocr_expected_fingerprint': expected_fingerprint,
+    }
+
+
 def _workbuddy_page_state(
     data: Dict[str, Any],
     seen_positions: Dict[int, str],
@@ -258,8 +1440,8 @@ def _workbuddy_page_state(
     )
     positions = sorted(seen_positions)
     return {
-        'location': data.get('location'),
-        'title': data.get('title'),
+        'location': page_origin_path(str(data.get('location') or '')),
+        'title': redact_sensitive_text(data.get('title')),
         'scrollY': scroll_y,
         'innerHeight': inner_height,
         'scrollHeight': scroll_height,
@@ -320,16 +1502,22 @@ def capture_workbuddy_groups(
     batch_size: int,
     pause_minutes: int,
     safety_state: Path,
+    detail_href_sink: Optional[Dict[str, str]] = None,
+    *,
+    expected_page_url: str,
 ) -> Dict[str, Any]:
     """Read a WorkBuddy list in durable groups without reopening the browser."""
-    if not isinstance(batch_size, int) or isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CAPTURE_BATCH_SIZE:
-        raise RuntimeError('batch_size 必须是 1 到 200 的整数。')
-    if not isinstance(pause_minutes, int) or isinstance(pause_minutes, bool) or pause_minutes < 1:
-        raise RuntimeError('pause_minutes 必须是大于 0 的整数。')
+    if batch_size != DEFAULT_CAPTURE_BATCH_SIZE:
+        raise RuntimeError('WorkBuddy 每组固定读取 200 条。')
+    if pause_minutes != DEFAULT_CAPTURE_PAUSE_MINUTES:
+        raise RuntimeError('WorkBuddy 非末组之间固定暂停 3 分钟。')
 
     directory = Path(directory)
     safety_state = Path(safety_state)
     source_label = normalize_source_label(source)
+    checked_expected_page_url = validate_xhs_url(expected_page_url, source)
+    if source in LOGIN_SOURCES and not profile_user_id(checked_expected_page_url):
+        raise RuntimeError('收藏/点赞抓取必须绑定已授权的个人主页。')
     ensure_active_session(
         safety_state,
         stage='capture',
@@ -348,6 +1536,8 @@ def capture_workbuddy_groups(
 
     seen: Dict[str, Dict[str, Any]] = {}
     seen_positions: Dict[int, str] = {}
+    note_positions: Dict[str, int] = {}
+    position_contract_blockers: Set[str] = set()
     pending: List[Dict[str, Any]] = []
     committed: List[Dict[str, Any]] = []
     segment_manifests: List[Dict[str, Any]] = []
@@ -355,15 +1545,39 @@ def capture_workbuddy_groups(
     bottom_stable_reads = 0
     last_page: Dict[str, Any] = {}
     crawl_complete = False
+    declared_count_missing = False
+    observed_declared_counts: Set[int] = set()
 
     js_eval(WORKBUDDY_RESET_TOP_JS)
     for scroll_index in range(MAX_WORKBUDDY_SCROLLS + 1):
         data, stability_checks = read_stable_items_snapshot(js_eval)
         validate_capture_page(data, safety_state)
+        _validate_workbuddy_capture_binding(
+            js_eval,
+            data,
+            checked_expected_page_url,
+            source,
+            safety_state,
+        )
+        observed_declared = data.get('declaredItemCount')
+        if (
+            isinstance(observed_declared, int)
+            and not isinstance(observed_declared, bool)
+            and observed_declared >= 0
+        ):
+            observed_declared_counts.add(observed_declared)
+        else:
+            declared_count_missing = True
         observed = [
             item for item in list(data.get('items') or [])
             if isinstance(item, dict) and item.get('id')
         ]
+        if detail_href_sink is not None:
+            collect_workbuddy_detail_hrefs(
+                js_eval,
+                {str(item.get('id') or '') for item in observed},
+                detail_href_sink,
+            )
         observed.sort(key=lambda item: (
             item.get('page_index')
             if isinstance(item.get('page_index'), int)
@@ -372,23 +1586,36 @@ def capture_workbuddy_groups(
         for item in observed:
             note_id = str(item.get('id') or '').strip()
             page_index = item.get('page_index')
-            if isinstance(page_index, int) and page_index >= 0:
+            if not NOTE_ID_RE.fullmatch(note_id):
+                raise RuntimeError('页面条目缺少合法 note id，已停止以避免错位。')
+            if (
+                not isinstance(page_index, int)
+                or isinstance(page_index, bool)
+                or page_index < 0
+            ):
+                position_contract_blockers.add('invalid_page_positions')
+            else:
                 previous_id = seen_positions.get(page_index)
                 if previous_id and previous_id != note_id:
-                    raise RuntimeError(
-                        f'页面位置 {page_index} 对应的笔记发生变化，已停止以避免错位。'
-                    )
-                seen_positions[page_index] = note_id
+                    position_contract_blockers.add('page_position_conflict')
+                previous_position = note_positions.get(note_id)
+                if previous_position is not None and previous_position != page_index:
+                    position_contract_blockers.add('note_position_conflict')
+                if not previous_id:
+                    seen_positions[page_index] = note_id
+                if previous_position is None:
+                    note_positions[note_id] = page_index
+            safe_item = sanitize_workbuddy_item(item)
             if note_id in seen:
                 current = seen[note_id]
-                for key, value in item.items():
+                for key, value in safe_item.items():
                     if (
                         value not in (None, '', [], {})
                         and current.get(key) in (None, '', [], {})
                     ):
                         current[key] = value
                 continue
-            row = dict(item)
+            row = safe_item
             row['source_lists'] = [source_label]
             row['source_primary'] = source_label
             seen[note_id] = row
@@ -422,12 +1649,8 @@ def capture_workbuddy_groups(
                 or (not seen_positions and len(seen) >= declared)
             )
         )
-        started_from_top = (
-            not seen_positions or last_page['page_position_min'] == 0
-        )
         crawl_complete = bool(
             last_page['at_bottom']
-            and started_from_top
             and (declared_end_reached or bottom_stable_reads >= 2)
         )
 
@@ -497,25 +1720,73 @@ def capture_workbuddy_groups(
     if not (directory / 'visible_items.json').exists():
         write_private_json(directory / 'visible_items.json', committed)
 
-    positions = sorted(seen_positions)
-    missing_positions = (
-        sorted(set(range(positions[0], positions[-1] + 1)) - set(positions))
-        if positions else []
-    )
     warnings = []
+    blockers: List[str] = []
+    for code in sorted(position_contract_blockers):
+        warnings.append({'code': code})
+        blockers.append(code)
     declared = last_page.get('declaredItemCount')
-    if isinstance(declared, int) and not isinstance(declared, bool) and declared != len(committed):
+    declared_available = bool(
+        not declared_count_missing
+        and isinstance(declared, int)
+        and not isinstance(declared, bool)
+        and declared >= 0
+        and observed_declared_counts == {declared}
+    )
+    if not declared_available:
+        warnings.append({'code': 'declared_count_unavailable'})
+        blockers.append('declared_count_unavailable')
+    elif declared != len(committed):
         warnings.append({
             'code': 'declared_count_mismatch',
             'declared_count': declared,
             'accessible_count': len(committed),
         })
-    if missing_positions:
-        warnings.append({
-            'code': 'missing_page_positions',
-            'count': len(missing_positions),
-            'sample': missing_positions[:20],
-        })
+        blockers.append('declared_count_mismatch')
+    if declared_available:
+        expected_positions = set(range(declared))
+        actual_positions = set(seen_positions)
+        missing_positions = sorted(expected_positions - actual_positions)
+        unexpected_positions = sorted(actual_positions - expected_positions)
+        if missing_positions:
+            warnings.append({
+                'code': 'missing_page_positions',
+                'count': len(missing_positions),
+                'sample': missing_positions[:20],
+            })
+            blockers.append('missing_page_positions')
+        if unexpected_positions:
+            warnings.append({
+                'code': 'unexpected_page_positions',
+                'count': len(unexpected_positions),
+                'sample': unexpected_positions[:20],
+            })
+            blockers.append('unexpected_page_positions')
+
+    coverage_complete = not blockers
+    stopped_reason = (
+        'collection_complete'
+        if coverage_complete
+        else 'capture_coverage_incomplete'
+    )
+    if segment_manifests:
+        final_segment = dict(segment_manifests[-1])
+        final_segment['crawl_complete'] = coverage_complete
+        final_segment['stopped_reason'] = stopped_reason
+        final_segment['blockers'] = blockers
+        write_private_json(Path(final_segment['manifest']), final_segment)
+        segment_manifests[-1] = final_segment
+    progress_path = directory / 'capture_progress.json'
+    progress = load_json(progress_path)
+    progress.update({
+        'crawl_complete': coverage_complete,
+        'ready_for_classification': coverage_complete,
+        'stopped_reason': stopped_reason,
+        'blockers': blockers,
+        'warnings': warnings,
+        'updated_at': utc_now(),
+    })
+    write_private_json(progress_path, progress)
 
     aggregate_manifest = directory / 'crawl_manifest.json'
     write_private_json(aggregate_manifest, {
@@ -525,8 +1796,10 @@ def capture_workbuddy_groups(
         'pause_minutes': pause_minutes,
         'item_count': len(committed),
         'segment_count': len(segment_manifests),
-        'crawl_complete': True,
-        'stopped_reason': 'collection_complete',
+        'crawl_complete': coverage_complete,
+        'ready_for_classification': coverage_complete,
+        'stopped_reason': stopped_reason,
+        'blockers': blockers,
         'browser_session_reused': True,
         'page': last_page,
         'warnings': warnings,
@@ -553,8 +1826,10 @@ def capture_workbuddy_groups(
         'batch_size': batch_size,
         'pause_minutes': pause_minutes,
         'segment_count': len(segment_manifests),
-        'crawl_complete': True,
-        'stopped_reason': 'collection_complete',
+        'crawl_complete': coverage_complete,
+        'ready_for_classification': coverage_complete,
+        'stopped_reason': stopped_reason,
+        'blockers': blockers,
         'warnings': warnings,
         'safety_state': str(safety_state),
     }
@@ -781,16 +2056,39 @@ def capture_action(
     page_url: str,
     batch_size: int,
     pause_minutes: int,
+    organizing_depth: str,
 ) -> Dict[str, Any]:
     require_workbuddy()
-    checked_url = validate_xhs_url(page_url, source)
-    if not isinstance(batch_size, int) or isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CAPTURE_BATCH_SIZE:
-        raise RuntimeError('batch_size 必须是 1 到 200 的整数。')
-    if not isinstance(pause_minutes, int) or isinstance(pause_minutes, bool) or pause_minutes < 1:
-        raise RuntimeError('pause_minutes 必须是大于 0 的整数。')
+    organizing_depth = str(organizing_depth or '').strip().lower()
+    if organizing_depth not in {'quick', 'light'}:
+        raise RuntimeError(
+            'WorkBuddy Plugin 当前只支持 quick 或 light；'
+            'deep 需要视频语音和完整时轴画面证据，尚未接入，已在打开浏览器前停止。'
+        )
+    image_ocr_enabled = organizing_depth == 'light'
+    supplied_url = validate_xhs_url(page_url, source)
+    captured_user_id = profile_user_id(supplied_url)
+    if source in LOGIN_SOURCES and not captured_user_id:
+        raise RuntimeError('WorkBuddy 收藏/点赞抓取必须绑定当前账号的 profile URL。')
+    checked_url = target_page_url(captured_user_id, source)
+    if batch_size != DEFAULT_CAPTURE_BATCH_SIZE:
+        raise RuntimeError('WorkBuddy 每组固定读取 200 条。')
+    if pause_minutes != DEFAULT_CAPTURE_PAUSE_MINUTES:
+        raise RuntimeError('WorkBuddy 非末组之间固定暂停 3 分钟。')
     require_profile_available()
     args = browser_args(checked_url)
     runner = None
+    detail_hrefs: Dict[str, str] = {}
+    detail_result = {
+        'requested': 0,
+        'succeeded': 0,
+        'failed': 0,
+        'detail_group_count': 0,
+        'ready_for_ocr': False,
+        'blockers': [],
+    }
+    capture_ready_for_classification = False
+    capture_blockers: List[str] = []
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     def cancel_capture(_signum, _frame):
@@ -801,6 +2099,10 @@ def capture_action(
         runner = BrowserRunner('playwright', args)
         directory = run_dir_for(run_id, create=True)
         visible = directory / 'visible_items.json'
+        image_items = directory / 'image_items.json'
+        ocr_results = directory / 'ocr_results.json'
+        if image_ocr_enabled and (image_items.exists() or ocr_results.exists()):
+            raise RuntimeError('本次 OCR 产物已存在，拒绝覆盖；请使用新的 run_id。')
         safety = resolve_safety_state_path('', visible)
         ensure_active_session(
             safety,
@@ -816,6 +2118,10 @@ def capture_action(
                 'auto_continue_after_pause': True,
                 'browser_session_reused': True,
                 'workbuddy_exact_url_open': checked_url,
+                'organizing_depth': organizing_depth,
+                'image_ocr_enabled': bool(image_ocr_enabled),
+                'detail_batch_size': batch_size if image_ocr_enabled else 0,
+                'detail_pause_minutes': pause_minutes if image_ocr_enabled else 0,
             },
         )
         result = capture_workbuddy_groups(
@@ -825,7 +2131,13 @@ def capture_action(
             batch_size,
             pause_minutes,
             safety,
+            detail_hrefs if image_ocr_enabled else None,
+            expected_page_url=checked_url,
         )
+        capture_ready_for_classification = (
+            result.get('ready_for_classification') is True
+        )
+        capture_blockers = list(result.get('blockers') or [])
         quality = metadata_quality(load_json(visible))
         result['metadata_quality'] = quality
         if quality['item_count'] > 0 and quality['usable_item_count'] == 0:
@@ -833,7 +2145,18 @@ def capture_action(
                 '抓取到了笔记 ID，但标题、作者和卡片文字全部为空；'
                 '页面结构已变化，已停止分类，不能生成空的整理方案。'
             )
+        if image_ocr_enabled and capture_ready_for_classification:
+            detail_result = enrich_workbuddy_image_items(
+                runner,
+                load_json(visible),
+                detail_hrefs,
+                batch_size,
+                pause_minutes,
+                image_items,
+                safety,
+            )
     finally:
+        detail_hrefs.clear()
         try:
             if runner is not None:
                 runner.close()
@@ -849,22 +2172,480 @@ def capture_action(
         'browser_backend': 'playwright',
         'browser_profile': str(workbuddy_profile_path()),
         'exact_url_opened': checked_url,
+        'browser_closed_by_tool': True,
+    })
+    if not capture_ready_for_classification:
+        ocr_result = {
+            'ocr_results': None,
+            'ocr_ok': 0,
+            'ocr_failed': 0,
+            'ready_for_classification': False,
+            'blockers': capture_blockers,
+            'ocr_provider': None,
+            'ocr_tesseract_lang': None,
+            'ocr_expected_fingerprint': None,
+        }
+    elif image_ocr_enabled and detail_result['ready_for_ocr']:
+        ocr_result = run_workbuddy_ocr(directory, image_items)
+    elif image_ocr_enabled:
+        ocr_result = {
+            'ocr_results': str(ocr_results),
+            'ocr_ok': 0,
+            'ocr_failed': 0,
+            'ready_for_classification': False,
+            'blockers': list(detail_result['blockers']),
+            'ocr_provider': None,
+            'ocr_tesseract_lang': None,
+            'ocr_expected_fingerprint': None,
+        }
+    else:
+        ocr_result = {
+            'ocr_results': None,
+            'ocr_ok': 0,
+            'ocr_failed': 0,
+            'ready_for_classification': True,
+            'blockers': [],
+            'ocr_provider': None,
+            'ocr_tesseract_lang': None,
+            'ocr_expected_fingerprint': None,
+        }
+    classification_blockers = list(dict.fromkeys(
+        capture_blockers + list(ocr_result['blockers'])
+    ))
+    ready_for_classification = bool(
+        capture_ready_for_classification
+        and ocr_result['ready_for_classification']
+        and not classification_blockers
+    )
+    result.update({
+        'image_ocr_enabled': bool(image_ocr_enabled),
+        'organizing_depth': organizing_depth,
+        'image_items': (
+            str(image_items)
+            if image_ocr_enabled and image_items.is_file()
+            else None
+        ),
+        'ocr_results': ocr_result['ocr_results'],
+        'requested': detail_result['requested'],
+        'succeeded': detail_result['succeeded'],
+        'failed': detail_result['failed'],
+        'ocr_ok': ocr_result['ocr_ok'],
+        'ocr_failed': ocr_result['ocr_failed'],
+        'ready_for_classification': ready_for_classification,
+        'capture_blockers': capture_blockers,
+        'image_ocr_blockers': list(ocr_result['blockers']),
+        'blockers': classification_blockers,
     })
     result['classification_required'] = True
-    result['next_action'] = (
-        '先调用不带 classification 的 prepare，只读取得本次账号真实已有专辑；'
-        '再根据 visible_items.json 和该专辑清单逐条分类。'
-    )
+    if result['ready_for_classification']:
+        result['next_action'] = (
+            '先调用不带 classification 的 prepare，只读取得本次账号真实已有专辑；'
+            '再根据本次 OCR 证据（若已开启）和该专辑清单逐条分类。'
+        )
+    else:
+        result['next_action'] = (
+            '抓取覆盖、图文详情补齐或 OCR 未完整通过，必须停止；'
+            '不得改用封面 OCR 或元数据分类继续。'
+        )
+    manifest_path = directory / 'crawl_manifest.json'
+    if not manifest_path.is_file():
+        raise RuntimeError('抓取未生成 crawl_manifest.json；不能建立分类证据。')
+    manifest = load_json(manifest_path)
+    if not isinstance(manifest, dict):
+        raise RuntimeError('crawl_manifest.json 必须是对象。')
+    manifest.update({
+        'capture_source': source,
+        'capture_user_id': captured_user_id,
+        'capture_page_binding': page_origin_path(checked_url),
+        'capture_tab': (parse_qs(urlparse(checked_url).query).get('tab') or [''])[0],
+        'visible_items': str(visible),
+        'visible_items_sha256': sha256_file(visible),
+        'organizing_depth': organizing_depth,
+        'image_ocr_enabled': bool(image_ocr_enabled),
+        'detail_batch_size': batch_size if image_ocr_enabled else 0,
+        'detail_pause_minutes': pause_minutes if image_ocr_enabled else 0,
+        'detail_group_count': detail_result.get('detail_group_count', 0),
+        'image_items': (
+            str(image_items)
+            if image_ocr_enabled and image_items.is_file()
+            else None
+        ),
+        'image_items_sha256': (
+            sha256_file(image_items)
+            if image_ocr_enabled and image_items.is_file()
+            else None
+        ),
+        'ocr_results': ocr_result['ocr_results'],
+        'ocr_results_sha256': (
+            sha256_file(ocr_results)
+            if image_ocr_enabled and ocr_results.is_file()
+            else None
+        ),
+        'ocr_provider': ocr_result.get('ocr_provider'),
+        'ocr_tesseract_lang': ocr_result.get('ocr_tesseract_lang'),
+        'ocr_expected_fingerprint': ocr_result.get('ocr_expected_fingerprint'),
+        'ready_for_classification': result['ready_for_classification'],
+        'capture_blockers': result['capture_blockers'],
+        'image_ocr_blockers': result['image_ocr_blockers'],
+        'classification_blockers': result['blockers'],
+        'evidence_completed_at': utc_now(),
+    })
+    write_private_json(manifest_path, manifest)
+    result['manifest'] = str(manifest_path)
     return result
 
 
-def approval_basis(directory: Path, report: Dict[str, Any]) -> Dict[str, Any]:
+def validate_workbuddy_capture_evidence(
+    directory: Path,
+    *,
+    expected_user_id: str = '',
+    expected_page_url: str = '',
+    expected_url_substring: str = '',
+) -> Dict[str, Any]:
+    """Bind classification to one complete WorkBuddy capture and OCR decision."""
+    directory = Path(directory)
+    visible_path = directory / 'visible_items.json'
+    manifest_path = directory / 'crawl_manifest.json'
+    if not visible_path.is_file() or not manifest_path.is_file():
+        raise RuntimeError(
+            '缺少 visible_items.json 或 crawl_manifest.json；请重新完成本次 WorkBuddy 抓取。'
+        )
+    manifest = load_json(manifest_path)
+    visible_rows = load_json(visible_path)
+    if not isinstance(manifest, dict):
+        raise RuntimeError('crawl_manifest.json 必须是对象。')
+    if (
+        manifest.get('capture_mode') != 'workbuddy_segmented'
+        or manifest.get('crawl_complete') is not True
+    ):
+        raise RuntimeError('WorkBuddy 抓取尚未完整结束，不能进入分类。')
+    if not isinstance(visible_rows, list) or any(
+        not isinstance(row, dict) for row in visible_rows
+    ):
+        raise RuntimeError('visible_items.json 必须是对象数组。')
+    visible_ids = [str(row.get('id') or '').strip() for row in visible_rows]
+    if (
+        any(not NOTE_ID_RE.fullmatch(note_id) for note_id in visible_ids)
+        or len(visible_ids) != len(set(visible_ids))
+    ):
+        raise RuntimeError('visible_items.json 含非法或重复 note id。')
+    if manifest.get('item_count') != len(visible_rows):
+        raise RuntimeError('crawl_manifest.json 与 visible_items.json 数量不一致。')
+    recorded_visible = str(manifest.get('visible_items') or '').strip()
+    if (
+        not recorded_visible
+        or Path(recorded_visible).resolve() != visible_path.resolve()
+        or manifest.get('visible_items_sha256') != sha256_file(visible_path)
+    ):
+        raise RuntimeError('visible_items.json 与抓取完成时的证据不一致。')
+    capture_source = str(manifest.get('capture_source') or '').strip()
+    captured_user_id = str(manifest.get('capture_user_id') or '').strip()
+    captured_page_binding = str(manifest.get('capture_page_binding') or '').strip()
+    captured_tab = str(manifest.get('capture_tab') or '').strip().lower()
+    if (
+        capture_source not in ALLOWED_SOURCES
+        or not NOTE_ID_RE.fullmatch(captured_user_id)
+        or profile_user_id(captured_page_binding) != captured_user_id
+        or (
+            capture_source == 'collection' and captured_tab != 'fav'
+        )
+        or (
+            capture_source == 'liked' and captured_tab not in {'liked', 'like'}
+        )
+    ):
+        raise RuntimeError('crawl_manifest.json 缺少有效的抓取账号或页面绑定。')
+    if expected_user_id and captured_user_id != expected_user_id:
+        raise RuntimeError('抓取账号与本次专辑账号不一致。')
+    if expected_page_url and captured_page_binding != page_origin_path(expected_page_url):
+        raise RuntimeError('抓取页面与本次 prepare/execute 页面不一致。')
+    if expected_url_substring and expected_url_substring not in captured_page_binding:
+        raise RuntimeError('抓取页面与 expected_url_substring 不一致。')
+    image_ocr_enabled = manifest.get('image_ocr_enabled')
+    organizing_depth = str(manifest.get('organizing_depth') or '').strip()
+    if (
+        organizing_depth not in {'quick', 'light'}
+        or not isinstance(image_ocr_enabled, bool)
+        or image_ocr_enabled is not (organizing_depth == 'light')
+    ):
+        raise RuntimeError('crawl_manifest.json 缺少一致的 WorkBuddy 整理档位。')
+    blockers = manifest.get('image_ocr_blockers')
+    if manifest.get('ready_for_classification') is not True or blockers != []:
+        raise RuntimeError('本次内容证据未通过，禁止改用元数据继续分类。')
+
+    evidence: Dict[str, Any] = {
+        'image_ocr_enabled': image_ocr_enabled,
+        'organizing_depth': organizing_depth,
+        'classification_basis': (
+            'workbuddy_authenticated_frontend_ocr'
+            if image_ocr_enabled
+            else 'workbuddy_metadata'
+        ),
+        'visible_count': len(visible_rows),
+        'visible_ids': visible_ids,
+        'visible_by_id': {
+            str(row.get('id')): row for row in visible_rows
+        },
+        'capture_source': capture_source,
+        'capture_user_id': captured_user_id,
+        'capture_page_binding': captured_page_binding,
+        'visible_items_sha256': sha256_file(visible_path),
+        'crawl_manifest_sha256': sha256_file(manifest_path),
+        'image_items_sha256': None,
+        'ocr_results_sha256': None,
+        'image_by_id': {},
+        'ocr_by_id': {},
+        'image_note_count': 0,
+    }
+    if not image_ocr_enabled:
+        return evidence
+
+    image_items_path = directory / 'image_items.json'
+    ocr_results_path = directory / 'ocr_results.json'
+    if not image_items_path.is_file() or not ocr_results_path.is_file():
+        raise RuntimeError('图文 OCR 已开启，但缺少 image_items.json 或 ocr_results.json。')
+    for key, expected_path in (
+        ('image_items', image_items_path),
+        ('ocr_results', ocr_results_path),
+    ):
+        recorded = str(manifest.get(key) or '').strip()
+        if not recorded or Path(recorded).resolve() != expected_path.resolve():
+            raise RuntimeError(f'crawl_manifest.json 的 {key} 与本次运行目录不一致。')
+    if manifest.get('image_items_sha256') != sha256_file(image_items_path):
+        raise RuntimeError('image_items.json 已在抓取完成后发生变化。')
+    if manifest.get('ocr_results_sha256') != sha256_file(ocr_results_path):
+        raise RuntimeError('ocr_results.json 已在 OCR 完成后发生变化。')
+    ocr_provider = str(manifest.get('ocr_provider') or '').strip()
+    ocr_tesseract_lang = str(manifest.get('ocr_tesseract_lang') or '').strip()
+    expected_fingerprint = str(
+        manifest.get('ocr_expected_fingerprint') or ''
+    ).strip()
+    recomputed_fingerprint = ocr_run_fingerprint(
+        ocr_provider,
+        ocr_tesseract_lang,
+        ROOT / 'scripts' / 'ocr_image.swift',
+    )
+    if (
+        ocr_provider not in {'swift', 'tesseract', 'easyocr'}
+        or not ocr_tesseract_lang
+        or not SHA256_RE.fullmatch(expected_fingerprint)
+        or expected_fingerprint != recomputed_fingerprint
+    ):
+        raise RuntimeError('crawl_manifest.json 的 OCR provider 或运行指纹无效。')
+
+    image_rows = load_json(image_items_path)
+    ocr_rows = load_json(ocr_results_path)
+    if not isinstance(image_rows, list) or any(
+        not isinstance(row, dict) for row in image_rows
+    ):
+        raise RuntimeError('image_items.json 必须是对象数组。')
+    image_ids = [str(row.get('id') or '').strip() for row in image_rows]
+    if image_ids != visible_ids:
+        raise RuntimeError('image_items.json 与本次真实抓取 ID 或顺序不一致。')
+
+    image_by_id = {str(row.get('id')): row for row in image_rows}
+    metadata_keys = (
+        'id', 'title', 'user', 'desc', 'tags', 'card_text',
+        'source_lists', 'source_primary', 'first_seen', 'page_index',
+    )
+    for visible_row, image_row in zip(visible_rows, image_rows):
+        if any(
+            visible_row.get(key) != image_row.get(key)
+            for key in metadata_keys
+            if key in visible_row or key in image_row
+        ):
+            raise RuntimeError(
+                f'image_items.json 与抓取元数据不一致：{visible_row.get("id")}'
+            )
+    authoritative_image_ids: List[str] = []
+    authoritative_sources: Dict[str, List[str]] = {}
+    authoritative_source_hashes: Dict[str, List[str]] = {}
+    for row in image_rows:
+        note_id = str(row.get('id') or '')
+        content_type = normalize_content_type(row.get('content_type'))
+        if content_type not in {'image', 'video'}:
+            raise RuntimeError(f'详情未确认笔记类型：{note_id}')
+        if (
+            row.get('content_type_source')
+            != 'workbuddy_authenticated_frontend.noteData.type'
+            or row.get('detail_state_source')
+            not in {'setup_server_state', 'initial_state_note_detail_map'}
+        ):
+            raise RuntimeError(f'笔记类型缺少登录态详情来源：{note_id}')
+        if content_type != 'image':
+            if not (
+                row.get('image_enrichment_status') == 'not_applicable'
+                and row.get('image_count') == 0
+                and resolve_image_files(row) == []
+                and resolve_image_urls(row) == []
+            ):
+                raise RuntimeError(f'视频详情证据无效：{note_id}')
+            continue
+        references, source_hashes = validate_workbuddy_local_image_contract(
+            row,
+            directory,
+        )
+        count = row.get('image_count')
+        if not (
+            row.get('image_enrichment_status') == 'ok'
+            and row.get('image_urls_complete') is True
+            and row.get('image_list_source')
+            == 'workbuddy_authenticated_frontend.noteData.imageList.local_copy'
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > 0
+            and count == len(references)
+            and resolve_image_urls(row) == []
+        ):
+            raise RuntimeError(f'图文完整图片证据无效：{note_id}')
+        authoritative_image_ids.append(note_id)
+        authoritative_sources[note_id] = references
+        authoritative_source_hashes[note_id] = source_hashes
+
+    if not isinstance(ocr_rows, list) or any(
+        not isinstance(row, dict) for row in ocr_rows
+    ):
+        raise RuntimeError('ocr_results.json 必须是对象数组。')
+    ocr_ids = [str(row.get('id') or '').strip() for row in ocr_rows]
+    if ocr_ids != authoritative_image_ids or len(ocr_ids) != len(set(ocr_ids)):
+        raise RuntimeError('ocr_results.json 未精确覆盖本次全部图文笔记。')
+    ocr_by_id = {str(row.get('id')): row for row in ocr_rows}
+    for note_id in authoritative_image_ids:
+        entry = ocr_by_id[note_id]
+        references = authoritative_sources[note_id]
+        if (
+            not reusable_ocr_entry(
+                entry,
+                references,
+                image_set_sha256(references),
+                expected_fingerprint,
+                authoritative_source_hashes[note_id],
+            )
+        ):
+            raise RuntimeError(f'OCR 完整性、图片哈希或运行指纹无效：{note_id}')
+
+    evidence.update({
+        'image_items_sha256': sha256_file(image_items_path),
+        'ocr_results_sha256': sha256_file(ocr_results_path),
+        'ocr_provider': ocr_provider,
+        'ocr_tesseract_lang': ocr_tesseract_lang,
+        'ocr_expected_fingerprint': expected_fingerprint,
+        'image_by_id': image_by_id,
+        'ocr_by_id': ocr_by_id,
+        'image_note_count': len(authoritative_image_ids),
+    })
+    return evidence
+
+
+def capture_evidence_summary(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        'capture_source': evidence['capture_source'],
+        'capture_user_id': evidence['capture_user_id'],
+        'capture_page_binding': evidence['capture_page_binding'],
+        'image_ocr_enabled': evidence['image_ocr_enabled'],
+        'organizing_depth': evidence['organizing_depth'],
+        'classification_basis': evidence['classification_basis'],
+        'visible_count': evidence['visible_count'],
+        'image_note_count': evidence['image_note_count'],
+        'visible_items_sha256': evidence['visible_items_sha256'],
+        'crawl_manifest_sha256': evidence['crawl_manifest_sha256'],
+        'image_items_sha256': evidence['image_items_sha256'],
+        'ocr_results_sha256': evidence['ocr_results_sha256'],
+        'ocr_provider': evidence.get('ocr_provider'),
+        'ocr_tesseract_lang': evidence.get('ocr_tesseract_lang'),
+        'ocr_expected_fingerprint': evidence.get('ocr_expected_fingerprint'),
+    }
+
+
+def workbuddy_classification_inputs(
+    evidence: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Return the complete model input without URLs, paths, or credentials."""
+    safe_keys = (
+        'id', 'title', 'user', 'desc', 'tags', 'card_text',
+        'source_lists', 'source_primary', 'first_seen', 'page_index',
+    )
+    result: List[Dict[str, Any]] = []
+    for note_id in evidence['visible_ids']:
+        source = evidence.get('image_by_id', {}).get(
+            note_id,
+            evidence['visible_by_id'][note_id],
+        )
+        content_type = normalize_content_type(source.get('content_type'))
+        row = {
+            key: _redact_model_value(source.get(key))
+            for key in safe_keys
+            if key in source
+        }
+        row['content_type'] = content_type
+        if evidence.get('image_ocr_enabled') and content_type == 'image':
+            ocr_entry = evidence.get('ocr_by_id', {}).get(note_id) or {}
+            row.update({
+                'classification_basis': 'workbuddy_authenticated_frontend_ocr',
+                'ocr_status': 'ok',
+                'ocr_text': redact_sensitive_text(ocr_entry.get('ocr_text')),
+                'ocr_confidence': ocr_entry.get('ocr_confidence'),
+                'ocr_run_fingerprint': str(
+                    ocr_entry.get('ocr_run_fingerprint') or ''
+                ),
+            })
+        else:
+            row.update({
+                'classification_basis': 'workbuddy_metadata',
+                'ocr_status': (
+                    'skipped_by_user'
+                    if content_type == 'image'
+                    else 'not_applicable'
+                ),
+                'ocr_text': '',
+                'ocr_confidence': None,
+                'ocr_run_fingerprint': '',
+            })
+        result.append(row)
+    return result
+
+
+def validate_max_moves_per_session(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 200:
+        raise RuntimeError('max_moves_per_session 必须是用户确认的 1 到 200 整数。')
+    return value
+
+
+def validate_verify_pages(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 200:
+        raise RuntimeError('verify_pages 必须是 1 到 200 的整数。')
+    return value
+
+
+def approval_basis(
+    directory: Path,
+    report: Dict[str, Any],
+    max_moves: int,
+    verify_pages: Optional[int] = None,
+) -> Dict[str, Any]:
+    max_moves = validate_max_moves_per_session(max_moves)
     classification = directory / 'classification.json'
     snapshot = directory / 'board_snapshot.json'
     created = directory / 'created_boards.json'
     for path in (classification, snapshot, created):
         if not path.is_file():
             raise RuntimeError(f'缺少审批输入：{path.name}')
+    snapshot_payload = load_json(snapshot)
+    snapshot_source = (
+        snapshot_payload.get('source')
+        if isinstance(snapshot_payload, dict)
+        else None
+    )
+    if not isinstance(snapshot_source, dict):
+        raise RuntimeError('board_snapshot.json 缺少来源绑定。')
+    snapshot_verify_pages = validate_verify_pages(
+        snapshot_source.get('verify_pages')
+    )
+    if verify_pages is None:
+        verify_pages = snapshot_verify_pages
+    else:
+        verify_pages = validate_verify_pages(verify_pages)
+        if verify_pages != snapshot_verify_pages:
+            raise RuntimeError('verify_pages 与只读专辑快照不一致。')
     planned = [
         {
             'id': str(row.get('id') or ''),
@@ -875,20 +2656,29 @@ def approval_basis(directory: Path, report: Dict[str, Any]) -> Dict[str, Any]:
         }
         for row in report.get('processed', [])
     ]
+    evidence = validate_workbuddy_capture_evidence(directory)
     return {
         'classification_sha256': sha256_file(classification),
         'board_snapshot_sha256': sha256_file(snapshot),
         'created_boards_sha256': sha256_file(created),
+        'content_evidence': capture_evidence_summary(evidence),
         'mode': report.get('mode'),
         'ready_for_execute': report.get('ready_for_execute'),
         'blockers': report.get('blockers'),
+        'max_moves_per_session': max_moves,
+        'verify_pages': verify_pages,
         'planned': planned,
     }
 
 
-def approval_digest(directory: Path, report: Dict[str, Any]) -> str:
+def approval_digest(
+    directory: Path,
+    report: Dict[str, Any],
+    max_moves: int,
+    verify_pages: Optional[int] = None,
+) -> str:
     encoded = json.dumps(
-        approval_basis(directory, report),
+        approval_basis(directory, report, max_moves, verify_pages),
         ensure_ascii=False,
         sort_keys=True,
         separators=(',', ':'),
@@ -900,7 +2690,9 @@ def validate_workbuddy_snapshot_binding(
     snapshot: Any,
     user_id: str,
     expected_url_substring: str,
+    verify_pages: int,
 ) -> List[str]:
+    verify_pages = validate_verify_pages(verify_pages)
     if not isinstance(snapshot, dict) or snapshot.get('mode') != 'read_only':
         raise RuntimeError('board_snapshot.json 不是本次只读专辑清单。')
     source = snapshot.get('source')
@@ -911,8 +2703,13 @@ def validate_workbuddy_snapshot_binding(
         or source.get('writes_performed') is not False
         or str(source.get('user_id') or '') != user_id
         or str(source.get('expected_url_substring') or '') != expected_url_substring
+        or str(source.get('live_page_binding') or '') != expected_url_substring
+        or str(source.get('live_account_user_id') or '') != user_id
+        or source.get('verify_pages') != verify_pages
     ):
-        raise RuntimeError('board_snapshot.json 与本次 WorkBuddy 账号或页面绑定不一致。')
+        raise RuntimeError(
+            'board_snapshot.json 与本次 WorkBuddy 账号、页面或 verify_pages 绑定不一致。'
+        )
     boards = snapshot.get('boards')
     if not isinstance(boards, list):
         raise RuntimeError('board_snapshot.json 的 boards 必须是数组。')
@@ -933,6 +2730,7 @@ def write_workbuddy_classification(
     directory: Path,
     classification_rows: Any,
     allowed_boards: List[str],
+    content_evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Validate model classifications against the real capture and persist them."""
     directory = Path(directory)
@@ -994,16 +2792,78 @@ def write_workbuddy_classification(
             review_state = 'classified' if target else 'pending'
         if target and target not in taxonomy:
             taxonomy.append(target)
-        row = dict(source)
+        evidence = content_evidence or {
+            'image_ocr_enabled': False,
+            'classification_basis': 'workbuddy_metadata',
+            'image_by_id': {},
+            'ocr_by_id': {},
+        }
+        evidence_source = evidence.get('image_by_id', {}).get(note_id, source)
+        content_type = normalize_content_type(evidence_source.get('content_type'))
+        safe_source_keys = (
+            'id', 'title', 'user', 'desc', 'tags', 'card_text',
+            'content_type', 'content_type_source', 'source_lists',
+            'source_primary', 'first_seen', 'page_index',
+        )
+        row = {
+            key: _redact_model_value(evidence_source.get(key))
+            for key in safe_source_keys
+            if key in evidence_source
+        }
+        ocr_entry = evidence.get('ocr_by_id', {}).get(note_id)
+        if evidence.get('image_ocr_enabled') and content_type == 'image':
+            ocr_images = [
+                {
+                    'image_index': image.get('image_index'),
+                    'status': image.get('status'),
+                    'ocr_text': redact_sensitive_text(image.get('ocr_text')),
+                    'ocr_confidence': image.get('ocr_confidence'),
+                    'image_sha256': image.get('image_sha256', ''),
+                    'source_image_sha256': image.get('source_image_sha256', ''),
+                    'error': image.get('error', ''),
+                }
+                for image in (ocr_entry or {}).get('images', [])
+                if isinstance(image, dict)
+            ]
+            ocr_fields = {
+                'ocr_status': 'ok',
+                'ocr_text': redact_sensitive_text((ocr_entry or {}).get('ocr_text')),
+                'ocr_confidence': (ocr_entry or {}).get('ocr_confidence'),
+                'ocr_run_fingerprint': str(
+                    (ocr_entry or {}).get('ocr_run_fingerprint') or ''
+                ),
+                'ocr_image_count': (ocr_entry or {}).get('image_count_processed', 0),
+                'ocr_image_set_complete': True,
+                'ocr_image_evidence': ocr_images,
+            }
+        else:
+            ocr_fields = {
+                'ocr_status': (
+                    'skipped_by_user'
+                    if not evidence.get('image_ocr_enabled') and content_type == 'image'
+                    else 'not_applicable'
+                ),
+                'ocr_text': '',
+                'ocr_confidence': None,
+                'ocr_run_fingerprint': '',
+                'ocr_image_count': 0,
+                'ocr_image_set_complete': False,
+                'ocr_image_evidence': [],
+            }
         row.update({
             'target_board': target,
             'confidence': confidence,
-            'reason': reason,
-            'review_state': review_state,
-            'classification_basis': 'workbuddy_model_real_content',
-            'main_topic': str(proposal.get('main_topic') or '').strip(),
-            'content_summary': str(proposal.get('content_summary') or '').strip(),
+            'reason': _redact_model_value(reason),
+            'review_state': redact_sensitive_text(review_state),
+            'classification_basis': (
+                'workbuddy_authenticated_frontend_ocr'
+                if evidence.get('image_ocr_enabled') and content_type == 'image'
+                else 'workbuddy_metadata'
+            ),
+            'main_topic': redact_sensitive_text(proposal.get('main_topic')),
+            'content_summary': redact_sensitive_text(proposal.get('content_summary')),
         })
+        row.update(ocr_fields)
         normalized.append(row)
 
     taxonomy_path = directory / 'board_taxonomy.json'
@@ -1025,18 +2885,35 @@ def prepare_action(
     expected_url_substring: str,
     verify_pages: int,
     classification_rows: Any = None,
+    max_moves: Optional[int] = None,
+    trusted_evidence: Any = None,
 ) -> Dict[str, Any]:
     require_workbuddy()
     directory = run_dir_for(run_id)
     if not NOTE_ID_RE.fullmatch(str(user_id or '').strip()):
         raise RuntimeError('user_id 必须是当前账号 URL 中的 24 位十六进制 id。')
     user_id = str(user_id).strip()
-    checked_url = validate_xhs_url(page_url, 'custom')
-    expected = str(expected_url_substring or '').strip()
-    if not expected or expected not in checked_url:
-        raise RuntimeError('expected_url_substring 必须是 page_url 中的稳定片段。')
-    if not isinstance(verify_pages, int) or isinstance(verify_pages, bool) or not 1 <= verify_pages <= 200:
-        raise RuntimeError('verify_pages 必须是 1 到 200 的整数。')
+    checked_url = page_origin_path(validate_xhs_url(page_url, 'custom'))
+    supplied_expected = str(expected_url_substring or '').strip()
+    if supplied_expected and supplied_expected not in checked_url:
+        raise RuntimeError('expected_url_substring 与账号列表 URL 不一致。')
+    expected = checked_url
+    if profile_user_id(checked_url) != user_id:
+        raise RuntimeError('page_url 的 profile id 与 user_id 不一致。')
+    verify_pages = validate_verify_pages(verify_pages)
+    if classification_rows is not None:
+        max_moves = validate_max_moves_per_session(max_moves)
+
+    expected_receipt_stage = (
+        'capture' if classification_rows is None else 'inventory'
+    )
+    validate_trusted_evidence(
+        directory,
+        trusted_evidence,
+        expected_stage=expected_receipt_stage,
+        expected_user_id=user_id,
+        expected_page_url=checked_url,
+    )
 
     snapshot = directory / 'board_snapshot.json'
     classification = directory / 'classification.json'
@@ -1045,8 +2922,22 @@ def prepare_action(
     safety = directory / 'xhs_safety_state.json'
     approval_path = directory / 'approval.json'
     approval_path.unlink(missing_ok=True)
+    content_evidence = validate_workbuddy_capture_evidence(
+        directory,
+        expected_user_id=user_id,
+        expected_page_url=checked_url,
+        expected_url_substring=expected,
+    )
+    content_summary = capture_evidence_summary(content_evidence)
 
     if classification_rows is None:
+        validate_trusted_evidence(
+            directory,
+            trusted_evidence,
+            expected_stage='capture',
+            expected_user_id=user_id,
+            expected_page_url=checked_url,
+        )
         require_profile_available()
         run_command([
             sys.executable,
@@ -1063,8 +2954,10 @@ def prepare_action(
             load_json(snapshot),
             user_id,
             expected,
+            verify_pages,
         )
         has_existing_boards = bool(existing_board_names)
+        classification_inputs = workbuddy_classification_inputs(content_evidence)
         return {
             'ok': True,
             'phase': 'board_inventory',
@@ -1074,12 +2967,18 @@ def prepare_action(
             'existing_board_names': existing_board_names,
             'existing_board_count': len(existing_board_names),
             'classification_required': has_existing_boards,
+            'classification_input_count': len(classification_inputs),
+            'classification_inputs': classification_inputs,
+            'verify_pages': verify_pages,
             'ready_for_execute': False,
             'blockers': [] if has_existing_boards else ['no_existing_boards'],
             'approval_digest': None,
+            'content_evidence': content_summary,
             'next_action': (
-                '只允许从 existing_board_names 中为本次真实 note id 选择目标专辑；'
-                '没有准确匹配时 target_board 留空，再带完整 classification 调用 prepare。'
+                '只允许根据 classification_inputs，并从 existing_board_names 中'
+                '为全部真实 note id 选择目标专辑；禁止读取原始 image_items/ocr_results。'
+                '没有准确匹配时 target_board 留空，再带完整 classification 和用户将确认的'
+                ' max_moves_per_session 调用 prepare。'
                 if has_existing_boards
                 else '当前账号没有真实已有专辑；停止，不得生成或移动到预设类别。'
             ),
@@ -1093,6 +2992,7 @@ def prepare_action(
         load_json(snapshot),
         user_id,
         expected,
+        verify_pages,
     )
     if not existing_board_names:
         raise RuntimeError('当前账号没有真实已有专辑；不能生成移动计划。')
@@ -1100,6 +3000,7 @@ def prepare_action(
         directory,
         classification_rows,
         existing_board_names,
+        content_evidence,
     )
     run_command([
         sys.executable,
@@ -1133,10 +3034,15 @@ def prepare_action(
         and report.get('blockers') == []
         and planned_move_count > 0
     ):
-        digest = approval_digest(directory, report)
+        digest = approval_digest(directory, report, max_moves, verify_pages)
         write_private_json(approval_path, {
             'approval_digest': digest,
-            'basis': approval_basis(directory, report),
+            'basis': approval_basis(
+                directory,
+                report,
+                max_moves,
+                verify_pages,
+            ),
             'created_at': utc_now(),
         })
     result = {
@@ -1151,11 +3057,15 @@ def prepare_action(
         'board_validation_status': report.get('board_validation_status'),
         'membership_validation_status': report.get('membership_validation_status'),
         'planned_move_count': planned_move_count,
+        'max_moves_per_session': max_moves,
+        'verify_pages': verify_pages,
         'processed': report.get('processed'),
         'approval_digest': digest,
         'report': str(report_path),
+        'content_evidence': content_summary,
         'next_action': (
-            '向用户展示每条“当前专辑 → 目标专辑”和移动上限；用户明确确认后才能调用 execute。'
+            f'向用户展示每条“当前专辑 → 目标专辑”和移动上限 {max_moves}；'
+            '用户明确确认后才能调用 execute，且 execute 必须使用相同上限。'
             if digest
             else (
                 '没有可执行移动；展示已在正确专辑和待人工复核的条目，不得调用 execute。'
@@ -1179,9 +3089,31 @@ def execute_action(
     expected_url_substring: str,
     approval: str,
     max_moves: int,
+    trusted_evidence: Any = None,
+    verify_pages: int = 100,
+    *,
+    _launch_capability: Any = None,
 ) -> Dict[str, Any]:
     require_workbuddy()
     directory = run_dir_for(run_id)
+    max_moves = validate_max_moves_per_session(max_moves)
+    verify_pages = validate_verify_pages(verify_pages)
+    if not NOTE_ID_RE.fullmatch(str(user_id or '').strip()):
+        raise RuntimeError('user_id 必须是当前账号 URL 中的 24 位十六进制 id。')
+    checked_url = page_origin_path(validate_xhs_url(page_url, 'custom'))
+    supplied_expected = str(expected_url_substring or '').strip()
+    if supplied_expected and supplied_expected not in checked_url:
+        raise RuntimeError('expected_url_substring 与账号列表 URL 不一致。')
+    expected = checked_url
+    if profile_user_id(checked_url) != str(user_id).strip():
+        raise RuntimeError('page_url 的 profile id 与 user_id 不一致。')
+    validate_trusted_evidence(
+        directory,
+        trusted_evidence,
+        expected_stage='plan',
+        expected_user_id=str(user_id).strip(),
+        expected_page_url=checked_url,
+    )
     report_path = directory / 'run_report.json'
     if not report_path.is_file():
         raise RuntimeError('缺少 run_report.json；必须先完成 prepare。')
@@ -1192,49 +3124,190 @@ def execute_action(
         or report.get('blockers') != []
     ):
         raise RuntimeError('执行被拒：run_report.json 不是可执行 dry-run。')
-    expected_approval = approval_digest(directory, report)
-    provided = str(approval or '').strip().lower()
-    if not SHA256_RE.fullmatch(provided) or provided != expected_approval:
-        raise RuntimeError('执行被拒：approval_digest 不匹配，分类或专辑证据已改变。')
-    if not isinstance(max_moves, int) or isinstance(max_moves, bool) or not 1 <= max_moves <= 200:
-        raise RuntimeError('max_moves_per_session 必须是用户确认的 1 到 200 整数。')
-    if not NOTE_ID_RE.fullmatch(str(user_id or '').strip()):
-        raise RuntimeError('user_id 必须是当前账号 URL 中的 24 位十六进制 id。')
-    checked_url = validate_xhs_url(page_url, 'custom')
-    expected = str(expected_url_substring or '').strip()
-    if not expected or expected not in checked_url:
-        raise RuntimeError('expected_url_substring 必须是 page_url 中的稳定片段。')
-    require_profile_available()
-
     classification = directory / 'classification.json'
     snapshot = directory / 'board_snapshot.json'
     created = directory / 'created_boards.json'
     safety = directory / 'xhs_safety_state.json'
-    proc = run_command([
-        sys.executable,
-        str(ROOT / 'scripts/run_reassign_batch.py'),
-        str(classification),
-        str(report_path),
-        '--board-snapshot', str(snapshot),
-        '--created-boards', str(created),
-        '--execute',
-        '--browser', 'playwright',
-        '--user-id', user_id,
-        '--expected-url-substring', expected,
-        '--max-moves-per-session', str(max_moves),
-        '--safety-state', str(safety),
-        '--url', checked_url,
-    ], allow_failure=True)
+    approval_path = directory / 'approval.json'
+    validate_workbuddy_capture_evidence(
+        directory,
+        expected_user_id=str(user_id).strip(),
+        expected_page_url=checked_url,
+        expected_url_substring=expected,
+    )
+    if not snapshot.is_file():
+        raise RuntimeError('执行被拒：缺少 board_snapshot.json。')
+    validate_workbuddy_snapshot_binding(
+        load_json(snapshot),
+        str(user_id).strip(),
+        expected,
+        verify_pages,
+    )
+    if not approval_path.is_file():
+        raise RuntimeError('执行被拒：缺少 prepare 生成的 approval.json。')
+    approval_record = load_json(approval_path)
+    if not isinstance(approval_record, dict):
+        raise RuntimeError('执行被拒：approval.json 格式无效。')
+    approved_basis = approval_record.get('basis')
+    if not isinstance(approved_basis, dict):
+        raise RuntimeError('执行被拒：approval.json 缺少审批依据。')
+    approved_max_moves = validate_max_moves_per_session(
+        approved_basis.get('max_moves_per_session')
+    )
+    if approved_max_moves != max_moves:
+        raise RuntimeError('执行被拒：移动上限与 prepare 阶段用户确认值不一致。')
+    approved_verify_pages = validate_verify_pages(
+        approved_basis.get('verify_pages')
+    )
+    if approved_verify_pages != verify_pages:
+        raise RuntimeError('执行被拒：verify_pages 与 prepare 阶段确认值不一致。')
+    expected_approval = approval_digest(
+        directory,
+        report,
+        max_moves,
+        verify_pages,
+    )
+    stored_approval = str(approval_record.get('approval_digest') or '').strip().lower()
+    provided = str(approval or '').strip().lower()
+    if (
+        not SHA256_RE.fullmatch(stored_approval)
+        or not SHA256_RE.fullmatch(provided)
+        or stored_approval != expected_approval
+        or provided != stored_approval
+    ):
+        raise RuntimeError(
+            '执行被拒：approval_digest 或用户确认的移动上限不匹配。'
+        )
+    final_evidence = validate_trusted_evidence(
+        directory,
+        trusted_evidence,
+        expected_stage='plan',
+        expected_user_id=str(user_id).strip(),
+        expected_page_url=checked_url,
+    )
+    report = load_trusted_json_snapshot(directory, final_evidence, 'run_report.json')
+    classification_payload = load_trusted_json_snapshot(
+        directory,
+        final_evidence,
+        'classification.json',
+    )
+    snapshot_payload = load_trusted_json_snapshot(
+        directory,
+        final_evidence,
+        'board_snapshot.json',
+    )
+    created_payload = load_trusted_json_snapshot(
+        directory,
+        final_evidence,
+        'created_boards.json',
+    )
+    approval_record = load_trusted_json_snapshot(
+        directory,
+        final_evidence,
+        'approval.json',
+    )
+    if not isinstance(approval_record, dict) or not isinstance(approval_record.get('basis'), dict):
+        raise RuntimeError('执行被拒：绑定的 approval.json 格式无效。')
+    bound_basis = approval_record['basis']
+    bound_digest = hashlib.sha256(
+        canonical_json(bound_basis).encode('utf-8')
+    ).hexdigest()
+    stored_bound_digest = str(
+        approval_record.get('approval_digest') or ''
+    ).strip().lower()
+    if (
+        bound_digest != stored_bound_digest
+        or str(approval or '').strip().lower() != stored_bound_digest
+        or bound_basis.get('classification_sha256')
+        != final_evidence['artifacts']['classification.json']['sha256']
+        or bound_basis.get('board_snapshot_sha256')
+        != final_evidence['artifacts']['board_snapshot.json']['sha256']
+        or bound_basis.get('created_boards_sha256')
+        != final_evidence['artifacts']['created_boards.json']['sha256']
+        or bound_basis.get('max_moves_per_session') != max_moves
+        or bound_basis.get('verify_pages') != verify_pages
+        or bound_basis.get('mode') != 'dry_run'
+        or bound_basis.get('ready_for_execute') is not True
+        or bound_basis.get('blockers') != []
+    ):
+        raise RuntimeError('执行被拒：绑定的用户审批依据不一致。')
+    expected_planned = [
+        {
+            'id': str(row.get('id') or ''),
+            'target_board': str(row.get('target_board') or ''),
+            'source_board_id': str(row.get('source_board_id') or ''),
+            'membership_state': str(row.get('membership_state') or ''),
+            'status': str(row.get('status') or ''),
+        }
+        for row in report.get('processed', [])
+    ]
+    if bound_basis.get('planned') != expected_planned:
+        raise RuntimeError('执行被拒：绑定的逐条移动方案不一致。')
+    if (
+        not isinstance(report, dict)
+        or report.get('mode') != 'dry_run'
+        or report.get('ready_for_execute') is not True
+        or report.get('blockers') != []
+    ):
+        raise RuntimeError('执行被拒：绑定的 run_report.json 不是可执行 dry-run。')
+    normalized = normalize_classification(classification_payload)
+    preflight = prepare_execution_preflight(
+        normalized,
+        snapshot_payload,
+        created_payload,
+        allow_low_confidence=False,
+    )
+    resolved = preflight.pop('resolved_items')
+    if preflight.get('ready_for_execute') is not True or preflight.get('blockers') != []:
+        raise RuntimeError('执行被拒：内存中的最终 dry-run 复验未通过。')
+    execute_args = browser_args(checked_url)
+    execute_args.browser = 'playwright'
+    execute_args.user_id = str(user_id).strip()
+    execute_args.expected_url_substring = expected
+    execute_args.allow_low_confidence = False
+    execute_args.verify_pages = verify_pages
+    execute_args.max_moves_per_session = max_moves
+    execute_args.safety_state = str(safety)
+    execute_args.inter_item_delay_sec = 5.0
+    execute_args.timeout_sec = 120.0
+    binding_blockers = execution_binding_blockers(
+        preflight.get('snapshot_source'),
+        execute_args,
+    )
+    if binding_blockers:
+        raise RuntimeError(
+            '执行被拒：' + ','.join(binding_blockers)
+        )
+    execution_report = initial_report(resolved, 'execute')
+    execution_report.update(preflight)
+    execution_report.update({
+        'board_snapshot': str(snapshot),
+        'board_snapshot_sha256': final_evidence['artifacts']['board_snapshot.json']['sha256'],
+        'created_boards': str(created),
+        'created_boards_sha256': final_evidence['artifacts']['created_boards.json']['sha256'],
+        'classification_sha256': final_evidence['artifacts']['classification.json']['sha256'],
+    })
+    if _launch_capability is not _MCP_EXECUTE_CAPABILITY:
+        raise RuntimeError('mcp_execute_launch_capability_missing')
+    require_profile_available()
+    execute_batch(
+        resolved,
+        execution_report,
+        execute_args,
+        report_path,
+        commit_callback=await_mcp_execute_commit,
+    )
     if not report_path.is_file():
         raise RuntimeError('执行未生成 run_report.json。')
     final_report = load_json(report_path)
     return {
-        'ok': proc.returncode == 0 and not final_report.get('errors'),
+        'ok': not final_report.get('errors'),
         'run_id': directory.name,
         'mode': final_report.get('mode'),
         'session_status': final_report.get('session_status'),
         'processed': final_report.get('processed'),
         'errors': final_report.get('errors'),
+        'verify_pages': verify_pages,
         'report': str(report_path),
     }
 
@@ -1255,6 +3328,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument('--page-url', required=True)
     capture.add_argument('--batch-size', type=int, default=DEFAULT_CAPTURE_BATCH_SIZE)
     capture.add_argument('--pause-minutes', type=int, default=DEFAULT_CAPTURE_PAUSE_MINUTES)
+    capture.add_argument('--organizing-depth', choices=['quick', 'light'], required=True)
 
     prepare = sub.add_parser('prepare')
     prepare.add_argument('--run-id', required=True)
@@ -1263,6 +3337,9 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument('--expected-url-substring', required=True)
     prepare.add_argument('--verify-pages', type=int, default=100)
     prepare.add_argument('--classification-stdin', action='store_true')
+    prepare.add_argument('--trusted-evidence-stdin', action='store_true')
+    prepare.add_argument('--mcp-launch-fd', type=int, help=argparse.SUPPRESS)
+    prepare.add_argument('--max-moves-per-session', type=int)
 
     execute = sub.add_parser('execute')
     execute.add_argument('--run-id', required=True)
@@ -1271,6 +3348,9 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument('--expected-url-substring', required=True)
     execute.add_argument('--approval-digest', required=True)
     execute.add_argument('--max-moves-per-session', type=int, required=True)
+    execute.add_argument('--verify-pages', type=int, required=True)
+    execute.add_argument('--trusted-evidence-stdin', action='store_true')
+    execute.add_argument('--mcp-launch-fd', type=int, help=argparse.SUPPRESS)
     return parser
 
 
@@ -1290,14 +3370,32 @@ def main() -> None:
                 args.page_url,
                 args.batch_size,
                 args.pause_minutes,
+                args.organizing_depth,
             )
         elif args.action == 'prepare':
             classification_rows = None
-            if args.classification_stdin:
+            trusted_evidence = None
+            payload = None
+            if args.classification_stdin or args.trusted_evidence_stdin:
                 payload = json.load(sys.stdin)
-                if not isinstance(payload, dict) or 'classification' not in payload:
+                if not isinstance(payload, dict):
+                    raise RuntimeError('stdin 必须提供 JSON 对象。')
+            if args.classification_stdin:
+                if 'classification' not in payload:
                     raise RuntimeError('stdin 必须提供包含 classification 的 JSON 对象。')
                 classification_rows = payload['classification']
+            if args.trusted_evidence_stdin:
+                if 'trusted_evidence' not in payload:
+                    raise RuntimeError('stdin 必须提供 trusted_evidence。')
+                trusted_evidence = payload['trusted_evidence']
+            if args.mcp_launch_fd is None:
+                raise RuntimeError('mcp_launch_attestation_fd_missing')
+            verify_mcp_launch_attestation(
+                'prepare',
+                sys.argv[2:],
+                payload,
+                key_fd=args.mcp_launch_fd,
+            )
             result = prepare_action(
                 args.run_id,
                 args.user_id,
@@ -1305,8 +3403,25 @@ def main() -> None:
                 args.expected_url_substring,
                 args.verify_pages,
                 classification_rows,
+                args.max_moves_per_session,
+                trusted_evidence,
             )
         else:
+            trusted_evidence = None
+            payload = None
+            if args.trusted_evidence_stdin:
+                payload = json.load(sys.stdin)
+                if not isinstance(payload, dict) or 'trusted_evidence' not in payload:
+                    raise RuntimeError('stdin 必须提供 trusted_evidence。')
+                trusted_evidence = payload['trusted_evidence']
+            if args.mcp_launch_fd is None:
+                raise RuntimeError('mcp_launch_attestation_fd_missing')
+            verify_mcp_launch_attestation(
+                'execute',
+                sys.argv[2:],
+                payload,
+                key_fd=args.mcp_launch_fd,
+            )
             result = execute_action(
                 args.run_id,
                 args.user_id,
@@ -1314,11 +3429,14 @@ def main() -> None:
                 args.expected_url_substring,
                 args.approval_digest,
                 args.max_moves_per_session,
+                trusted_evidence,
+                args.verify_pages,
+                _launch_capability=_MCP_EXECUTE_CAPABILITY,
             )
     except Exception as exc:
         print(json.dumps({
             'ok': False,
-            'error': str(exc),
+            'error': redact_sensitive_text(exc),
             'action': args.action,
         }, ensure_ascii=False))
         raise SystemExit(1)

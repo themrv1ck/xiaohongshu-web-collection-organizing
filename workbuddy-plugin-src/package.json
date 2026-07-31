@@ -1,11 +1,11 @@
 {
   "name": "xiaohongshu-workbuddy-mcp-build",
-  "version": "2.0.2",
+  "version": "2.0.4",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "esbuild server.mjs --bundle --platform=node --format=esm --target=node20 --outfile=../server/xhs-workbuddy-mcp.mjs",
-    "test:mcp": "node smoke.mjs"
+    "test:mcp": "node --test evidence-ledger.test.mjs launch-attestation.test.mjs page-binding.test.mjs bridge-security.test.mjs && node smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

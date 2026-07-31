@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, build_browser_job, choose_backend, execute_batch, execution_binding_blockers, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_execution_preflight  # noqa: E402
-from extract_visible_items import arc_js_macos, extract_with_js  # noqa: E402
+from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, build_browser_job, build_execute_binding_probe, choose_backend, execute_batch, execution_binding_blockers, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_execution_preflight  # noqa: E402
+from extract_visible_items import arc_js_macos, extract_with_js, read_stable_items_snapshot  # noqa: E402
 from xhs_ocr_common import detect_ocr_provider, infer_board, load_taxonomy, run_tesseract_ocr  # noqa: E402
 
 
@@ -95,6 +95,55 @@ function createTransactionModel(options) {
 }
 '''
 
+    def test_stable_snapshot_rejects_declared_total_change(self):
+        snapshots = iter([
+            json.dumps({
+                'declaredItemCount': 314,
+                'items': [{'id': 'a' * 24, 'page_index': 0}],
+            }),
+            json.dumps({
+                'declaredItemCount': 10,
+                'items': [{'id': 'a' * 24, 'page_index': 0}],
+            }),
+        ])
+        with self.assertRaisesRegex(RuntimeError, '声明总数.*发生变化'):
+            read_stable_items_snapshot(
+                lambda _script: next(snapshots),
+                settle_pause=0,
+                max_checks=2,
+            )
+
+    def test_empty_first_frame_must_stabilize_before_completion(self):
+        snapshots = iter([
+            json.dumps({'declaredItemCount': 0, 'items': []}),
+            json.dumps({
+                'declaredItemCount': 314,
+                'items': [{'id': 'a' * 24, 'page_index': 0}],
+            }),
+        ])
+        with self.assertRaisesRegex(RuntimeError, '声明总数.*发生变化'):
+            read_stable_items_snapshot(
+                lambda _script: next(snapshots),
+                settle_pause=0,
+                max_checks=2,
+            )
+
+    def test_workbuddy_execute_probe_binds_exact_tab_and_frontend_account(self):
+        user_id = '1' * 24
+        binding = (
+            f'https://www.xiaohongshu.com/user/profile/{user_id}?tab=fav'
+        )
+        args = type('Args', (), {
+            'user_id': user_id,
+            'expected_url_substring': binding,
+            'arc_expected_url_substring': '',
+        })()
+        probe = build_execute_binding_probe(args)
+        self.assertIn('current.pathname', probe)
+        self.assertIn("searchParams.get('tab')", probe)
+        self.assertIn("textContent || '').trim() === '我'", probe)
+        self.assertIn('account_binding_mismatch', probe)
+
     def run_script(self, *args):
         return subprocess.run(
             [sys.executable, str(SCRIPTS / args[0]), *args[1:]],
@@ -167,6 +216,36 @@ function createTransactionModel(options) {
         self.assertEqual(board, '滑雪')
         self.assertIn(confidence, {'medium', 'high'})
         self.assertTrue(reason)
+        self.assertEqual(review_state, 'classified')
+
+    def test_runtime_taxonomy_never_translates_hidden_preset_keywords(self):
+        item = {
+            'id': '66d19b54000000001d03a93d',
+            'title': '家具收纳和客厅装修',
+            'desc': '餐边柜与家政柜布置',
+            'tags': ['家居'],
+            'user': '',
+            'card_text': '家具 收纳 装修',
+        }
+        board, confidence, reason, review_state = infer_board(
+            item,
+            None,
+            ['居住空间'],
+        )
+        self.assertEqual(board, '')
+        self.assertEqual(confidence, 'low')
+        self.assertEqual(reason, ['no_rule_match'])
+        self.assertEqual(review_state, 'pending')
+
+        item['title'] = '居住空间'
+        board, confidence, reason, review_state = infer_board(
+            item,
+            None,
+            ['居住空间'],
+        )
+        self.assertEqual(board, '居住空间')
+        self.assertEqual(confidence, 'medium')
+        self.assertEqual(reason, ['居住空间'])
         self.assertEqual(review_state, 'classified')
 
     def test_auto_ocr_provider_requires_working_vision_or_chinese_tesseract(self):
@@ -558,7 +637,7 @@ function createTransactionModel(options) {
         self.assertIn(f'ambiguous_membership:{note_id}', result['blockers'])
         self.assertEqual(result['resolved_items'][0]['membership_state'], 'ambiguous')
 
-    def test_preflight_treats_completed_api_pagination_as_membership_evidence(self):
+    def test_preflight_blocks_declared_board_count_mismatch(self):
         note_id = '1' * 24
         board_id = 'a' * 24
         result = prepare_execution_preflight(
@@ -591,13 +670,13 @@ function createTransactionModel(options) {
             },
             allow_low_confidence=False,
         )
-        self.assertTrue(result['ready_for_execute'])
-        self.assertEqual(result['blockers'], [])
-        self.assertEqual(
-            result['warnings'],
-            ['board_display_count_mismatch:专辑A'],
-        )
-        self.assertEqual(result['board_validation_status'], 'verified_with_warnings')
+        self.assertFalse(result['ready_for_execute'])
+        self.assertEqual(result['blockers'], [
+            'full_membership_incomplete',
+            'board_count_mismatch:专辑A',
+        ])
+        self.assertEqual(result['warnings'], [])
+        self.assertEqual(result['board_validation_status'], 'blocked')
         self.assertEqual(
             result['resolved_items'][0]['membership_state'],
             'already_in_target',
@@ -645,6 +724,7 @@ function createTransactionModel(options) {
             'browser': 'safari',
             'user_id': '1' * 24,
             'expected_url_substring': '/user/profile/',
+            'verify_pages': 100,
             'safety_state': safety_state,
         }
         args = type('Args', (), {
@@ -652,6 +732,7 @@ function createTransactionModel(options) {
             'user_id': '1' * 24,
             'expected_url_substring': '/user/profile/',
             'arc_expected_url_substring': '',
+            'verify_pages': 100,
             'safety_state': safety_state,
         })()
         self.assertEqual(execution_binding_blockers(source, args), [])
@@ -661,12 +742,14 @@ function createTransactionModel(options) {
             'user_id': '2' * 24,
             'expected_url_substring': '/explore',
             'arc_expected_url_substring': '',
+            'verify_pages': 99,
             'safety_state': '/tmp/other-safety-state.json',
         })()
         self.assertEqual(execution_binding_blockers(source, changed), [
             'snapshot_browser_changed',
             'snapshot_user_changed',
             'snapshot_page_binding_changed',
+            'snapshot_verify_pages_changed',
             'snapshot_safety_session_changed',
         ])
 
@@ -1424,10 +1507,11 @@ states = [
   {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
   {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
 ]
+final_state = states[-1]
 def js_eval(js):
     if js.startswith('window.scrollBy') or js.startswith('window.scrollTo'):
         return 'ok'
-    return json.dumps(states.pop(0), ensure_ascii=False)
+    return json.dumps(states.pop(0) if states else final_state, ensure_ascii=False)
 out = Path(sys.argv[1])
 manifest = Path(sys.argv[2])
 print(json.dumps(extract_with_js(js_eval, out, 5, 0, manifest), ensure_ascii=False))

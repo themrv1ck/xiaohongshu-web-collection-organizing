@@ -20,6 +20,7 @@ from xhs_safety import (  # noqa: E402
     ensure_active_session,
     load_safety_state,
     mark_security_halted,
+    redact_sensitive_text,
     resolve_safety_state_path,
 )
 
@@ -197,6 +198,100 @@ class SafetySessionTests(unittest.TestCase):
         self.assertEqual(saved["safety_state"], "security_halted")
         self.assertEqual(state["state"], "security_halted")
 
+    def test_persisted_move_and_safety_errors_redact_all_credential_formats(self):
+        class Runner:
+            def eval(self, _script):
+                return "xhs_skill_123_456"
+
+            def close(self):
+                pass
+
+        secrets = (
+            "url-secret",
+            "plain-secret",
+            "json-secret",
+            "cli-secret",
+            "signature-secret",
+            "cookie-secret",
+            "set-cookie-secret",
+            "auth-secret",
+            "session-secret",
+            "encoded-secret",
+            "a1-session-secret",
+        )
+        unsafe_error = (
+            "SAFETY_BREAKER "
+            "https://example.test/note?xsec_token=url-secret&xsec_source=pc_user "
+            "xsec_token=plain-secret "
+            '\"xsec_source\":\"json-secret\" '
+            "--sign cli-secret "
+            "signature=signature-secret "
+            "Cookie:cookie-secret "
+            "Set-Cookie:set-cookie-secret "
+            "Authorization:Bearer auth-secret "
+            "web_session=session-secret "
+            "xsec%5Ftoken%3Dencoded-secret "
+            "a1=a1-session-secret"
+        )
+        classification = [{
+            "id": "note-1",
+            "title": "一",
+            "target_board": "阅读",
+            "confidence": "high",
+        }]
+        report = {
+            "processed": [],
+            "errors": [],
+            "missing_boards": [],
+            "board_counts_before": {},
+            "board_counts_after": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch(
+                    "run_reassign_batch.poll_browser_job",
+                    side_effect=SafetyHaltedError(unsafe_error),
+                ):
+            root = Path(tmp)
+            report_path = root / "run_report.json"
+            with self.assertRaises(SafetyHaltedError):
+                execute_batch(classification, report, self.move_args(), report_path)
+            persisted = (
+                report_path.read_text(encoding="utf-8")
+                + (root / "xhs_safety_state.json").read_text(encoding="utf-8")
+            )
+
+        for secret in secrets:
+            self.assertNotIn(secret, persisted)
+        self.assertIn("<redacted", persisted)
+
+    def test_shared_redactor_covers_each_supported_credential_format(self):
+        cases = {
+            "url-secret": (
+                "https://example.test/note?xsec_token=url-secret&xsec_source=pc_user"
+            ),
+            "plain-secret": "xsec_token=plain-secret",
+            "json-secret": '\"xsec_source\":\"json-secret\"',
+            "cli-secret": "--sign cli-secret",
+            "signature-secret": "signature=signature-secret",
+            "cookie-secret": "Cookie:cookie-secret",
+            "set-cookie-secret": "Set-Cookie:set-cookie-secret",
+            "auth-secret": "Authorization:Bearer auth-secret",
+            "session-secret": "web_session=session-secret",
+            "encoded-secret": "xsec%5Ftoken%3Dencoded-secret",
+            "a1-session-secret": "a1=a1-session-secret",
+        }
+        for secret, value in cases.items():
+            with self.subTest(value=value):
+                redacted = redact_sensitive_text(value)
+                self.assertNotIn(secret, redacted)
+                self.assertIn("<redacted", redacted)
+
+        self.assertEqual(
+            redact_sensitive_text("型号 a1 适合日常使用"),
+            "型号 a1 适合日常使用",
+        )
+
     def test_move_limit_saves_checkpoint_without_automatically_starting_next_item(self):
         calls = {"eval": 0}
 
@@ -222,6 +317,139 @@ class SafetySessionTests(unittest.TestCase):
             saved = json.loads(report_path.read_text(encoding="utf-8"))
 
         self.assertEqual(calls["eval"], 1)
+        self.assertEqual(saved["session_status"], "move_limit_reached")
+        self.assertEqual(saved["remaining_count"], 1)
+
+    def test_move_limit_skips_non_actionable_first_row_and_moves_next_planned_row(self):
+        scripts = []
+
+        class Runner:
+            def eval(self, script):
+                scripts.append(script)
+                return "xhs_skill_123_456"
+
+            def close(self):
+                pass
+
+        result = {
+            "processed": [],
+            "errors": [],
+            "missing_boards": [],
+            "board_counts_before": {},
+            "board_counts_after": {},
+        }
+        classification = [
+            {
+                "id": "note-already-there",
+                "title": "已在目标专辑",
+                "target_board": "阅读",
+                "confidence": "high",
+                "excluded": True,
+                "exclude_reason": "already_in_target",
+                "membership_state": "already_in_target",
+            },
+            {
+                "id": "note-to-move",
+                "title": "真正待移动",
+                "target_board": "阅读",
+                "confidence": "high",
+                "membership_state": "in_other_board",
+            },
+        ]
+        report = {
+            "processed": [],
+            "errors": [],
+            "missing_boards": [],
+            "board_counts_before": {},
+            "board_counts_after": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch("run_reassign_batch.poll_browser_job", return_value=result):
+            report_path = Path(tmp) / "run_report.json"
+            execute_batch(
+                classification,
+                report,
+                self.move_args(max_moves_per_session=1),
+                report_path,
+            )
+            saved = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(scripts), 1)
+        self.assertIn("note-to-move", scripts[0])
+        self.assertNotIn("note-already-there", scripts[0])
+        self.assertEqual(saved["session_status"], "completed")
+        self.assertNotIn("remaining_count", saved)
+
+    def test_remaining_count_only_counts_unexecuted_actionable_moves(self):
+        scripts = []
+
+        class Runner:
+            def eval(self, script):
+                scripts.append(script)
+                return "xhs_skill_123_456"
+
+            def close(self):
+                pass
+
+        empty_result = {
+            "processed": [],
+            "errors": [],
+            "missing_boards": [],
+            "board_counts_before": {},
+            "board_counts_after": {},
+        }
+        classification = [
+            {
+                "id": "note-excluded",
+                "target_board": "阅读",
+                "confidence": "high",
+                "excluded": True,
+                "exclude_reason": "already_in_target",
+            },
+            {
+                "id": "note-move-one",
+                "target_board": "阅读",
+                "confidence": "high",
+            },
+            {
+                "id": "note-no-target",
+                "target_board": "",
+                "confidence": "high",
+            },
+            {
+                "id": "note-low-confidence",
+                "target_board": "阅读",
+                "confidence": "low",
+            },
+            {
+                "id": "note-move-two",
+                "target_board": "阅读",
+                "confidence": "high",
+            },
+        ]
+        report = {
+            "processed": [],
+            "errors": [],
+            "missing_boards": [],
+            "board_counts_before": {},
+            "board_counts_after": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch("run_reassign_batch.poll_browser_job", return_value=empty_result):
+            report_path = Path(tmp) / "run_report.json"
+            execute_batch(
+                classification,
+                report,
+                self.move_args(max_moves_per_session=1),
+                report_path,
+            )
+            saved = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(scripts), 1)
+        self.assertIn("note-move-one", scripts[0])
+        self.assertNotIn("note-move-two", scripts[0])
         self.assertEqual(saved["session_status"], "move_limit_reached")
         self.assertEqual(saved["remaining_count"], 1)
 
