@@ -15,7 +15,9 @@ sys.path.insert(0, str(SCRIPTS))
 
 from workbuddy_bridge import (  # noqa: E402
     approval_digest,
+    build_parser,
     capture_action,
+    capture_workbuddy_groups,
     execute_action,
     login_action,
     metadata_quality,
@@ -80,6 +82,136 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             self.assertTrue(status['ok'])
             self.assertEqual(status['runtime']['host'], 'workbuddy')
             self.assertIn('install_required', status['dependencies'])
+
+    def test_capture_defaults_to_v2_controlled_group_contract(self):
+        target_url = (
+            'https://www.xiaohongshu.com/user/profile/'
+            '66d19b54000000001d03a93d?tab=fav&subTab=note'
+        )
+        args = build_parser().parse_args([
+            'capture',
+            '--source', 'collection',
+            '--page-url', target_url,
+        ])
+        self.assertEqual(args.batch_size, 200)
+        self.assertEqual(args.pause_minutes, 3)
+        self.assertNotIn('segment_limit', vars(args))
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('batch_size=200', skill)
+        self.assertIn('pause_minutes=3', skill)
+
+    def test_workbuddy_auto_pagination_saves_200_item_groups_and_waits_180_seconds(self):
+        payload = {
+            'scrollY': 9000,
+            'innerHeight': 1000,
+            'scrollHeight': 10000,
+            'location': (
+                'https://www.xiaohongshu.com/user/profile/'
+                '66d19b54000000001d03a93d?tab=fav&subTab=note'
+            ),
+            'title': '收藏',
+            'declaredItemCount': 205,
+            'loginRequired': False,
+            'securityMarker': '',
+            'items': [
+                {
+                    'id': f'{index:024x}',
+                    'title': f'条目 {index}',
+                    'page_index': index,
+                }
+                for index in range(205)
+            ],
+        }
+        browser_calls = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            safety = directory / 'xhs_safety_state.json'
+            with (
+                patch(
+                    'workbuddy_bridge.read_stable_items_snapshot',
+                    return_value=(payload, 1),
+                ),
+                patch('workbuddy_bridge.time.sleep') as sleep,
+            ):
+                result = capture_workbuddy_groups(
+                    lambda script: browser_calls.append(script) or 'ok',
+                    directory,
+                    'collection',
+                    200,
+                    3,
+                    safety,
+                )
+            first = json.loads(
+                (directory / 'visible_items.segment-001.json').read_text(encoding='utf-8')
+            )
+            second = json.loads(
+                (directory / 'visible_items.segment-002.json').read_text(encoding='utf-8')
+            )
+
+        self.assertEqual([len(first), len(second)], [200, 5])
+        self.assertEqual([call.args for call in sleep.call_args_list], [(180,)])
+        self.assertEqual(result['count'], 205)
+        self.assertEqual(result['segment_count'], 2)
+        self.assertTrue(result['crawl_complete'])
+        self.assertEqual(
+            len([script for script in browser_calls if 'scrollTo(0, 0)' in script]),
+            1,
+        )
+
+    def test_workbuddy_auto_pagination_stops_at_stable_frontend_end_when_ui_count_differs(self):
+        payload = {
+            'scrollY': 9000,
+            'innerHeight': 1000,
+            'scrollHeight': 10000,
+            'location': (
+                'https://www.xiaohongshu.com/user/profile/'
+                '66d19b54000000001d03a93d?tab=fav&subTab=note'
+            ),
+            'title': '收藏',
+            'declaredItemCount': 209,
+            'loginRequired': False,
+            'securityMarker': '',
+            'items': [
+                {
+                    'id': f'{index:024x}',
+                    'title': f'条目 {index}',
+                    'page_index': index,
+                }
+                for index in range(205)
+            ],
+        }
+        browser_calls = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with (
+                patch(
+                    'workbuddy_bridge.read_stable_items_snapshot',
+                    side_effect=[(payload, 1), (payload, 1)],
+                ),
+                patch('workbuddy_bridge.time.sleep') as sleep,
+            ):
+                result = capture_workbuddy_groups(
+                    lambda script: browser_calls.append(script) or 'ok',
+                    directory,
+                    'collection',
+                    200,
+                    3,
+                    directory / 'xhs_safety_state.json',
+                )
+
+        self.assertEqual([call.args for call in sleep.call_args_list], [(180,)])
+        self.assertEqual(
+            len([script for script in browser_calls if 'Date.now() + 2500' in script]),
+            1,
+        )
+        self.assertTrue(result['crawl_complete'])
+        self.assertEqual(result['warnings'], [{
+            'code': 'declared_count_mismatch',
+            'declared_count': 209,
+            'accessible_count': 205,
+        }])
 
     def test_workbuddy_normal_results_forbid_unrequested_visualization(self):
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
@@ -213,7 +345,8 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         'locked-run',
                         'collection',
                         target_url,
-                        10,
+                        200,
+                        3,
                         True,
                     )
             self.assertFalse((data_dir / 'runs' / 'locked-run').exists())

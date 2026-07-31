@@ -31116,10 +31116,10 @@ function toolError(error51) {
 var server = new McpServer(
   {
     name: "xiaohongshu-workbuddy",
-    version: "2.0.0"
+    version: "2.0.1"
   },
   {
-    instructions: "\u5728 WorkBuddy \u4E2D\u53EA\u80FD\u8C03\u7528\u672C\u670D\u52A1\u5668\u7BA1\u7406\u5C0F\u7EA2\u4E66\u6D4F\u89C8\u5668\u9636\u6BB5\u3002\u5148 status\uFF1B\u7F3A\u4F9D\u8D56\u65F6\u7ECF\u7528\u6237\u540C\u610F\u540E setup\uFF1B\u9996\u6B21\u767B\u5F55\u7528 login\uFF1B\u6293\u53D6\u7528 capture\uFF1B\u771F\u5B9E\u5206\u7C7B\u5B8C\u6210\u540E\u7528 prepare\uFF1B\u53EA\u6709 prepare \u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u4E14\u7528\u6237\u786E\u8BA4\u6620\u5C04\u548C\u4E0A\u9650\u540E\u624D\u53EF execute\u3002\u7981\u6B62\u8C03\u7528 Safari\u3001Arc\u3001\u7CFB\u7EDF Chrome\u3001CDP \u6216 osascript\u3002"
+    instructions: "\u5728 WorkBuddy \u4E2D\u53EA\u80FD\u8C03\u7528\u672C\u670D\u52A1\u5668\u7BA1\u7406\u5C0F\u7EA2\u4E66\u6D4F\u89C8\u5668\u9636\u6BB5\u3002\u5148 status\uFF1B\u7F3A\u4F9D\u8D56\u65F6\u7ECF\u7528\u6237\u540C\u610F\u540E setup\uFF1B\u9996\u6B21\u767B\u5F55\u7528 login\uFF1B\u6293\u53D6\u5728\u540C\u4E00\u6D4F\u89C8\u5668\u4F1A\u8BDD\u4E2D\u81EA\u52A8\u7FFB\u9875\uFF0C\u9ED8\u8BA4\u6BCF 200 \u6761\u4E00\u7EC4\u3001\u7EC4\u95F4\u6682\u505C 3 \u5206\u949F\uFF1B\u771F\u5B9E\u5206\u7C7B\u5B8C\u6210\u540E\u7528 prepare\uFF1B\u53EA\u6709 prepare \u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u4E14\u7528\u6237\u786E\u8BA4\u6620\u5C04\u548C\u4E0A\u9650\u540E\u624D\u53EF execute\u3002\u7981\u6B62\u8C03\u7528 Safari\u3001Arc\u3001\u7CFB\u7EDF Chrome\u3001CDP \u6216 osascript\u3002"
   }
 );
 server.registerTool(
@@ -31182,14 +31182,15 @@ server.registerTool(
 server.registerTool(
   "xhs_workbuddy_capture",
   {
-    title: "\u88AB\u52A8\u6293\u53D6\u5C0F\u7EA2\u4E66\u5F53\u524D\u8303\u56F4",
-    description: "\u53EA\u7528\u63D2\u4EF6\u72EC\u7ACB Playwright Chromium \u6253\u5F00\u7528\u6237\u63D0\u4F9B\u7684\u7CBE\u786E\u5C0F\u7EA2\u4E66 URL\uFF0C\u5E76\u88AB\u52A8\u8BFB\u53D6\u5F53\u524D\u53EF\u89C1\u6BB5\uFF1B\u4E0D\u6EDA\u52A8\u3001\u4E0D\u70B9\u51FB\u3001\u4E0D\u5199\u8D26\u53F7\u3002\u5FEB\u901F\u6574\u7406\u53EF\u540C\u65F6\u751F\u6210 skip-OCR classification.json\u3002",
+    title: "\u5206\u7EC4\u8BFB\u53D6\u5C0F\u7EA2\u4E66\u5B8C\u6574\u8303\u56F4",
+    description: "\u53EA\u7528\u63D2\u4EF6\u72EC\u7ACB Playwright Chromium \u6253\u5F00\u7CBE\u786E\u9875\u9762\u5E76\u5728\u540C\u4E00\u4F1A\u8BDD\u4E2D\u81EA\u52A8\u7FFB\u9875\uFF1B\u9ED8\u8BA4\u6BCF 200 \u6761\u72EC\u7ACB\u4FDD\u5B58\u4E00\u7EC4\u3001\u7EC4\u95F4\u771F\u5B9E\u6682\u505C 3 \u5206\u949F\uFF0C\u76F4\u5230\u524D\u7AEF\u5217\u8868\u7A33\u5B9A\u5230\u8FBE\u672B\u5C3E\u3002\u4E0D\u70B9\u51FB\u3001\u4E0D\u5237\u65B0\u3001\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3001\u4E0D\u5199\u8D26\u53F7\u3002",
     inputSchema: external_exports.object({
       browser_authorized: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u5728\u5F53\u524D\u56DE\u5408\u660E\u786E\u6388\u6743\u6B64\u7CBE\u786E\u9875\u9762"),
       run_id: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/).optional(),
       source: external_exports.enum(["collection", "liked", "custom"]),
       page_url: external_exports.string().url(),
-      segment_limit: external_exports.number().int().min(1).max(200).default(10),
+      batch_size: external_exports.number().int().min(1).max(200).default(200),
+      pause_minutes: external_exports.number().int().min(1).default(3),
       quick_classify: external_exports.boolean().default(false)
     })
   },
@@ -31198,7 +31199,8 @@ server.registerTool(
     run_id,
     source,
     page_url,
-    segment_limit,
+    batch_size,
+    pause_minutes,
     quick_classify
   }) => {
     try {
@@ -31208,12 +31210,14 @@ server.registerTool(
         source,
         "--page-url",
         page_url,
-        "--segment-limit",
-        String(segment_limit)
+        "--batch-size",
+        String(batch_size),
+        "--pause-minutes",
+        String(pause_minutes)
       ];
       if (run_id) args.push("--run-id", run_id);
       if (quick_classify) args.push("--quick-classify");
-      return toolResult(await runBridge("capture", args, 18e4));
+      return toolResult(await runBridge("capture", args, 864e5));
     } catch (error51) {
       return toolError(error51);
     }

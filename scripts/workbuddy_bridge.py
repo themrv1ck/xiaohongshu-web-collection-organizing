@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
 
-from extract_visible_items import extract_with_capture_mode
+from extract_visible_items import (
+    normalize_source_label,
+    read_stable_items_snapshot,
+    validate_capture_page,
+)
 from run_reassign_batch import BrowserRunner
 from workbuddy_runtime import (
     apply_workbuddy_browser_policy,
@@ -37,6 +41,51 @@ SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
 ALLOWED_SOURCES = {'collection', 'liked', 'custom'}
 LOGIN_SOURCES = {'collection', 'liked'}
 PROFILE_LOCK_NAMES = ('SingletonLock', 'SingletonSocket', 'SingletonCookie')
+MAX_CAPTURE_BATCH_SIZE = 200
+DEFAULT_CAPTURE_BATCH_SIZE = 200
+DEFAULT_CAPTURE_PAUSE_MINUTES = 3
+MAX_WORKBUDDY_SCROLLS = 5000
+WORKBUDDY_RESET_TOP_JS = r"""
+(async () => {
+  window.scrollTo(0, 0);
+  await new Promise(resolve => requestAnimationFrame(
+    () => requestAnimationFrame(resolve)
+  ));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  return "ok";
+})()
+"""
+WORKBUDDY_SCROLL_AND_SETTLE_JS = r"""
+(async () => {
+  const pageState = () => {
+    const indexes = Array.from(
+      document.querySelectorAll('section.note-item, .note-item, [data-note-id]')
+    ).map(node => Number(node.getAttribute('data-index')))
+      .filter(Number.isInteger);
+    return {
+      scrollY: window.scrollY,
+      scrollHeight: document.documentElement.scrollHeight,
+      maxPageIndex: indexes.length ? Math.max(...indexes) : null
+    };
+  };
+  const before = pageState();
+  window.scrollBy(0, Math.max(800, Math.floor(window.innerHeight * 0.8)));
+  const deadline = Date.now() + 2500;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const after = pageState();
+    if (
+      after.scrollY !== before.scrollY
+      || after.scrollHeight !== before.scrollHeight
+      || after.maxPageIndex !== before.maxPageIndex
+    ) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return JSON.stringify(after);
+    }
+  }
+  return JSON.stringify(pageState());
+})()
+"""
 OWN_PROFILE_LINK_JS = r"""
 () => {
   const links = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'));
@@ -188,6 +237,325 @@ def metadata_quality(items: Any) -> Dict[str, int]:
         'item_count': len(rows),
         'usable_item_count': usable,
         'unusable_item_count': len(rows) - usable,
+    }
+
+
+def _workbuddy_page_state(
+    data: Dict[str, Any],
+    seen_positions: Dict[int, str],
+    seen_count: int,
+) -> Dict[str, Any]:
+    scroll_y = data.get('scrollY')
+    inner_height = data.get('innerHeight')
+    scroll_height = data.get('scrollHeight')
+    at_bottom = bool(
+        all(
+            isinstance(value, (int, float))
+            for value in (scroll_y, inner_height, scroll_height)
+        )
+        and scroll_y + inner_height >= scroll_height - 50
+    )
+    positions = sorted(seen_positions)
+    return {
+        'location': data.get('location'),
+        'title': data.get('title'),
+        'scrollY': scroll_y,
+        'innerHeight': inner_height,
+        'scrollHeight': scroll_height,
+        'declaredItemCount': data.get('declaredItemCount'),
+        'at_bottom': at_bottom,
+        'page_position_min': positions[0] if positions else None,
+        'page_position_max': positions[-1] if positions else None,
+        'page_position_count': len(positions),
+        'seen_count': seen_count,
+    }
+
+
+def _write_workbuddy_group(
+    directory: Path,
+    segment_index: int,
+    rows: List[Dict[str, Any]],
+    *,
+    batch_size: int,
+    pause_minutes: int,
+    crawl_complete: bool,
+    page: Dict[str, Any],
+    safety_state: Path,
+) -> Dict[str, Any]:
+    output = directory / f'visible_items.segment-{segment_index:03d}.json'
+    manifest = directory / f'crawl_manifest.segment-{segment_index:03d}.json'
+    if output.exists() or manifest.exists():
+        raise RuntimeError(f'第 {segment_index} 组产物已存在，拒绝覆盖。')
+    write_private_json(output, rows)
+    payload = {
+        'capture_mode': 'workbuddy_segmented',
+        'segment_index': segment_index,
+        'batch_size': batch_size,
+        'pause_minutes': pause_minutes,
+        'item_count': len(rows),
+        'crawl_complete': crawl_complete,
+        'stopped_reason': (
+            'collection_complete' if crawl_complete else 'batch_size_reached'
+        ),
+        'auto_scroll': True,
+        'auto_navigation': False,
+        'auto_retry': False,
+        'auto_continue_after_pause': True,
+        'browser_session_reused': True,
+        'output': str(output),
+        'manifest': str(manifest),
+        'page': page,
+        'safety_state': str(safety_state),
+        'completed_at': utc_now(),
+    }
+    write_private_json(manifest, payload)
+    return payload
+
+
+def capture_workbuddy_groups(
+    js_eval,
+    directory: Path,
+    source: str,
+    batch_size: int,
+    pause_minutes: int,
+    safety_state: Path,
+) -> Dict[str, Any]:
+    """Read a WorkBuddy list in durable groups without reopening the browser."""
+    if not isinstance(batch_size, int) or isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CAPTURE_BATCH_SIZE:
+        raise RuntimeError('batch_size 必须是 1 到 200 的整数。')
+    if not isinstance(pause_minutes, int) or isinstance(pause_minutes, bool) or pause_minutes < 1:
+        raise RuntimeError('pause_minutes 必须是大于 0 的整数。')
+
+    directory = Path(directory)
+    safety_state = Path(safety_state)
+    source_label = normalize_source_label(source)
+    ensure_active_session(
+        safety_state,
+        stage='capture',
+        policy={
+            'capture_mode': 'workbuddy_segmented',
+            'controller': 'workbuddy_plugin',
+            'batch_size': batch_size,
+            'pause_minutes': pause_minutes,
+            'auto_scroll': True,
+            'auto_navigation': False,
+            'auto_retry': False,
+            'auto_continue_after_pause': True,
+            'browser_session_reused': True,
+        },
+    )
+
+    seen: Dict[str, Dict[str, Any]] = {}
+    seen_positions: Dict[int, str] = {}
+    pending: List[Dict[str, Any]] = []
+    committed: List[Dict[str, Any]] = []
+    segment_manifests: List[Dict[str, Any]] = []
+    bottom_signature = None
+    bottom_stable_reads = 0
+    last_page: Dict[str, Any] = {}
+    crawl_complete = False
+
+    js_eval(WORKBUDDY_RESET_TOP_JS)
+    for scroll_index in range(MAX_WORKBUDDY_SCROLLS + 1):
+        data, stability_checks = read_stable_items_snapshot(js_eval)
+        validate_capture_page(data, safety_state)
+        observed = [
+            item for item in list(data.get('items') or [])
+            if isinstance(item, dict) and item.get('id')
+        ]
+        observed.sort(key=lambda item: (
+            item.get('page_index')
+            if isinstance(item.get('page_index'), int)
+            else MAX_WORKBUDDY_SCROLLS * 1000
+        ))
+        for item in observed:
+            note_id = str(item.get('id') or '').strip()
+            page_index = item.get('page_index')
+            if isinstance(page_index, int) and page_index >= 0:
+                previous_id = seen_positions.get(page_index)
+                if previous_id and previous_id != note_id:
+                    raise RuntimeError(
+                        f'页面位置 {page_index} 对应的笔记发生变化，已停止以避免错位。'
+                    )
+                seen_positions[page_index] = note_id
+            if note_id in seen:
+                current = seen[note_id]
+                for key, value in item.items():
+                    if (
+                        value not in (None, '', [], {})
+                        and current.get(key) in (None, '', [], {})
+                    ):
+                        current[key] = value
+                continue
+            row = dict(item)
+            row['source_lists'] = [source_label]
+            row['source_primary'] = source_label
+            seen[note_id] = row
+            pending.append(row)
+
+        last_page = _workbuddy_page_state(data, seen_positions, len(seen))
+        if last_page['at_bottom']:
+            signature = (
+                last_page['scrollY'],
+                last_page['scrollHeight'],
+                last_page['page_position_max'],
+                last_page['seen_count'],
+            )
+            bottom_stable_reads = (
+                bottom_stable_reads + 1 if signature == bottom_signature else 1
+            )
+            bottom_signature = signature
+        else:
+            bottom_signature = None
+            bottom_stable_reads = 0
+
+        declared = last_page.get('declaredItemCount')
+        declared_end_reached = bool(
+            isinstance(declared, int)
+            and not isinstance(declared, bool)
+            and (
+                (
+                    isinstance(last_page['page_position_max'], int)
+                    and last_page['page_position_max'] + 1 >= declared
+                )
+                or (not seen_positions and len(seen) >= declared)
+            )
+        )
+        started_from_top = (
+            not seen_positions or last_page['page_position_min'] == 0
+        )
+        crawl_complete = bool(
+            last_page['at_bottom']
+            and started_from_top
+            and (declared_end_reached or bottom_stable_reads >= 2)
+        )
+
+        while len(pending) >= batch_size:
+            group = pending[:batch_size]
+            del pending[:batch_size]
+            final_group = crawl_complete and not pending
+            segment = _write_workbuddy_group(
+                directory,
+                len(segment_manifests) + 1,
+                group,
+                batch_size=batch_size,
+                pause_minutes=pause_minutes,
+                crawl_complete=final_group,
+                page=last_page,
+                safety_state=safety_state,
+            )
+            segment_manifests.append(segment)
+            committed.extend(group)
+            write_private_json(directory / 'visible_items.json', committed)
+            if pending or not crawl_complete:
+                time.sleep(pause_minutes * 60)
+
+        write_private_json(directory / 'capture_progress.json', {
+            'capture_mode': 'workbuddy_segmented',
+            'batch_size': batch_size,
+            'pause_minutes': pause_minutes,
+            'captured_count': len(seen),
+            'committed_count': len(committed),
+            'pending_count': len(pending),
+            'segment_count': len(segment_manifests),
+            'scroll_count': scroll_index,
+            'dom_stability_checks': stability_checks,
+            'crawl_complete': crawl_complete,
+            'page': last_page,
+            'updated_at': utc_now(),
+        })
+        if crawl_complete:
+            break
+        js_eval(WORKBUDDY_SCROLL_AND_SETTLE_JS)
+    else:
+        raise RuntimeError(
+            f'达到 {MAX_WORKBUDDY_SCROLLS} 次滚动上限仍未到列表末尾，已停止。'
+        )
+
+    if pending:
+        segment = _write_workbuddy_group(
+            directory,
+            len(segment_manifests) + 1,
+            pending,
+            batch_size=batch_size,
+            pause_minutes=pause_minutes,
+            crawl_complete=True,
+            page=last_page,
+            safety_state=safety_state,
+        )
+        segment_manifests.append(segment)
+        committed.extend(pending)
+        pending = []
+        write_private_json(directory / 'visible_items.json', committed)
+    elif segment_manifests and not segment_manifests[-1]['crawl_complete']:
+        final_segment = dict(segment_manifests[-1])
+        final_segment['crawl_complete'] = True
+        final_segment['stopped_reason'] = 'collection_complete'
+        write_private_json(Path(final_segment['manifest']), final_segment)
+        segment_manifests[-1] = final_segment
+    if not (directory / 'visible_items.json').exists():
+        write_private_json(directory / 'visible_items.json', committed)
+
+    positions = sorted(seen_positions)
+    missing_positions = (
+        sorted(set(range(positions[0], positions[-1] + 1)) - set(positions))
+        if positions else []
+    )
+    warnings = []
+    declared = last_page.get('declaredItemCount')
+    if isinstance(declared, int) and not isinstance(declared, bool) and declared != len(committed):
+        warnings.append({
+            'code': 'declared_count_mismatch',
+            'declared_count': declared,
+            'accessible_count': len(committed),
+        })
+    if missing_positions:
+        warnings.append({
+            'code': 'missing_page_positions',
+            'count': len(missing_positions),
+            'sample': missing_positions[:20],
+        })
+
+    aggregate_manifest = directory / 'crawl_manifest.json'
+    write_private_json(aggregate_manifest, {
+        'capture_mode': 'workbuddy_segmented',
+        'source': source_label,
+        'batch_size': batch_size,
+        'pause_minutes': pause_minutes,
+        'item_count': len(committed),
+        'segment_count': len(segment_manifests),
+        'crawl_complete': True,
+        'stopped_reason': 'collection_complete',
+        'browser_session_reused': True,
+        'page': last_page,
+        'warnings': warnings,
+        'segments': [
+            {
+                'segment_index': item['segment_index'],
+                'item_count': item['item_count'],
+                'output': item['output'],
+                'manifest': item['manifest'],
+            }
+            for item in segment_manifests
+        ],
+        'safety_state': str(safety_state),
+    })
+    return {
+        'count': len(committed),
+        'newly_seen_count': len(committed),
+        'existing_count': 0,
+        'source': source_label,
+        'output': str(directory / 'visible_items.json'),
+        'manifest': str(aggregate_manifest),
+        'page': last_page,
+        'capture_mode': 'workbuddy_segmented',
+        'batch_size': batch_size,
+        'pause_minutes': pause_minutes,
+        'segment_count': len(segment_manifests),
+        'crawl_complete': True,
+        'stopped_reason': 'collection_complete',
+        'warnings': warnings,
+        'safety_state': str(safety_state),
     }
 
 
@@ -370,42 +738,45 @@ def capture_action(
     run_id: str,
     source: str,
     page_url: str,
-    segment_limit: int,
+    batch_size: int,
+    pause_minutes: int,
     quick_classify: bool,
 ) -> Dict[str, Any]:
     require_workbuddy()
     checked_url = validate_xhs_url(page_url, source)
-    if not isinstance(segment_limit, int) or isinstance(segment_limit, bool) or not 1 <= segment_limit <= 200:
-        raise RuntimeError('segment_limit 必须是 1 到 200 的整数。')
+    if not isinstance(batch_size, int) or isinstance(batch_size, bool) or not 1 <= batch_size <= MAX_CAPTURE_BATCH_SIZE:
+        raise RuntimeError('batch_size 必须是 1 到 200 的整数。')
+    if not isinstance(pause_minutes, int) or isinstance(pause_minutes, bool) or pause_minutes < 1:
+        raise RuntimeError('pause_minutes 必须是大于 0 的整数。')
     require_profile_available()
     args = browser_args(checked_url)
     runner = BrowserRunner('playwright', args)
     try:
         directory = run_dir_for(run_id, create=True)
         visible = directory / 'visible_items.json'
-        manifest = directory / 'crawl_manifest.json'
         safety = resolve_safety_state_path('', visible)
         ensure_active_session(
             safety,
             stage='capture',
             policy={
-                'capture_mode': 'passive',
-                'auto_scroll': False,
+                'capture_mode': 'workbuddy_segmented',
+                'controller': 'workbuddy_plugin',
+                'batch_size': batch_size,
+                'pause_minutes': pause_minutes,
+                'auto_scroll': True,
                 'auto_navigation': False,
                 'auto_retry': False,
+                'auto_continue_after_pause': True,
+                'browser_session_reused': True,
                 'workbuddy_exact_url_open': checked_url,
             },
         )
-        result = extract_with_capture_mode(
+        result = capture_workbuddy_groups(
             runner.eval,
-            visible,
-            0,
-            0,
-            manifest,
+            directory,
             source,
-            False,
-            'passive',
-            segment_limit,
+            batch_size,
+            pause_minutes,
             safety,
         )
         quality = metadata_quality(load_json(visible))
@@ -668,7 +1039,8 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument('--run-id', default='')
     capture.add_argument('--source', choices=sorted(ALLOWED_SOURCES), required=True)
     capture.add_argument('--page-url', required=True)
-    capture.add_argument('--segment-limit', type=int, default=10)
+    capture.add_argument('--batch-size', type=int, default=DEFAULT_CAPTURE_BATCH_SIZE)
+    capture.add_argument('--pause-minutes', type=int, default=DEFAULT_CAPTURE_PAUSE_MINUTES)
     capture.add_argument('--quick-classify', action='store_true')
 
     prepare = sub.add_parser('prepare')
@@ -702,7 +1074,8 @@ def main() -> None:
                 args.run_id,
                 args.source,
                 args.page_url,
-                args.segment_limit,
+                args.batch_size,
+                args.pause_minutes,
                 args.quick_classify,
             )
         elif args.action == 'prepare':

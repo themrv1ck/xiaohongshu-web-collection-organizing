@@ -15,9 +15,9 @@ This is the umbrella for Xiaohongshu web workflows. Use the collection/liked org
 
 1. 浏览器阶段只允许调用上述 `xhs_workbuddy_*` 工具。禁止直接运行 `osascript`、Safari/Arc/Chrome Apple Events、Computer Use、CDP，禁止调用脚本时传 `--browser safari|arc|chrome` 或 `--backend macos-*`。
 2. 先调用 `xhs_workbuddy_status`。若 `install_required=true`，先向用户说明需要把 Python Playwright 与 Chromium 下载到插件持久化目录并取得明确同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)`，随后再次调用 status。
-3. 范围、整理深度和本段上限确定后，只询问一次：“允许打开 WorkBuddy 专用浏览器，并只读整理本次所选范围（最多 N 条）吗？”这次授权覆盖本轮 `login → capture → prepare` 三个只读阶段；不得在三个阶段之间重复索要授权。
+3. 范围和整理深度确定后，只询问一次是否允许打开 WorkBuddy 专用浏览器完成本轮只读整理。分组规则默认固定为 `batch_size=200`（每组最多 200 条）和 `pause_minutes=3`（组间至少暂停 3 分钟）；除非用户主动修改，不得重复询问这两个默认值。这次授权覆盖本轮 `login → capture → prepare` 三个只读阶段。
 4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的专用 Chromium 完成登录；插件必须自动识别当前账号、进入所选收藏/点赞页、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放。不得要求用户打开目标页、关闭窗口或复制 URL。
-5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,...)`，不得再次询问或让用户粘贴地址。抓取只读取该精确页面的当前可见段，不滚动、不点击、不写账号。快速整理传 `quick_classify=true`；轻度/深度整理传 `false`，再让既有 OCR/视频链路把最终结果写到工具返回的 `run_dir/classification.json`。
+5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,batch_size=200,pause_minutes=3,...)`，不得再次询问或让用户粘贴地址。WorkBuddy 插件必须在同一个专用 Chromium 会话中自动翻页：每 200 条独立保存一组，组间真实等待 3 分钟后继续；用户修改过参数时使用修改后的值。页面索引到达声明末尾，或页面底部的滚动位置、页面高度、末项索引和已读数量连续两次完全不变时停止。全过程不得点击、刷新、自动重试或写账号。快速整理传 `quick_classify=true`；轻度/深度整理传 `false`，再让既有 OCR/视频链路把最终结果写到工具返回的 `run_dir/classification.json`。
 6. 分类完成后立即调用 `xhs_workbuddy_prepare` 生成真实 `board_snapshot.json`、`created_boards.json` 和硬闸门 `run_report.json`。只有工具返回 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0` 和非空 `approval_digest`，才可向用户展示逐条“当前专辑 → 目标专辑”并请求执行确认。若 `planned_move_count=0`，直接展示已在正确专辑和待人工复核的条目，禁止请求执行。
 7. 普通整理结果直接在当前对话里用简短纯文本报告，不调用可视化 Skill、可视化指南、组件渲染、HTML、仪表盘或 `present_files`，也不为已有 JSON 产物额外生成展示文件；只有用户明确要求图表、网页或文件交付时才允许。报告只列工具顺序、抓取/分类数量、`mode`、`ready_for_execute`、`blockers`、`warnings`、`planned_move_count`、是否写入账号、`run_dir`，以及已正确归档/待复核条目；不要展开全部专辑库存。
 8. 用户明确确认逐条映射与本次移动上限后，原样传回 `approval_digest`，并调用 `xhs_workbuddy_execute(browser_authorized=true,user_confirmed=true,...)`。任何分类、专辑证据或计划变化都会让 digest 失效，并在打开浏览器前拒绝执行。

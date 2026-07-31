@@ -155,13 +155,14 @@ function toolError(error) {
 const server = new McpServer(
   {
     name: 'xiaohongshu-workbuddy',
-    version: '2.0.0',
+    version: '2.0.1',
   },
   {
     instructions:
       '在 WorkBuddy 中只能调用本服务器管理小红书浏览器阶段。' +
       '先 status；缺依赖时经用户同意后 setup；首次登录用 login；' +
-      '抓取用 capture；真实分类完成后用 prepare；只有 prepare 返回 ' +
+      '抓取在同一浏览器会话中自动翻页，默认每 200 条一组、组间暂停 3 分钟；' +
+      '真实分类完成后用 prepare；只有 prepare 返回 ' +
       'ready_for_execute=true、blockers=[] 且用户确认映射和上限后才可 execute。' +
       '禁止调用 Safari、Arc、系统 Chrome、CDP 或 osascript。',
   },
@@ -237,15 +238,16 @@ server.registerTool(
 server.registerTool(
   'xhs_workbuddy_capture',
   {
-    title: '被动抓取小红书当前范围',
+    title: '分组读取小红书完整范围',
     description:
-      '只用插件独立 Playwright Chromium 打开用户提供的精确小红书 URL，并被动读取当前可见段；不滚动、不点击、不写账号。快速整理可同时生成 skip-OCR classification.json。',
+      '只用插件独立 Playwright Chromium 打开精确页面并在同一会话中自动翻页；默认每 200 条独立保存一组、组间真实暂停 3 分钟，直到前端列表稳定到达末尾。不点击、不刷新、不自动重试、不写账号。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确授权此精确页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/).optional(),
       source: z.enum(['collection', 'liked', 'custom']),
       page_url: z.string().url(),
-      segment_limit: z.number().int().min(1).max(200).default(10),
+      batch_size: z.number().int().min(1).max(200).default(200),
+      pause_minutes: z.number().int().min(1).default(3),
       quick_classify: z.boolean().default(false),
     }),
   },
@@ -254,7 +256,8 @@ server.registerTool(
     run_id,
     source,
     page_url,
-    segment_limit,
+    batch_size,
+    pause_minutes,
     quick_classify,
   }) => {
     try {
@@ -262,11 +265,12 @@ server.registerTool(
       const args = [
         '--source', source,
         '--page-url', page_url,
-        '--segment-limit', String(segment_limit),
+        '--batch-size', String(batch_size),
+        '--pause-minutes', String(pause_minutes),
       ];
       if (run_id) args.push('--run-id', run_id);
       if (quick_classify) args.push('--quick-classify');
-      return toolResult(await runBridge('capture', args, 180_000));
+      return toolResult(await runBridge('capture', args, 86_400_000));
     } catch (error) {
       return toolError(error);
     }

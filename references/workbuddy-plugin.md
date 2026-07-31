@@ -42,13 +42,13 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 1. `xhs_workbuddy_status`：纯离线，返回插件 profile 和 Playwright/Chromium 是否就绪。
 2. `xhs_workbuddy_setup`：仅在用户明确同意依赖下载后调用；在 `${CODEBUDDY_PLUGIN_DATA}/python-venv` 安装 `requirements-workbuddy.txt` 和 Playwright Chromium。
 3. `xhs_workbuddy_login`：仅在用户当前回合明确授权打开浏览器后调用，并传入已选择的 `source=collection|liked`。用户只需完成登录；工具自动从前端“我”入口取得当前账号、进入所选范围、返回无敏感参数的 `target_page_url`，随后关闭自己的浏览器并等待 profile 锁释放。禁止要求用户关窗口或复制 URL。
-4. `xhs_workbuddy_capture`：直接复用上一步返回的 `target_page_url`；不得再次向用户索取地址。收藏 URL 必须带 `tab=fav`，点赞 URL 必须带 `tab=liked`；打开精确 URL 后只读取当前可见段。启动前若 profile 仍被占用，必须在创建 run 目录前停止。
+4. `xhs_workbuddy_capture`：直接复用上一步返回的 `target_page_url`；不得再次向用户索取地址。收藏 URL 必须带 `tab=fav`，点赞 URL 必须带 `tab=liked`。默认 `batch_size=200`、`pause_minutes=3`；插件在同一个专用 Chromium 会话中自动翻页，每 200 条独立保存一组，真实等待 3 分钟后续组。页面索引到达声明末尾，或页面底部状态连续两次完全不变时结束；UI 声明数与可访问笔记数不一致只记录警告，不再无限等待。全过程不点击、不刷新、不自动重试、不写账号。启动前若 profile 仍被占用，必须在创建 run 目录前停止。
 5. `xhs_workbuddy_prepare`：要求同一 run 目录已有真实 `classification.json`；顺序固定为只读专辑快照、目标专辑核验、硬闸门 dry-run。未通过或 `planned_move_count=0` 时都不生成 `approval_digest`；零计划时直接报告已正确归档与待复核条目。
 6. `xhs_workbuddy_execute`：必须同时收到 `browser_authorized=true`、`user_confirmed=true`、用户确认的移动上限和 prepare 原样返回的 `approval_digest`；digest 绑定 classification、board snapshot、created boards 和逐条计划。
 
 用户只感知两次安全决策：
 
-1. 首次只读整理前，确认范围、深度、上限和打开专用浏览器；这一次授权覆盖 `login → capture → prepare`。
+1. 首次只读整理前，确认范围、深度和打开专用浏览器；每组最多 200 条、组间至少暂停 3 分钟直接使用默认值，除非用户主动修改。
 2. 真正移动前，确认逐条映射和移动上限。
 
 `login`、`capture`、`prepare` 是代码内部的安全边界，不得变成让用户关窗口、抄 URL 或理解 profile 的操作说明。

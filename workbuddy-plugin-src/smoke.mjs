@@ -56,6 +56,16 @@ try {
   ) {
     throw new Error(`MCP login contract mismatch: ${JSON.stringify(login)}`);
   }
+  const capture = listed.tools.find((tool) => tool.name === 'xhs_workbuddy_capture');
+  const captureProperties = capture?.inputSchema?.properties || {};
+  if (
+    captureProperties.batch_size?.default !== 200
+    || captureProperties.pause_minutes?.default !== 3
+    || 'segment_limit' in captureProperties
+    || 'controlled_groups_authorized' in captureProperties
+  ) {
+    throw new Error(`MCP capture group contract mismatch: ${JSON.stringify(capture)}`);
+  }
   const result = await client.callTool({
     name: 'xhs_workbuddy_status',
     arguments: {},
