@@ -18,6 +18,7 @@ const transport = new StdioClientTransport({
   env: {
     ...process.env,
     XHS_HOST: 'workbuddy',
+    XHS_WORKBUDDY_PLATFORM: process.platform,
     XHS_SKILL_ROOT: root,
     CODEBUDDY_PLUGIN_DATA: data,
     XHS_PLAYWRIGHT_PROFILE: path.join(data, 'playwright-profile'),
@@ -85,6 +86,12 @@ try {
     || prepareProperties.max_moves_per_session?.minimum !== 1
     || prepareProperties.max_moves_per_session?.maximum !== 200
     || prepareRequired.includes('max_moves_per_session')
+    || prepareProperties.proposed_board_names?.type !== 'array'
+    || prepareProperties.proposed_board_names?.maxItems !== 20
+    || JSON.stringify(prepareProperties.new_board_privacy?.enum)
+      !== JSON.stringify(['public', 'private'])
+    || prepareRequired.includes('proposed_board_names')
+    || prepareRequired.includes('new_board_privacy')
     || 'expected_url_substring' in prepareProperties
     || !prepare.description.includes('用户无需处理')
   ) {
@@ -112,7 +119,7 @@ try {
   if (
     result.isError
     || result.structuredContent?.runtime?.host !== 'workbuddy'
-    || result.structuredContent?.plugin_version !== '2.0.4'
+    || result.structuredContent?.plugin_version !== '2.0.5'
   ) {
     throw new Error(`MCP status failed: ${JSON.stringify(result)}`);
   }

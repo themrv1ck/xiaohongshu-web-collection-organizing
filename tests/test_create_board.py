@@ -44,6 +44,8 @@ class CreateBoardTests(unittest.TestCase):
         self.assertIn('after.boardCount !== before.boardCount + 1', job)
         self.assertIn('assertOldBoardsUnchanged(before, after)', job)
         self.assertIn('snapshot.accessibleTotal !== 0', job)
+        self.assertIn('response.boardCount == null ? rawBoards.length', job)
+        self.assertIn("events: ['preflight:board_already_exists', 'verify:existing_board_empty']", job)
         self.assertIn('HIGH_RISK_STATE_UNCERTAIN', job)
         self.assertIn('no delete rollback attempted', job)
         self.assertNotIn('await api.LN(', job)
@@ -88,6 +90,7 @@ class CreateBoardTests(unittest.TestCase):
             'status': 'already_exists',
             'writePerformed': False,
             'board': {'id': 'b' * 24, 'name': '其他', 'privacy': 0},
+            'emptyBoardVerified': True,
         }
         self.assertEqual(validate_result(existing, True), existing)
         with self.assertRaises(MembershipContractError):

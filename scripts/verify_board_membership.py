@@ -324,15 +324,20 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
     if (!response || typeof response !== 'object' || Array.isArray(response)) {
       throw new Error('Xiaohongshu board/user response must be an object');
     }
-    if (!Number.isSafeInteger(response.boardCount) || response.boardCount < 0) {
+    const rawBoards = response.boards == null ? [] : response.boards;
+    if (!Array.isArray(rawBoards)) {
+      throw new Error('Xiaohongshu board/user response.boards must be an array');
+    }
+    const boardCount = response.boardCount == null ? rawBoards.length : response.boardCount;
+    if (!Number.isSafeInteger(boardCount) || boardCount < 0) {
       throw new Error('Xiaohongshu board/user response.boardCount must be a non-negative integer');
     }
-    if (!Array.isArray(response.boards) || response.boards.length !== response.boardCount) {
+    if (rawBoards.length !== boardCount) {
       throw new Error('Xiaohongshu board/user response.boards must match boardCount');
     }
     const ids = new Set();
     const names = new Set();
-    return response.boards.map((board, index) => {
+    return rawBoards.map((board, index) => {
       if (!board || typeof board !== 'object' || Array.isArray(board)) {
         throw new Error('Xiaohongshu board/user boards[' + index + '] must be an object');
       }
@@ -383,7 +388,7 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
     const ownUrl = own ? new URL(own.getAttribute('href') || '', window.location.origin) : null;
     const ownMatch = ownUrl && ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
     return {
-      board_count: boardResponse.boardCount,
+      board_count: boards.length,
       boards: rows,
       live_page_binding: `${current.origin}${current.pathname}?tab=${currentTab}`,
       live_account_user_id: ownMatch ? ownMatch[1].toLowerCase() : ''

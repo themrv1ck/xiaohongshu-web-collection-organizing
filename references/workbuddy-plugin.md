@@ -1,4 +1,4 @@
-# WorkBuddy Plugin + Playwright 专用浏览器
+# WorkBuddy Plugin + Playwright 受管浏览器
 
 ## 目的
 
@@ -27,11 +27,13 @@ Skill 不得静默信任自己；这一次用户确认是 WorkBuddy 的安全边
 WorkBuddy 模式固定为：
 
 - backend：`playwright`
-- channel：Playwright 自带 `chromium`
+- channel：Windows 为系统 `msedge` 程序，macOS/Linux 为 Playwright `chromium`
 - headless：`false`
 - profile：WorkBuddy 插件数据目录下的 `playwright-profile`
 - CDP：禁止
-- Safari / Arc / Chrome / Edge 系统后端：禁止
+- 用户日常 Safari / Arc / Chrome / Edge profile：禁止
+
+Windows 只复用 Edge 程序文件，不接管其日常登录目录；小红书登录态始终写入插件数据目录下的独立 `playwright-profile`。setup 不下载 Chromium，只检查系统 Edge 是否存在。所有平台都拒绝 CDP、headless 和外部 `user-data-dir`。
 
 `scripts/workbuddy_runtime.py` 同时接入 `extract_visible_items.py`、`capture_board_snapshot.py` 和 `run_reassign_batch.py`。即使模型传错参数，三个真实浏览器入口也会在接触浏览器前拒绝。
 
@@ -39,14 +41,14 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 
 ## 工具顺序
 
-1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.0.4`、插件 profile 和 Playwright/Chromium 是否就绪；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
-2. `xhs_workbuddy_setup`：仅在用户明确同意依赖下载后调用；在 `${CODEBUDDY_PLUGIN_DATA}/python-venv` 安装 `requirements-workbuddy.txt` 和 Playwright Chromium。
+1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.0.5`、独立 profile、平台 channel 和依赖状态；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
+2. `xhs_workbuddy_setup`：仅在用户明确同意后调用；在 `${CODEBUDDY_PLUGIN_DATA}/python-venv` 安装 `requirements-workbuddy.txt`。Windows 只检查系统 Edge，不下载 Chromium；macOS/Linux 安装独立 Chromium。
 3. `xhs_workbuddy_login`：仅在用户当前回合明确授权打开浏览器后调用，并传入已选择的 `source=collection|liked`。用户只需完成登录；工具自动从前端“我”入口取得当前账号、进入所选范围、返回无敏感参数的 `target_page_url`，随后关闭自己的浏览器并等待 profile 锁释放。禁止要求用户关窗口或复制 URL。
 4. `xhs_workbuddy_capture`：直接复用上一步返回的 `target_page_url`；不得再次向用户索取地址。收藏 URL 必须带 `tab=fav`，点赞 URL 必须带 `tab=liked`。`organizing_depth` 必填：快速整理传 `quick`，轻度整理传 `light`；`deep` 会因尚无视频语音和完整时轴画面证据入口而在浏览器启动前明确停止，禁止冒充深度结果。分组参数不暴露给模型：插件固定每 200 条保存一组，非末组真实等待 3 分钟。只有声明总数每次连读均不变化、实际唯一条数完全相等、且 `page_index ↔ note_id` 双向唯一并连续覆盖 `0..总数-1` 才允许分类；否则保存现有数据并硬停，不能把约 10 条首屏数据标为完整。轻度整理在关闭同一次 context 前，用进程内卡片链接打开全部条目详情，再以同一 BrowserContext 下载图片字节；`image_items.json` 只保存相对本地路径与内容 SHA256，不保存签名图片 URL。Cookie、卡片原始 query、签名 URL 与 xsec 不得落盘、进入错误或返回模型。只有 `ready_for_classification=true` 时，MCP 才对本次文件哈希签发 capture receipt。
-5. `xhs_workbuddy_prepare`（专辑清单阶段）：WorkBuddy 自动传入 capture receipt，第一次不传 `classification`；先核验 MCP 内存账本与当前文件哈希，再只读生成与本次账号、页面和 `verify_pages` 绑定的完整 `board_snapshot.json`，返回 `phase=board_inventory`、`existing_board_names`、脱敏 `classification_inputs`、`verify_pages` 和 inventory receipt。用户无需查看、复制或保存 receipt。`classification_required` 只是继续下一阶段的标记；没有已有专辑时才返回 `no_existing_boards` 并停止。
-6. 分类：模型只能使用 prepare 返回的 `classification_inputs`，从 `existing_board_names` 中为全部真实 note id 选择目标；禁止读取运行目录中的 `visible_items.json` / `image_items.json` / `ocr_results.json`，不得从模板、示例或分类器注入任何预设类别，也不得创造不存在的专辑。不确定项保持空目标并待复核。
-7. `xhs_workbuddy_prepare`（dry-run 阶段）：第二次自动传入 inventory receipt、逐条 `classification`、待确认的移动上限和第一次原样返回的 `verify_pages`。工具先再次核验 receipt、快照 `verify_pages` 与所有输入哈希，再机械合并 OCR、核验分类 ID 和真实目标专辑，生成 taxonomy、classification、created boards 和硬闸门 dry-run。只有可执行且存在计划移动时才同时返回 plan receipt 与绑定移动上限和 `verify_pages` 的 `approval_digest`。
-8. `xhs_workbuddy_execute`：必须同时收到 `browser_authorized=true`、`user_confirmed=true`、用户确认的移动上限、prepare 原样返回的 `approval_digest`、`verify_pages` 和 WorkBuddy 自动传递的 plan receipt；不接收模型自填的 `expected_url_substring`。Python 先按 receipt 哈希把最终输入读入内存，启动专用 Chromium，并只读核验精确 profile 路径、`tab` 与前端“我”账号；通过后才发出 `READY`。MCP 在 `COMMIT` 前再次重算全部绑定文件，单次消费 receipt 并回传 `COMMIT`；Python 收到后才允许第一次写入，且不再从可变路径重新读取分类。参数、文件、浏览器启动或页面绑定错误发生在 `READY` 前时，receipt 会解除占用并允许修正后重试。`approval_digest` 是用户可见的方案编号，不能单独授权。
+5. `xhs_workbuddy_prepare`（专辑清单阶段）：第一次不传 `classification`，只读生成完整 `board_snapshot.json`，返回真实 `existing_board_names` 与脱敏 `classification_inputs`。账号没有专辑时也继续分类，不再返回死路 blocker。
+6. 分类：模型只能使用 `classification_inputs`。优先选择真实已有专辑；确需新增时，只能依据本次内容提出最多 20 个 `proposed_board_names`，不得使用模板或插件预设，并明确统一的 `new_board_privacy=public|private`。每个提议名称必须至少被一条真实分类使用。
+7. `xhs_workbuddy_prepare`（dry-run 阶段）：第二次自动传入 classification、可选提议名称及隐私、移动上限、`verify_pages` 和 inventory receipt。工具机械核验所有输入，把待创建专辑、隐私、逐条移动与上限写入同一个 approval digest；此阶段不创建任何专辑。
+8. `xhs_workbuddy_execute`：用户一次确认上述完整方案后执行。MCP `COMMIT` 之后，Python 在同一个受管 BrowserContext 中先创建确认过的专辑，逐个核验名称、隐私和空成员，再移动收藏；任一创建结果不确定即写入安全停机并停止后续移动。WorkBuddy 中直接运行抓取脚本或 `run_reassign_batch.py --execute` 会被拒绝。
 
 ## 证据 receipt
 
@@ -61,7 +63,7 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 用户只感知两次安全决策：
 
 1. 首次只读整理前，确认范围、深度和打开专用浏览器；列表与详情固定每组最多 200 条、非末组间隔 3 分钟，不要求用户配置。一次确认覆盖同一浏览器里的列表读取和详情补齐。
-2. 真正移动前，确认逐条映射和移动上限。
+2. 真正写入前，一次确认待创建专辑及隐私、逐条映射和移动上限。
 
 `login`、`capture`、`prepare` 是代码内部的安全边界，不得变成让用户关窗口、抄 URL 或理解 profile 的操作说明。
 

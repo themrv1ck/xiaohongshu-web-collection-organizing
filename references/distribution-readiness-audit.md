@@ -40,7 +40,7 @@
    无浏览器证据的 `run_reassign_batch.py` 必须输出 `classification_preview`、`ready_for_execute=false`，不能输出可执行 dry-run。`build_created_boards.py` 需要三个参数；第二个参数是“现有专辑列表或 `board_snapshot.json`”，不是输出路径，例如：
 
    ```bash
-   printf '{"boards":["杂项灵感","滑雪"]}\n' > /tmp/xhs_existing_boards.json
+   printf '{"boards":["杂项灵感","示例主题A"]}\n' > /tmp/xhs_existing_boards.json
    python3 scripts/build_created_boards.py templates/board_taxonomy.template.json /tmp/xhs_existing_boards.json /tmp/xhs_created_boards.json
    ```
 

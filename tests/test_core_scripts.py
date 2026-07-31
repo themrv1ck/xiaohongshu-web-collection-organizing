@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -682,6 +683,56 @@ function createTransactionModel(options) {
             'already_in_target',
         )
 
+    def test_preflight_accepts_empty_inventory_only_for_bound_planned_boards(self):
+        note_id = '1' * 24
+        snapshot = {
+            'mode': 'read_only',
+            'source': {'browser': 'playwright', 'writes_performed': False},
+            'boards': [],
+            'validation': {
+                'board_names_unique': True,
+                'pagination_cursor_invariants_passed': True,
+                'within_board_duplicates': [],
+                'full_membership_complete': True,
+            },
+        }
+        created = {
+            'confirmed': [],
+            'planned': [{'name': '阅读', 'privacy': 0}],
+            'created': [],
+            'missing': [],
+            'failed': [],
+        }
+        classification = [{
+            'id': note_id,
+            'title': '读后感',
+            'target_board': '阅读',
+            'confidence': 'high',
+        }]
+        with self.assertRaisesRegex(Exception, 'explicit allow_planned_board_creation'):
+            prepare_execution_preflight(
+                classification,
+                snapshot,
+                created,
+                allow_low_confidence=False,
+            )
+        result = prepare_execution_preflight(
+            classification,
+            snapshot,
+            created,
+            allow_low_confidence=False,
+            allow_planned_board_creation=True,
+        )
+        self.assertTrue(result['ready_for_execute'])
+        self.assertEqual(result['blockers'], [])
+        self.assertEqual(result['planned_board_creations'], [
+            {'name': '阅读', 'privacy': 0},
+        ])
+        self.assertEqual(
+            result['resolved_items'][0]['membership_state'],
+            'target_board_planned',
+        )
+
     def test_execute_without_preflight_evidence_is_blocked_before_browser(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -717,6 +768,34 @@ function createTransactionModel(options) {
                 'board_validation_not_run',
                 'membership_validation_not_run',
             ])
+
+    def test_workbuddy_rejects_direct_execute_script_before_browser(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            classification = tmp_path / 'classification.json'
+            report = tmp_path / 'run_report.json'
+            classification.write_text(json.dumps([{
+                'id': '1' * 24,
+                'target_board': '阅读',
+                'confidence': 'high',
+            }], ensure_ascii=False), encoding='utf-8')
+            env = dict(os.environ)
+            env['XHS_HOST'] = 'workbuddy'
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'run_reassign_batch.py'),
+                    str(classification),
+                    str(report),
+                    '--execute',
+                ],
+                cwd=str(ROOT),
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn('xhs_workbuddy_execute', proc.stderr)
 
     def test_execute_binding_must_match_snapshot_browser_user_page_and_safety_session(self):
         safety_state = str(Path('/tmp/xhs-safety-state.json'))
@@ -904,6 +983,53 @@ function createTransactionModel(options) {
                 patch('run_reassign_batch.time.sleep') as sleep:
             execute_batch(classification, report, args, Path(tmp) / 'report.json')
         sleep.assert_called_once_with(2.5)
+
+    def test_execute_batch_creates_confirmed_boards_after_commit_before_moves(self):
+        args = type('Args', (), {
+            'browser': 'safari',
+            'arc_tab_marker': '',
+            'inter_item_delay_sec': 0,
+            'max_moves_per_session': 1,
+            'allow_low_confidence': False,
+            'verify_pages': 1,
+            'user_id': '',
+            'timeout_sec': 10,
+        })()
+        events = []
+
+        class Runner:
+            def eval(self, _js):
+                events.append('move')
+                return 'xhs_skill_123_456'
+
+            def close(self):
+                events.append('close')
+
+        report = {
+            'processed': [], 'errors': [], 'missing_boards': [],
+            'board_counts_before': {}, 'board_counts_after': {},
+        }
+        classification = [{
+            'id': 'note-1', 'title': '一', 'target_board': '阅读',
+            'confidence': 'high',
+        }]
+        result = {
+            'processed': [], 'errors': [], 'missing_boards': [],
+            'board_counts_before': {}, 'board_counts_after': {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
+                patch('run_reassign_batch.validate_execute_live_binding'), \
+                patch('run_reassign_batch.poll_browser_job', return_value=result):
+            execute_batch(
+                classification,
+                report,
+                args,
+                Path(tmp) / 'report.json',
+                commit_callback=lambda: events.append('commit'),
+                post_commit_callback=lambda _runner: events.append('create'),
+            )
+        self.assertEqual(events, ['commit', 'create', 'move', 'close'])
 
     def test_execute_batch_persists_first_error_then_stops_before_next_item(self):
         args = type('Args', (), {

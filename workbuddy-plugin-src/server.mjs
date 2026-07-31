@@ -32,7 +32,7 @@ let evidenceLedger;
 
 const RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
 const APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-const PLUGIN_VERSION = '2.0.4';
+const PLUGIN_VERSION = '2.0.5';
 const MCP_LAUNCH_KEY_FD = 3;
 const MCP_EXECUTE_READY_FD = 4;
 const MCP_EXECUTE_COMMIT_FD = 5;
@@ -167,6 +167,7 @@ function runBridge(
       env: {
         ...process.env,
         XHS_HOST: 'workbuddy',
+        XHS_WORKBUDDY_PLATFORM: process.platform,
         XHS_SKILL_ROOT: skillRoot,
         CODEBUDDY_PLUGIN_DATA: pluginData,
         XHS_PLAYWRIGHT_PROFILE: playwrightProfile,
@@ -349,9 +350,9 @@ const server = new McpServer(
       'deep 因尚无视频语音和完整时轴画面证据入口而在浏览器启动前停止；' +
       '禁止在 WorkBuddy 中运行无登录态 enrich_note_images.py 或静默改用元数据分类；' +
       'capture 后先调用不带 classification 的 prepare 读取真实已有专辑；' +
-      '分类只能从这些真实专辑中选择，不得使用预设主题；再带分类调用 prepare；' +
+      '分类优先选择真实已有专辑；没有合适专辑时只能依据本次真实内容提议新名称，不得使用预设主题；' +
       'capture、两次 prepare 和 execute 之间必须自动原样传递 evidence_receipt，用户无需处理；' +
-      '没有已有专辑时停止，不得生成默认类别；' +
+      '没有已有专辑时，把提议名称和公开或私密设置与逐条移动方案一起交给用户一次确认；' +
       '只有 prepare 返回 ' +
       'ready_for_execute=true、blockers=[] 且用户确认映射和上限后才可 execute。' +
       '禁止调用 Safari、Arc、系统 Chrome、CDP 或 osascript。',
@@ -364,7 +365,7 @@ server.registerTool(
   {
     title: '检查 WorkBuddy 小红书运行环境',
     description:
-      '离线检查插件宿主、独立 Playwright profile 和依赖；不打开浏览器、不访问小红书。',
+      '离线检查插件宿主、独立 Playwright profile 和依赖；Windows 使用独立 Edge profile，macOS/Linux 使用独立 Chromium；不打开浏览器、不访问小红书。',
     inputSchema: z.object({}),
   },
   async () => {
@@ -385,9 +386,9 @@ server.registerTool(
   {
     title: '安装 WorkBuddy 专用 Playwright',
     description:
-      '仅在用户明确同意下载依赖后调用。把 Python Playwright 和 Chromium 安装到插件持久化目录；不打开浏览器。',
+      '仅在用户明确同意安装依赖后调用。Windows 复用系统 Edge 程序但使用插件独立登录目录，不下载 Chromium；macOS/Linux 安装独立 Chromium；不打开浏览器。',
     inputSchema: z.object({
-      install_dependencies: z.boolean().describe('用户是否明确同意安装和下载 Playwright Chromium'),
+      install_dependencies: z.boolean().describe('用户是否明确同意安装 Playwright 运行依赖'),
     }),
   },
   async ({ install_dependencies }, extra) => {
@@ -411,7 +412,7 @@ server.registerTool(
   {
     title: '登录并定位小红书整理范围',
     description:
-      '在用户本轮明确授权后打开可见的专用 Chromium。用户只需完成登录；插件自动找到当前账号、进入所选收藏或点赞页、返回精确 URL 并关闭自己的浏览器。',
+      '在用户本轮明确授权后打开可见的 WorkBuddy 专用浏览器；Windows 为独立 Edge profile，macOS/Linux 为独立 Chromium。用户只需完成登录；插件自动定位范围并关闭自己创建的窗口。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确同意打开专用浏览器'),
       source: z.enum(['collection', 'liked']).describe('用户已选择的整理范围'),
@@ -514,7 +515,7 @@ server.registerTool(
   {
     title: '生成真实专辑证据与硬闸门 dry-run',
     description:
-      '两阶段固定入口：先强制核验完整抓取与所选 OCR 证据。第一次不传 classification，只读返回本次账号真实已有专辑和不含 URL/路径/凭据的完整 classification_inputs；第二次传入覆盖全部真实 ID 的 classification 和用户要确认的 max_moves_per_session，生成硬闸门 dry-run 与 approval_digest。两阶段都必须由 WorkBuddy 自动传递上一阶段 receipt，用户无需处理。',
+      '两阶段固定入口：第一次只读返回真实已有专辑和完整 classification_inputs；第二次提交覆盖全部真实 ID 的 classification。若需新专辑，同时提交仅依据本次内容生成的 proposed_board_names 与明确的公开或私密设置；专辑创建和逐条移动合并为一次用户确认并写入 approval_digest。两阶段 receipt 均由 WorkBuddy 自动传递，用户无需处理。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合授权只读核验此页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
@@ -536,6 +537,12 @@ server.registerTool(
         main_topic: z.string().default(''),
         content_summary: z.string().default(''),
       })).optional(),
+      proposed_board_names: z.array(z.string().min(1)).max(20).optional().describe(
+        '仅依据本次 classification_inputs 提议的新专辑名称；不得使用插件预设类别',
+      ),
+      new_board_privacy: z.enum(['public', 'private']).optional().describe(
+        '存在 proposed_board_names 时必填，并与创建及移动方案一起由用户确认',
+      ),
     }),
   },
   async ({
@@ -547,6 +554,8 @@ server.registerTool(
     verify_pages,
     max_moves_per_session,
     classification,
+    proposed_board_names,
+    new_board_privacy,
   }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
@@ -579,7 +588,15 @@ server.registerTool(
       });
       try {
         const inputPayload = { trusted_evidence: trustedEvidence };
-        if (classification !== undefined) inputPayload.classification = classification;
+        if (classification !== undefined) {
+          inputPayload.classification = classification;
+          if (proposed_board_names !== undefined) {
+            inputPayload.proposed_board_names = proposed_board_names;
+          }
+          if (new_board_privacy !== undefined) {
+            inputPayload.new_board_privacy = new_board_privacy;
+          }
+        }
         const payload = await runBridge(
           'prepare',
           args,
@@ -648,10 +665,10 @@ server.registerTool(
   {
     title: '执行用户已确认的小红书整理方案',
     description:
-      '真实写入工具。只有用户已看到逐条“当前专辑→目标专辑”、明确确认本次移动上限，并原样提供 prepare 返回的 approval_digest、max_moves_per_session 和 verify_pages 时才可调用。WorkBuddy 会自动传递已签名的单次 receipt，用户无需处理；任何证据或参数变化都会在打开浏览器前拒绝。',
+      '真实写入工具。只有用户已看到待创建专辑及隐私、逐条“当前专辑→目标专辑”和移动上限并明确确认后才可调用。若有新专辑，插件会在同一受管浏览器中先创建并核验为空，再移动收藏；任何证据或参数变化都会在打开浏览器前拒绝。receipt 由 WorkBuddy 自动传递，用户无需处理。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确授权专用浏览器写入'),
-      user_confirmed: z.boolean().describe('用户是否明确确认逐条映射和本次移动上限'),
+      user_confirmed: z.boolean().describe('用户是否明确确认待创建专辑及隐私、逐条映射和本次移动上限'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
       evidence_receipt: z.string().regex(RECEIPT_PATTERN).describe(
         '插件自动传递的 plan receipt；用户无需查看或复制',

@@ -2,7 +2,7 @@
 """WorkBuddy MCP 与现有 Skill 脚本之间的窄接口。
 
 只暴露固定工作流，不提供任意命令执行。所有浏览器阶段都由
-workbuddy_runtime.py 强制进入独立的 Playwright Chromium profile。
+workbuddy_runtime.py 强制进入独立的 Playwright 受管浏览器 profile。
 """
 
 import argparse
@@ -28,13 +28,20 @@ from extract_visible_items import (
     read_stable_items_snapshot,
     validate_capture_page,
 )
+from create_board import (
+    build_create_board_job,
+    validate_result as validate_create_board_result,
+)
 from run_reassign_batch import (
     BrowserRunner,
     execute_batch,
     execution_binding_blockers,
     initial_report,
     normalize_classification,
+    parse_browser_job_id,
+    poll_browser_job,
     prepare_execution_preflight,
+    validate_execute_live_binding,
 )
 from video_content_common import (
     normalize_content_type,
@@ -42,7 +49,9 @@ from video_content_common import (
 )
 from workbuddy_runtime import (
     apply_workbuddy_browser_policy,
+    find_windows_edge_executable,
     is_workbuddy_host,
+    workbuddy_browser_channel,
     workbuddy_profile_path,
     workbuddy_runtime_status,
 )
@@ -59,6 +68,7 @@ from xhs_ocr_common import (
 )
 from xhs_safety import (
     SafetyHaltedError,
+    classify_safety_error,
     ensure_active_session,
     halt_if_safety_error,
     mark_security_halted,
@@ -1853,6 +1863,59 @@ def browser_args(url: str = '') -> argparse.Namespace:
     return args
 
 
+def execute_planned_board_creations(
+    runner: BrowserRunner,
+    planned_boards: List[Dict[str, Any]],
+    execute_args: argparse.Namespace,
+    report: Dict[str, Any],
+) -> None:
+    results: List[Dict[str, Any]] = []
+    for planned in planned_boards:
+        raw_result: Any = None
+        try:
+            validate_execute_live_binding(runner, execute_args)
+            create_args = argparse.Namespace(
+                name=planned['name'],
+                desc='',
+                privacy=planned['privacy'],
+                execute=True,
+                user_id=execute_args.user_id,
+                verify_pages=execute_args.verify_pages,
+                timeout_sec=execute_args.timeout_sec,
+                arc_tab_marker='',
+                arc_expected_url_substring=execute_args.expected_url_substring,
+            )
+            run_id = parse_browser_job_id(
+                runner.eval(build_create_board_job(create_args))
+            )
+            raw_result = poll_browser_job(
+                runner, run_id, execute_args.timeout_sec
+            )
+            result = validate_create_board_result(raw_result, True)
+            validate_execute_live_binding(runner, execute_args)
+        except Exception as exc:
+            prior_or_current_write = bool(results) or bool(
+                isinstance(raw_result, dict)
+                and raw_result.get('writePerformed') is True
+            )
+            if prior_or_current_write and not classify_safety_error(exc):
+                raise RuntimeError(
+                    'HIGH_RISK_STATE_UNCERTAIN: board creation batch stopped '
+                    'after an account write; no rollback attempted; ' + str(exc)
+                ) from exc
+            raise
+        results.append({
+            'name': planned['name'],
+            'privacy': planned['privacy'],
+            'status': result['status'],
+            'board': result['board'],
+            'empty_board_verified': result.get('emptyBoardVerified') is True,
+            'write_performed': result.get('writePerformed') is True,
+        })
+        report['board_creations'] = list(results)
+    report['board_creations'] = results
+
+
 def run_command(args: List[str], *, allow_failure: bool = False) -> subprocess.CompletedProcess:
     popen_kwargs: Dict[str, Any] = {
         'cwd': str(ROOT),
@@ -1913,8 +1976,23 @@ def playwright_probe() -> Dict[str, Any]:
     except Exception:
         return {
             'python_package_ready': False,
+            'browser_channel': workbuddy_browser_channel(),
             'chromium_ready': False,
+            'browser_download_required': (
+                workbuddy_browser_channel() != 'msedge'
+            ),
             'install_required': True,
+        }
+    channel = workbuddy_browser_channel()
+    if channel == 'msedge':
+        edge = find_windows_edge_executable()
+        return {
+            'python_package_ready': True,
+            'browser_channel': channel,
+            'edge_ready': edge is not None,
+            'edge_executable': str(edge) if edge else None,
+            'browser_download_required': False,
+            'install_required': edge is None,
         }
     try:
         with sync_playwright() as playwright:
@@ -1922,14 +2000,18 @@ def playwright_probe() -> Dict[str, Any]:
             ready = executable.is_file()
             return {
                 'python_package_ready': True,
+                'browser_channel': channel,
                 'chromium_ready': ready,
                 'chromium_executable': str(executable),
+                'browser_download_required': not ready,
                 'install_required': not ready,
             }
     except Exception as exc:
         return {
             'python_package_ready': True,
+            'browser_channel': channel,
             'chromium_ready': False,
+            'browser_download_required': True,
             'install_required': True,
             'probe_error': str(exc),
         }
@@ -1959,11 +2041,21 @@ def setup_action() -> Dict[str, Any]:
         '--disable-pip-version-check',
         '--requirement', str(requirements),
     ])
-    run_command([str(python), '-m', 'playwright', 'install', 'chromium'])
+    channel = workbuddy_browser_channel()
+    if channel == 'msedge':
+        edge = find_windows_edge_executable()
+        if edge is None:
+            raise RuntimeError(
+                '未检测到 Microsoft Edge；请先安装系统 Edge，再重新运行 setup。'
+            )
+    else:
+        run_command([str(python), '-m', 'playwright', 'install', 'chromium'])
     marker = {
         'installed_at': utc_now(),
         'python': str(python),
         'requirements_sha256': sha256_file(requirements),
+        'browser_channel': channel,
+        'browser_executable': str(edge) if channel == 'msedge' else None,
     }
     write_private_json(data_dir / 'setup.json', marker)
     return {
@@ -1987,11 +2079,15 @@ def login_action(timeout_sec: int, source: str) -> Dict[str, Any]:
         raise RuntimeError('Playwright 尚未安装；先调用 xhs_workbuddy_setup。') from exc
 
     profile = workbuddy_profile_path()
+    managed_args = browser_args()
+    launch_args: Dict[str, Any] = {'headless': False}
+    if managed_args.channel != 'chromium':
+        launch_args['channel'] = managed_args.channel
     selected_url = ''
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             str(profile),
-            headless=False,
+            **launch_args,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
@@ -2616,6 +2712,46 @@ def validate_verify_pages(value: Any) -> int:
     return value
 
 
+def validate_proposed_board_plan(
+    proposed_board_names: Any,
+    new_board_privacy: Any,
+    existing_board_names: List[str],
+) -> List[Dict[str, Any]]:
+    if proposed_board_names is None:
+        proposed_board_names = []
+    if not isinstance(proposed_board_names, list):
+        raise RuntimeError('proposed_board_names 必须是数组。')
+    if len(proposed_board_names) > 20:
+        raise RuntimeError('一次最多提议创建 20 个专辑。')
+    existing = set(existing_board_names)
+    names: List[str] = []
+    for index, value in enumerate(proposed_board_names):
+        name = str(value or '')
+        if not name or name != name.strip() or any(ord(ch) < 32 for ch in name):
+            raise RuntimeError(
+                f'proposed_board_names[{index}] 必须是无首尾空白的非空名称。'
+            )
+        if name in existing:
+            raise RuntimeError(f'提议专辑已真实存在：{name}')
+        if name in names:
+            raise RuntimeError(f'提议专辑名称重复：{name}')
+        names.append(name)
+    if not names:
+        if new_board_privacy is not None:
+            raise RuntimeError('没有提议新专辑时不得传 new_board_privacy。')
+        return []
+    privacy_map = {'public': 0, 'private': 1}
+    privacy_key = str(new_board_privacy or '').strip().lower()
+    if privacy_key not in privacy_map:
+        raise RuntimeError(
+            '提议创建专辑时必须明确 new_board_privacy=public 或 private。'
+        )
+    return [
+        {'name': name, 'privacy': privacy_map[privacy_key]}
+        for name in names
+    ]
+
+
 def approval_basis(
     directory: Path,
     report: Dict[str, Any],
@@ -2887,6 +3023,8 @@ def prepare_action(
     classification_rows: Any = None,
     max_moves: Optional[int] = None,
     trusted_evidence: Any = None,
+    proposed_board_names: Any = None,
+    new_board_privacy: Any = None,
 ) -> Dict[str, Any]:
     require_workbuddy()
     directory = run_dir_for(run_id)
@@ -2956,7 +3094,6 @@ def prepare_action(
             expected,
             verify_pages,
         )
-        has_existing_boards = bool(existing_board_names)
         classification_inputs = workbuddy_classification_inputs(content_evidence)
         return {
             'ok': True,
@@ -2966,21 +3103,21 @@ def prepare_action(
             'board_snapshot': str(snapshot),
             'existing_board_names': existing_board_names,
             'existing_board_count': len(existing_board_names),
-            'classification_required': has_existing_boards,
+            'classification_required': True,
+            'board_creation_required': not bool(existing_board_names),
+            'board_creation_available': True,
             'classification_input_count': len(classification_inputs),
             'classification_inputs': classification_inputs,
             'verify_pages': verify_pages,
             'ready_for_execute': False,
-            'blockers': [] if has_existing_boards else ['no_existing_boards'],
+            'blockers': [],
             'approval_digest': None,
             'content_evidence': content_summary,
             'next_action': (
-                '只允许根据 classification_inputs，并从 existing_board_names 中'
-                '为全部真实 note id 选择目标专辑；禁止读取原始 image_items/ocr_results。'
-                '没有准确匹配时 target_board 留空，再带完整 classification 和用户将确认的'
-                ' max_moves_per_session 调用 prepare。'
-                if has_existing_boards
-                else '当前账号没有真实已有专辑；停止，不得生成或移动到预设类别。'
+                '只允许根据 classification_inputs 分类，禁止读取原始 image_items/ocr_results。'
+                '优先从 existing_board_names 选择；确需新专辑时，根据本次真实内容提议'
+                ' proposed_board_names，不得使用插件预设类别，并明确 new_board_privacy。'
+                '再带完整 classification 和用户将确认的 max_moves_per_session 调用 prepare。'
             ),
         }
 
@@ -2994,14 +3131,32 @@ def prepare_action(
         expected,
         verify_pages,
     )
-    if not existing_board_names:
-        raise RuntimeError('当前账号没有真实已有专辑；不能生成移动计划。')
+    planned_boards = validate_proposed_board_plan(
+        proposed_board_names,
+        new_board_privacy,
+        existing_board_names,
+    )
+    if not existing_board_names and not planned_boards:
+        raise RuntimeError(
+            '当前账号没有已有专辑；必须基于本次真实内容提议专辑名称并明确隐私。'
+        )
+    allowed_board_names = existing_board_names + [
+        row['name'] for row in planned_boards
+    ]
     classification_context = write_workbuddy_classification(
         directory,
         classification_rows,
-        existing_board_names,
+        allowed_board_names,
         content_evidence,
     )
+    used_targets = set(classification_context['taxonomy'])
+    unused_plans = [
+        row['name'] for row in planned_boards if row['name'] not in used_targets
+    ]
+    if unused_plans:
+        raise RuntimeError(
+            '不得创建没有任何真实条目使用的专辑：' + ', '.join(unused_plans)
+        )
     run_command([
         sys.executable,
         str(ROOT / 'scripts/build_created_boards.py'),
@@ -3009,6 +3164,23 @@ def prepare_action(
         str(snapshot),
         str(created),
     ])
+    generated_created = load_json(created)
+    if not isinstance(generated_created, dict):
+        raise RuntimeError('created_boards.json 格式无效。')
+    expected_missing = {row['name'] for row in planned_boards}
+    actual_missing = set(generated_created.get('missing') or [])
+    if actual_missing != expected_missing:
+        raise RuntimeError(
+            '待创建专辑与只读清单核验结果不一致；必须重新获取专辑快照。'
+        )
+    write_private_json(created, {
+        'confirmed': generated_created.get('confirmed') or [],
+        'planned': planned_boards,
+        'created': [],
+        'missing': [],
+        'failed': [],
+        'action_required': '',
+    })
     proc = run_command([
         sys.executable,
         str(ROOT / 'scripts/run_reassign_batch.py'),
@@ -3017,6 +3189,7 @@ def prepare_action(
         '--board-snapshot', str(snapshot),
         '--created-boards', str(created),
         '--safety-state', str(safety),
+        '--allow-planned-board-creation',
     ], allow_failure=True)
     if not report_path.is_file():
         details = proc.stderr.strip() or proc.stdout.strip() or f'exit={proc.returncode}'
@@ -3057,6 +3230,7 @@ def prepare_action(
         'board_validation_status': report.get('board_validation_status'),
         'membership_validation_status': report.get('membership_validation_status'),
         'planned_move_count': planned_move_count,
+        'planned_board_creations': planned_boards,
         'max_moves_per_session': max_moves,
         'verify_pages': verify_pages,
         'processed': report.get('processed'),
@@ -3256,6 +3430,7 @@ def execute_action(
         snapshot_payload,
         created_payload,
         allow_low_confidence=False,
+        allow_planned_board_creation=True,
     )
     resolved = preflight.pop('resolved_items')
     if preflight.get('ready_for_execute') is not True or preflight.get('blockers') != []:
@@ -3290,12 +3465,22 @@ def execute_action(
     if _launch_capability is not _MCP_EXECUTE_CAPABILITY:
         raise RuntimeError('mcp_execute_launch_capability_missing')
     require_profile_available()
+    planned_board_creations = preflight.get('planned_board_creations') or []
+    execute_kwargs: Dict[str, Any] = {
+        'commit_callback': await_mcp_execute_commit,
+    }
+    if planned_board_creations:
+        execute_kwargs['post_commit_callback'] = (
+            lambda runner: execute_planned_board_creations(
+                runner, planned_board_creations, execute_args, execution_report
+            )
+        )
     execute_batch(
         resolved,
         execution_report,
         execute_args,
         report_path,
-        commit_callback=await_mcp_execute_commit,
+        **execute_kwargs,
     )
     if not report_path.is_file():
         raise RuntimeError('执行未生成 run_report.json。')
@@ -3307,6 +3492,7 @@ def execute_action(
         'session_status': final_report.get('session_status'),
         'processed': final_report.get('processed'),
         'errors': final_report.get('errors'),
+        'board_creations': final_report.get('board_creations', []),
         'verify_pages': verify_pages,
         'report': str(report_path),
     }
@@ -3405,6 +3591,8 @@ def main() -> None:
                 classification_rows,
                 args.max_moves_per_session,
                 trusted_evidence,
+                payload.get('proposed_board_names') if payload else None,
+                payload.get('new_board_privacy') if payload else None,
             )
         else:
             trusted_evidence = None

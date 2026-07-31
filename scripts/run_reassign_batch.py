@@ -26,7 +26,7 @@ from xhs_safety import (
     redact_persisted_errors,
     resolve_safety_state_path,
 )
-from workbuddy_runtime import apply_workbuddy_browser_policy
+from workbuddy_runtime import apply_workbuddy_browser_policy, is_workbuddy_host
 
 
 LOGIN_MARKERS = ('手机号登录', '登录后推荐', '马上登录即可', '扫码登录', '验证码登录')
@@ -722,6 +722,7 @@ def prepare_execution_preflight(
     created_boards: Any,
     *,
     allow_low_confidence: bool,
+    allow_planned_board_creation: bool = False,
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     warnings: List[str] = []
@@ -747,8 +748,8 @@ def prepare_execution_preflight(
         blockers.append('within_board_duplicates')
     if validation.get('full_membership_complete') is not True:
         blockers.append('full_membership_incomplete')
-    if not isinstance(boards, list) or not boards:
-        raise ExecutionPreflightError('board_snapshot.boards must be a non-empty array')
+    if not isinstance(boards, list):
+        raise ExecutionPreflightError('board_snapshot.boards must be an array')
 
     board_by_name: Dict[str, Dict[str, str]] = {}
     board_by_id: Dict[str, Dict[str, str]] = {}
@@ -798,6 +799,36 @@ def prepare_execution_preflight(
         raise ExecutionPreflightError('created_boards must be an object')
     confirmed_boards = set(_normalize_string_list(created_boards.get('confirmed'), 'created_boards.confirmed'))
     declared_missing = set(_normalize_string_list(created_boards.get('missing'), 'created_boards.missing'))
+    planned_rows = created_boards.get('planned', [])
+    if not isinstance(planned_rows, list):
+        raise ExecutionPreflightError('created_boards.planned must be an array')
+    planned_boards: List[Dict[str, Any]] = []
+    planned_board_names = set()
+    for index, entry in enumerate(planned_rows):
+        if not isinstance(entry, dict):
+            raise ExecutionPreflightError(
+                f'created_boards.planned[{index}] must be an object'
+            )
+        name = str(entry.get('name') or '').strip()
+        privacy = entry.get('privacy')
+        if not name or privacy not in {0, 1} or isinstance(privacy, bool):
+            raise ExecutionPreflightError(
+                f'created_boards.planned[{index}] has invalid name/privacy'
+            )
+        if name in planned_board_names:
+            raise ExecutionPreflightError('created_boards.planned names must be unique')
+        if name in confirmed_boards or name in board_by_name or name in declared_missing:
+            raise ExecutionPreflightError(
+                f'planned board conflicts with inventory state: {name}'
+            )
+        planned_board_names.add(name)
+        planned_boards.append({'name': name, 'privacy': privacy})
+    if planned_boards and not allow_planned_board_creation:
+        raise ExecutionPreflightError(
+            'planned board creation requires explicit allow_planned_board_creation'
+        )
+    if not boards and not planned_boards:
+        raise ExecutionPreflightError('board_snapshot.boards must be a non-empty array')
 
     resolved_items: List[Dict[str, Any]] = []
     required_targets = set()
@@ -832,6 +863,16 @@ def prepare_execution_preflight(
             resolved_items.append(resolved)
             continue
         target = board_by_name.get(target_board)
+        target_is_planned = (
+            allow_planned_board_creation and target_board in planned_board_names
+        )
+        if target_is_planned:
+            resolved['membership_state'] = 'target_board_planned'
+            resolved['source_board'] = ''
+            resolved['source_board_id'] = ''
+            membership_counts['not_in_any_board'] += 1
+            resolved_items.append(resolved)
+            continue
         if not target or target_board not in confirmed_boards or target_board in declared_missing:
             missing_targets.add(target_board)
             resolved_items.append(resolved)
@@ -869,7 +910,14 @@ def prepare_execution_preflight(
         resolved_items.append(resolved)
 
     for target in sorted(required_targets):
-        if target not in board_by_name or target not in confirmed_boards or target in declared_missing:
+        if (
+            target not in planned_board_names
+            and (
+                target not in board_by_name
+                or target not in confirmed_boards
+                or target in declared_missing
+            )
+        ):
             missing_targets.add(target)
     blockers.extend(f'missing_target_board:{name}' for name in sorted(missing_targets))
     blockers = list(dict.fromkeys(blockers))
@@ -886,6 +934,7 @@ def prepare_execution_preflight(
         ),
         'membership_validation_status': 'verified' if ready else 'blocked',
         'missing_boards': sorted(missing_targets),
+        'planned_board_creations': planned_boards,
         'required_target_boards': sorted(required_targets),
         'membership_counts': membership_counts,
         'resolved_items': resolved_items,
@@ -1524,6 +1573,7 @@ def execute_batch(
     args: argparse.Namespace,
     report_path: Path,
     commit_callback: Optional[Callable[[], None]] = None,
+    post_commit_callback: Optional[Callable[['BrowserRunner'], None]] = None,
 ) -> None:
     backend = choose_backend(args.browser, args)
     arc_selector = {
@@ -1577,6 +1627,30 @@ def execute_batch(
             validate_execute_live_binding(runner, args)
             commit_callback()
             ensure_active_session(safety_state, stage='move', policy=move_policy)
+        if post_commit_callback is not None:
+            try:
+                post_commit_callback(runner)
+            except Exception as exc:
+                classified = classify_safety_error(exc)
+                if isinstance(exc, SafetyHaltedError) or classified:
+                    reason_code, message = classified or ('security_challenge', str(exc))
+                    mark_security_halted(
+                        safety_state,
+                        stage='create_board',
+                        reason_code=reason_code,
+                        message=message,
+                    )
+                    report['security_halted'] = True
+                    report['safety_halt'] = {
+                        'reason_code': reason_code,
+                        'message': message,
+                        'state_file': str(safety_state),
+                    }
+                report['session_status'] = 'stopped_on_board_creation_error'
+                report['board_creation_error'] = str(exc)
+                report['updated_at'] = utc_now()
+                write_json(report_path, report)
+                raise
         for index, item in enumerate(planned_items):
             if index > 0 and inter_item_delay_sec > 0:
                 time.sleep(inter_item_delay_sec)
@@ -1670,7 +1744,18 @@ def main() -> None:
     parser.add_argument('--resume', action='store_true', help='读取已有 run_report.json，跳过已经 success 且核验过的条目')
     parser.add_argument('--board-snapshot', default='', help='capture_board_snapshot.py 生成的只读全专辑快照；与 --created-boards 同时提供后才生成可执行 dry-run')
     parser.add_argument('--created-boards', default='', help='build_created_boards.py 生成的目标专辑核验结果；与 --board-snapshot 同时提供')
+    parser.add_argument('--allow-planned-board-creation', action='store_true', help='仅供受信 WorkBuddy dry-run：允许审批证据中声明待创建专辑')
     args = parser.parse_args()
+
+    if args.execute and is_workbuddy_host():
+        raise SystemExit(
+            'WorkBuddy 中禁止直接运行 --execute；必须通过 xhs_workbuddy_execute 的签名审批通路。'
+        )
+    if args.execute and args.allow_planned_board_creation:
+        raise SystemExit(
+            '--allow-planned-board-creation 只能用于受信 WorkBuddy dry-run；'
+            '真实执行必须由插件在同一会话中创建并核验专辑。'
+        )
 
     classification = normalize_classification(load_json(args.classification))
     has_snapshot = bool(str(args.board_snapshot or '').strip())
@@ -1697,6 +1782,7 @@ def main() -> None:
             load_json(str(snapshot_path)),
             load_json(str(created_boards_path)),
             allow_low_confidence=args.allow_low_confidence,
+            allow_planned_board_creation=args.allow_planned_board_creation,
         )
         classification = preflight.pop('resolved_items')
         report.update(preflight)

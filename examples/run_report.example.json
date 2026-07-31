@@ -11,16 +11,16 @@
     {
       "id": "69538be3000000001e028205",
       "title": "技能练反脚不用从头练",
-      "target_board": "滑雪",
+      "target_board": "示例主题A",
       "status": "success",
       "attempt": 1,
-      "events": ["board:FOUND:滑雪", "note_move:CALLED", "verify:note_present"],
+      "events": ["board:FOUND:示例主题A", "note_move:CALLED", "verify:note_present"],
       "error": "",
       "verified": true
     }
   ],
   "errors": [],
   "missing_boards": [],
-  "board_counts_before": {"滑雪": 76},
-  "board_counts_after": {"滑雪": 77}
+  "board_counts_before": {"示例主题A": 76},
+  "board_counts_after": {"示例主题A": 77}
 }

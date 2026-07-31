@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -40,11 +41,12 @@ class WorkBuddyRuntimeTests(unittest.TestCase):
         self.assertTrue(is_workbuddy_host({'XHS_HOST': 'workbuddy'}))
         self.assertTrue(is_workbuddy_host({'XHS_HOST': ' WorkBuddy '}))
 
-    def test_workbuddy_forces_dedicated_playwright_chromium(self):
+    def test_workbuddy_forces_dedicated_playwright_chromium_on_macos(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             env = {
                 'XHS_HOST': 'workbuddy',
+                'XHS_WORKBUDDY_PLATFORM': 'darwin',
                 'CODEBUDDY_PLUGIN_DATA': str(data_dir),
                 'XHS_PLAYWRIGHT_PROFILE': str(data_dir / 'playwright-profile'),
             }
@@ -58,6 +60,41 @@ class WorkBuddyRuntimeTests(unittest.TestCase):
             )
             self.assertIsNone(args.cdp_url)
             self.assertFalse(args.headless)
+
+    def test_windows_workbuddy_forces_managed_edge_with_dedicated_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            env = {
+                'XHS_HOST': 'workbuddy',
+                'XHS_WORKBUDDY_PLATFORM': 'win32',
+                'CODEBUDDY_PLUGIN_DATA': str(data_dir),
+                'XHS_PLAYWRIGHT_PROFILE': str(data_dir / 'playwright-profile'),
+            }
+            args = browser_args()
+            backend = apply_workbuddy_browser_policy('auto', args, env=env)
+            self.assertEqual(backend, 'playwright')
+            self.assertEqual(args.channel, 'msedge')
+            self.assertEqual(
+                Path(args.user_data_dir).resolve(),
+                (data_dir / 'playwright-profile').resolve(),
+            )
+            self.assertIsNone(args.cdp_url)
+            self.assertFalse(args.headless)
+
+    def test_windows_runtime_status_reports_managed_edge_not_user_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            env = {
+                'XHS_HOST': 'workbuddy',
+                'XHS_WORKBUDDY_PLATFORM': 'win32',
+                'CODEBUDDY_PLUGIN_DATA': str(data_dir),
+                'XHS_PLAYWRIGHT_PROFILE': str(data_dir / 'playwright-profile'),
+            }
+            status = workbuddy_runtime_status(env)
+            self.assertEqual(status['browser_channel'], 'msedge')
+            self.assertEqual(status['browser_product'], 'Microsoft Edge')
+            self.assertTrue(status['dedicated_profile'])
+            self.assertFalse(status['uses_user_browser_profile'])
 
     def test_workbuddy_rejects_every_external_browser_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +199,25 @@ class WorkBuddyRuntimeTests(unittest.TestCase):
                 runner = BrowserRunner('auto', browser_args())
             self.assertEqual(runner.backend, 'playwright')
             open_playwright.assert_called_once_with()
+
+    def test_workbuddy_rejects_direct_capture_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ)
+            env['XHS_HOST'] = 'workbuddy'
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'extract_visible_items.py'),
+                    str(Path(tmp) / 'visible.json'),
+                    '--backend', 'playwright',
+                ],
+                cwd=str(ROOT),
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn('xhs_workbuddy_capture', proc.stderr)
 
     def test_playwright_startup_navigation_failure_closes_created_context(self):
         class FailingPage:

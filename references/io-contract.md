@@ -84,23 +84,23 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 最小格式：
 
 ```json
-{"boards":["滑雪"]}
+{"boards":["示例主题A"]}
 ```
 
 带专辑内容格式：
 
 ```json
-{"boards":[{"name":"滑雪","notes":[{"id":"694d3390000000002203ae33","title":"固定器角度"}]}]}
+{"boards":[{"name":"示例主题A","notes":[{"id":"694d3390000000002203ae33","title":"固定器角度"}]}]}
 ```
 
 ## 输出
 ### `existing_boards_inventory.json`
 ```json
 {
-  "boards": ["滑雪"],
+  "boards": ["示例主题A"],
   "excluded_note_ids": ["694d3390000000002203ae33"],
   "note_to_board": {
-    "694d3390000000002203ae33": "滑雪"
+    "694d3390000000002203ae33": "示例主题A"
   },
   "generated_at": "2026-05-09T00:00:00Z"
 }
@@ -230,11 +230,11 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
   {
     "id": "694d3390000000002203ae33",
     "status": "success",
-    "main_topic": "单板滑雪固定器角度设置",
+    "main_topic": "示例主题A固定器角度设置",
     "content_summary": "解释固定器角度对站姿的影响，并建议按个人前后脚习惯调整。",
-    "target_board": "滑雪",
+    "target_board": "示例主题A",
     "confidence": "high",
-    "reason": ["核心内容是单板滑雪装备设置", "完整转写持续讨论固定器角度"],
+    "reason": ["核心内容是示例主题A装备设置", "完整转写持续讨论固定器角度"],
     "transcript_sha256": "0123456789abcdef",
     "analysis_provider": "mimo-vl-mlx",
     "analysis_model": "/Users/example/Documents/MiMo-VL-7B-RL-2508/models/MiMo-VL-7B-RL-2508",
@@ -331,9 +331,9 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
   {
     "id": "694d3390000000002203ae33",
     "title": "听CASI考官详细拆解什么固定器角度适合你？",
-    "target_board": "滑雪",
+    "target_board": "示例主题A",
     "confidence": "high",
-    "reason": ["核心内容是单板滑雪装备设置", "完整转写持续讨论固定器角度"],
+    "reason": ["核心内容是示例主题A装备设置", "完整转写持续讨论固定器角度"],
     "review_state": "video_content_classified",
     "content_type": "video",
     "classification_basis": "video_content",
@@ -341,7 +341,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "video_analysis_basis": "full_timeline_visual_with_transcript",
     "visual_status": "analyzed",
     "analysis_provider": "mimo-vl-mlx",
-    "main_topic": "单板滑雪固定器角度设置",
+    "main_topic": "示例主题A固定器角度设置",
     "content_summary": "解释固定器角度对站姿的影响，并建议按个人前后脚习惯调整。",
     "ocr_status": "skipped",
     "ocr_confidence": null,
@@ -360,7 +360,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "title": "已在用户保留专辑中的图文笔记",
     "target_board": "",
     "confidence": "high",
-    "reason": ["滑雪", "固定器"],
+    "reason": ["示例主题A", "固定器"],
     "review_state": "classified",
     "ocr_status": "skipped",
     "ocr_confidence": null,
@@ -371,7 +371,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "ocr_image_evidence": [],
     "excluded": true,
     "exclude_reason": "user_kept_existing_boards",
-    "source_board": "滑雪"
+    "source_board": "示例主题A"
   }
 ]
 ```
@@ -380,7 +380,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 ### `created_boards.json`
 ```json
-{"confirmed":["穿搭发型与品味","滑雪"],"created":[],"missing":["体态纠正与康复"],"failed":[],"action_required":"Create missing boards manually in Xiaohongshu before running --execute."}
+{"confirmed":["穿搭发型与品味","示例主题A"],"created":[],"missing":["体态纠正与康复"],"failed":[],"action_required":"Create missing boards manually in Xiaohongshu before running --execute."}
 ```
 
 ### `board_snapshot.json`
@@ -392,7 +392,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 没有两份专辑证据时，报告必须是 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，所有可分类项只能是 `preview_only`，不能是 `planned`。真实 dry-run 只有同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才可提交用户确认。未归档成功项应出现 `note_move:CALLED`、`verify:note_present`。跨专辑成功项应出现 `transaction:uncollect`、`transaction:recollect`、`transaction:move`、`transaction:target_verified`。跨专辑非安全失败会严格回滚到真实 `source_board_id`；回滚成功仍是失败。Python 每次只提交一条，首个错误行先写入报告再停止整批。安全验证或页面绑定失效后立即停写，不追加回滚写操作。
 
 ```json
-{"started_at":"2026-04-17T01:17:03Z","mode":"execute","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4个技能直接出活","target_board":"滑雪","status":"success","attempt":1,"events":["board:FOUND:滑雪","note_move:CALLED","verify:note_present"],"error":"","verified":true}],"errors":[],"missing_boards":[],"board_counts_before":{"滑雪":76},"board_counts_after":{"滑雪":77}}
+{"started_at":"2026-04-17T01:17:03Z","mode":"execute","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4个技能直接出活","target_board":"示例主题A","status":"success","attempt":1,"events":["board:FOUND:示例主题A","note_move:CALLED","verify:note_present"],"error":"","verified":true}],"errors":[],"missing_boards":[],"board_counts_before":{"示例主题A":76},"board_counts_after":{"示例主题A":77}}
 ```
 
 ### `retry_queue.json`

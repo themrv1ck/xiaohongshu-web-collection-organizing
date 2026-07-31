@@ -18,7 +18,7 @@ from xhs_safety import (
     mark_security_halted,
     resolve_safety_state_path,
 )
-from workbuddy_runtime import apply_workbuddy_browser_policy
+from workbuddy_runtime import apply_workbuddy_browser_policy, is_workbuddy_host
 
 
 def write_private_json(path: Path, data) -> None:
@@ -871,6 +871,11 @@ def main():
     parser.add_argument('--arc-tab-marker', default='', help='Arc 抓取必填：用户预先写入工作标签页 window.name 的唯一标记；只核验不写入')
     parser.add_argument('--arc-expected-url-substring', default='', help='Arc 抓取必填：当前收藏/点赞页面 URL 的稳定片段')
     args = parser.parse_args()
+
+    if is_workbuddy_host():
+        raise SystemExit(
+            'WorkBuddy 中禁止直接运行抓取脚本；必须通过 xhs_workbuddy_capture 的完整覆盖证据通路。'
+        )
 
     out = Path(args.out)
     manifest = Path(args.manifest) if args.manifest else None

@@ -34,9 +34,11 @@ from workbuddy_bridge import (  # noqa: E402
     download_workbuddy_authenticated_images,
     enrich_workbuddy_image_items,
     execute_action,
+    execute_planned_board_creations,
     login_action,
     metadata_quality,
     prepare_action,
+    setup_action,
     run_command,
     run_workbuddy_ocr,
     status_action,
@@ -366,6 +368,34 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             self.assertTrue(status['ok'])
             self.assertEqual(status['runtime']['host'], 'workbuddy')
             self.assertIn('install_required', status['dependencies'])
+
+    def test_windows_setup_reuses_system_edge_without_downloading_chromium(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            env = {
+                **self.workbuddy_env(data_dir),
+                'XHS_WORKBUDDY_PLATFORM': 'win32',
+            }
+            commands = []
+
+            def fake_run_command(args, **_kwargs):
+                commands.append(args)
+                return subprocess.CompletedProcess(args, 0, '', '')
+
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch('workbuddy_bridge.run_command', side_effect=fake_run_command),
+                patch(
+                    'workbuddy_bridge.find_windows_edge_executable',
+                    return_value=Path('C:/Program Files/Microsoft/Edge/Application/msedge.exe'),
+                ),
+            ):
+                result = setup_action()
+
+        self.assertEqual(result['browser_channel'], 'msedge')
+        self.assertFalse(any(
+            command[-2:] == ['install', 'chromium'] for command in commands
+        ))
 
     def test_capture_defaults_to_v2_controlled_group_contract(self):
         target_url = (
@@ -1194,7 +1224,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         self.assertEqual(command.call_count, 1)
         self.assertIn('capture_board_snapshot.py', command.call_args.args[0][1])
 
-    def test_prepare_first_phase_stops_when_account_has_no_existing_boards(self):
+    def test_prepare_first_phase_offers_bound_board_creation_when_account_is_empty(self):
         user_id = '66d19b54000000001d03a93d'
         expected = f'/user/profile/{user_id}'
         page_url = f'https://www.xiaohongshu.com{expected}?tab=fav'
@@ -1231,8 +1261,100 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 )
 
         self.assertEqual(result['existing_board_names'], [])
-        self.assertFalse(result['classification_required'])
-        self.assertEqual(result['blockers'], ['no_existing_boards'])
+        self.assertTrue(result['classification_required'])
+        self.assertTrue(result['board_creation_required'])
+        self.assertEqual(result['blockers'], [])
+        self.assertIn('proposed_board_names', result['next_action'])
+
+    def test_prepare_zero_board_plan_binds_proposed_boards_and_privacy(self):
+        user_id = '66d19b54000000001d03a93d'
+        note_id = '66d19b54000000001d03a93e'
+        expected = f'/user/profile/{user_id}'
+        page_url = f'https://www.xiaohongshu.com{expected}?tab=fav'
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            directory = data_dir / 'runs' / 'run-1'
+            directory.mkdir(parents=True)
+            self.write_capture_contract(directory, [{
+                'id': note_id,
+                'title': '一本书的读后感',
+                'content_type': 'image',
+            }])
+            (directory / 'board_snapshot.json').write_text(json.dumps({
+                'mode': 'read_only',
+                'source': {
+                    'browser': 'playwright',
+                    'writes_performed': False,
+                    'user_id': user_id,
+                    'expected_url_substring': page_url,
+                    'live_page_binding': page_url,
+                    'live_account_user_id': user_id,
+                    'verify_pages': 100,
+                },
+                'boards': [],
+                'validation': {
+                    'pagination_cursor_invariants_passed': True,
+                    'board_names_unique': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': True,
+                },
+            }, ensure_ascii=False), encoding='utf-8')
+            trusted = self.trusted_evidence(directory, 'inventory')
+            commands = []
+
+            def fake_run_command(args, **_kwargs):
+                commands.append(args)
+                if 'build_created_boards.py' in args[1]:
+                    Path(args[4]).write_text(json.dumps({
+                        'confirmed': [],
+                        'created': [],
+                        'missing': ['阅读'],
+                        'failed': [],
+                    }, ensure_ascii=False), encoding='utf-8')
+                elif 'run_reassign_batch.py' in args[1]:
+                    Path(args[3]).write_text(json.dumps({
+                        'mode': 'dry_run',
+                        'ready_for_execute': True,
+                        'blockers': [],
+                        'warnings': [],
+                        'processed': [{
+                            'id': note_id,
+                            'target_board': '阅读',
+                            'source_board_id': '',
+                            'membership_state': 'target_board_planned',
+                            'status': 'planned',
+                        }],
+                    }, ensure_ascii=False), encoding='utf-8')
+                return subprocess.CompletedProcess(args, 0, '{}', '')
+
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch('workbuddy_bridge.run_command', side_effect=fake_run_command),
+            ):
+                result = prepare_action(
+                    'run-1', user_id, page_url, expected, 100,
+                    [{
+                        'id': note_id,
+                        'target_board': '阅读',
+                        'confidence': 'high',
+                        'reason': ['真实内容与提议专辑一致'],
+                    }],
+                    max_moves=10,
+                    trusted_evidence=trusted,
+                    proposed_board_names=['阅读'],
+                    new_board_privacy='private',
+                )
+            created = json.loads(
+                (directory / 'created_boards.json').read_text(encoding='utf-8')
+            )
+
+        self.assertTrue(result['ready_for_execute'])
+        self.assertEqual(result['planned_board_creations'], [
+            {'name': '阅读', 'privacy': 1},
+        ])
+        self.assertEqual(created['planned'], [{'name': '阅读', 'privacy': 1}])
+        self.assertEqual(created['missing'], [])
+        self.assertTrue(any('--allow-planned-board-creation' in args for args in commands))
 
     def test_prepare_second_phase_reuses_bound_snapshot_and_rejects_new_categories(self):
         user_id = '66d19b54000000001d03a93d'
@@ -3032,6 +3154,85 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                     'write_started',
                 ],
             )
+
+    def test_planned_board_creation_uses_same_runner_and_records_verified_result(self):
+        runner = types.SimpleNamespace(
+            eval=lambda _job: 'xhs_skill_123_456',
+        )
+        args = types.SimpleNamespace(
+            user_id='66d19b54000000001d03a93d',
+            verify_pages=100,
+            timeout_sec=120,
+            expected_url_substring=(
+                'https://www.xiaohongshu.com/user/profile/'
+                '66d19b54000000001d03a93d?tab=fav'
+            ),
+        )
+        report = {}
+        with (
+            patch('workbuddy_bridge.validate_execute_live_binding') as binding,
+            patch('workbuddy_bridge.poll_browser_job', return_value={
+                'status': 'created',
+                'writePerformed': True,
+                'board': {
+                    'id': 'a' * 24,
+                    'name': '阅读',
+                    'privacy': 1,
+                },
+                'emptyBoardVerified': True,
+            }),
+        ):
+            execute_planned_board_creations(
+                runner,
+                [{'name': '阅读', 'privacy': 1}],
+                args,
+                report,
+            )
+
+        self.assertEqual(binding.call_count, 2)
+        self.assertEqual(report['board_creations'], [{
+            'name': '阅读',
+            'privacy': 1,
+            'status': 'created',
+            'board': {'id': 'a' * 24, 'name': '阅读', 'privacy': 1},
+            'empty_board_verified': True,
+            'write_performed': True,
+        }])
+
+    def test_planned_board_batch_marks_partial_creation_as_uncertain(self):
+        runner = types.SimpleNamespace(eval=lambda _job: 'xhs_skill_123_456')
+        args = types.SimpleNamespace(
+            user_id='66d19b54000000001d03a93d',
+            verify_pages=100,
+            timeout_sec=120,
+            expected_url_substring=(
+                'https://www.xiaohongshu.com/user/profile/'
+                '66d19b54000000001d03a93d?tab=fav'
+            ),
+        )
+        first = {
+            'status': 'created',
+            'writePerformed': True,
+            'board': {'id': 'a' * 24, 'name': '阅读', 'privacy': 1},
+            'emptyBoardVerified': True,
+        }
+        with (
+            patch('workbuddy_bridge.validate_execute_live_binding'),
+            patch(
+                'workbuddy_bridge.poll_browser_job',
+                side_effect=[first, RuntimeError('second board preflight failed')],
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'HIGH_RISK_STATE_UNCERTAIN'):
+                execute_planned_board_creations(
+                    runner,
+                    [
+                        {'name': '阅读', 'privacy': 1},
+                        {'name': '旅行', 'privacy': 1},
+                    ],
+                    args,
+                    {},
+                )
 
 
 if __name__ == '__main__':

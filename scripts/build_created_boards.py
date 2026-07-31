@@ -29,7 +29,7 @@ def normalize_board_names(value):
 def main():
     parser = argparse.ArgumentParser(description='核对目标专辑体系和已有专辑，输出 created_boards.json。')
     parser.add_argument('taxonomy', help='board_taxonomy.json 或 templates/board_taxonomy.template.json')
-    parser.add_argument('existing_boards', help='现有专辑列表 JSON，例如 {"boards":["滑雪"]}')
+    parser.add_argument('existing_boards', help='现有专辑列表 JSON，例如 {"boards":["示例主题A"]}')
     parser.add_argument('out', help='created_boards.json 输出路径')
     args = parser.parse_args()
 
