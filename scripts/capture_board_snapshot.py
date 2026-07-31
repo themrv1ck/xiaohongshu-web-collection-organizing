@@ -88,6 +88,7 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
         'browser': backend,
         'user_id': args.user_id,
         'expected_url_substring': args.expected_url_substring,
+        'verify_pages': args.verify_pages,
         'safety_state': str(safety_state),
     })
     count_mismatch_boards = [
@@ -100,6 +101,7 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
     snapshot['validation']['full_membership_complete'] = all([
         snapshot['validation']['pagination_cursor_invariants_passed'],
         not snapshot['validation']['within_board_duplicates'],
+        snapshot['validation']['display_count_consistent'],
     ])
     write_json(output_path, snapshot)
     return snapshot

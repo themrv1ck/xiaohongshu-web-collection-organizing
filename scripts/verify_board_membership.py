@@ -6,6 +6,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import parse_qs, urlparse
 
 from run_reassign_batch import (
     BOARD_VERIFICATION_JS,
@@ -216,11 +217,33 @@ def validate_input_contract(
 
 
 def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str, expected_url_substring: str) -> str:
+    parsed_expected = urlparse(str(expected_url_substring or '').strip())
+    expected_match = re.fullmatch(
+        r'/user/profile/([0-9a-fA-F]{24})/?',
+        parsed_expected.path,
+    )
+    expected_tab = (
+        parse_qs(parsed_expected.query).get('tab') or ['']
+    )[0].strip().lower()
+    strict_binding = None
+    if (
+        parsed_expected.scheme == 'https'
+        and expected_match
+        and expected_match.group(1).lower() == str(user_id).strip().lower()
+        and expected_tab in {'fav', 'liked', 'like'}
+    ):
+        strict_binding = {
+            'origin': f'{parsed_expected.scheme}://{parsed_expected.netloc}',
+            'path': parsed_expected.path.rstrip('/'),
+            'tab': expected_tab,
+            'userId': str(user_id).strip().lower(),
+        }
     payload = {
         'userId': user_id,
         'verifyPages': verify_pages,
         'expectedTabMarker': expected_tab_marker,
         'expectedUrlSubstring': expected_url_substring,
+        'strictBinding': strict_binding,
     }
     job = r'''
 (function() {
@@ -258,7 +281,23 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
     if (payload.expectedTabMarker && window.name !== payload.expectedTabMarker) {
       throw new Error('Arc worker runtime marker no longer matches');
     }
-    if (payload.expectedUrlSubstring && !location.includes(payload.expectedUrlSubstring)) {
+    if (payload.strictBinding) {
+      const current = new URL(location);
+      const tab = String(current.searchParams.get('tab') || '').trim().toLowerCase();
+      if (
+        current.origin !== payload.strictBinding.origin
+        || current.pathname.replace(/\/$/, '') !== payload.strictBinding.path
+        || tab !== payload.strictBinding.tab
+      ) throw new Error('current profile page binding no longer matches');
+      const own = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'))
+        .find(link => (link.textContent || '').trim() === '我');
+      if (!own) throw new Error('current account cannot be verified');
+      const ownUrl = new URL(own.getAttribute('href') || '', window.location.origin);
+      const ownMatch = ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
+      if (!ownMatch || ownMatch[1].toLowerCase() !== payload.strictBinding.userId) {
+        throw new Error('current account no longer matches');
+      }
+    } else if (payload.expectedUrlSubstring && !location.includes(payload.expectedUrlSubstring)) {
       throw new Error('Arc worker expected URL no longer matches');
     }
     if (/手机号登录|登录后推荐|马上登录即可|扫码登录|验证码登录/.test(bodyText)) {
@@ -285,15 +324,20 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
     if (!response || typeof response !== 'object' || Array.isArray(response)) {
       throw new Error('Xiaohongshu board/user response must be an object');
     }
-    if (!Number.isSafeInteger(response.boardCount) || response.boardCount < 0) {
+    const rawBoards = response.boards == null ? [] : response.boards;
+    if (!Array.isArray(rawBoards)) {
+      throw new Error('Xiaohongshu board/user response.boards must be an array');
+    }
+    const boardCount = response.boardCount == null ? rawBoards.length : response.boardCount;
+    if (!Number.isSafeInteger(boardCount) || boardCount < 0) {
       throw new Error('Xiaohongshu board/user response.boardCount must be a non-negative integer');
     }
-    if (!Array.isArray(response.boards) || response.boards.length !== response.boardCount) {
+    if (rawBoards.length !== boardCount) {
       throw new Error('Xiaohongshu board/user response.boards must match boardCount');
     }
     const ids = new Set();
     const names = new Set();
-    return response.boards.map((board, index) => {
+    return rawBoards.map((board, index) => {
       if (!board || typeof board !== 'object' || Array.isArray(board)) {
         throw new Error('Xiaohongshu board/user boards[' + index + '] must be an object');
       }
@@ -337,7 +381,18 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
         note_ids: snapshot.noteIds
       });
     }
-    return { board_count: boardResponse.boardCount, boards: rows };
+    const current = new URL(window.location.href);
+    const currentTab = String(current.searchParams.get('tab') || '').trim().toLowerCase();
+    const own = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'))
+      .find(link => (link.textContent || '').trim() === '我');
+    const ownUrl = own ? new URL(own.getAttribute('href') || '', window.location.origin) : null;
+    const ownMatch = ownUrl && ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
+    return {
+      board_count: boards.length,
+      boards: rows,
+      live_page_binding: `${current.origin}${current.pathname}?tab=${currentTab}`,
+      live_account_user_id: ownMatch ? ownMatch[1].toLowerCase() : ''
+    };
   }
 
   Promise.resolve().then(run).then((result) => {
@@ -369,6 +424,33 @@ def normalize_live_snapshot(result: Any, args: argparse.Namespace) -> Dict[str, 
     boards = result.get('boards')
     if not isinstance(boards, list) or result.get('board_count') != len(boards):
         raise MembershipContractError('browser snapshot boards must match board_count')
+    live_page_binding = str(result.get('live_page_binding') or '').strip()
+    live_account_user_id = str(result.get('live_account_user_id') or '').strip().lower()
+    expected_value = str(
+        getattr(args, 'expected_url_substring', '')
+        or getattr(args, 'arc_expected_url_substring', '')
+        or ''
+    ).strip()
+    parsed_expected = urlparse(expected_value)
+    expected_match = re.fullmatch(
+        r'/user/profile/([0-9a-fA-F]{24})/?',
+        parsed_expected.path,
+    )
+    expected_tab = (
+        parse_qs(parsed_expected.query).get('tab') or ['']
+    )[0].strip().lower()
+    if expected_match and expected_tab in {'fav', 'liked', 'like'}:
+        expected_binding = (
+            f'{parsed_expected.scheme}://{parsed_expected.netloc}'
+            f'{parsed_expected.path}?tab={expected_tab}'
+        )
+        if (
+            live_page_binding != expected_binding
+            or live_account_user_id != str(args.user_id).strip().lower()
+        ):
+            raise MembershipContractError(
+                'browser snapshot live page/account binding mismatch'
+            )
     normalized_boards = []
     seen_ids = set()
     seen_names = set()
@@ -427,6 +509,8 @@ def normalize_live_snapshot(result: Any, args: argparse.Namespace) -> Dict[str, 
             'tab_id': args.arc_tab_id,
             'tab_marker': args.arc_tab_marker,
             'expected_url_substring': args.arc_expected_url_substring,
+            'live_page_binding': live_page_binding,
+            'live_account_user_id': live_account_user_id,
             'calls': ['yC (read board/user)', 'U_ (read board detail)', 'Ks (read board/note)'],
             'writes_performed': False,
         },

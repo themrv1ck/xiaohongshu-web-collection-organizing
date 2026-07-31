@@ -131,15 +131,20 @@ def build_create_board_job(args: argparse.Namespace) -> str:
     if (!response || typeof response !== 'object' || Array.isArray(response)) {
       throw new Error('Xiaohongshu board/user response must be an object');
     }
-    if (!Number.isSafeInteger(response.boardCount) || response.boardCount < 0) {
+    const rawBoards = response.boards == null ? [] : response.boards;
+    if (!Array.isArray(rawBoards)) {
+      throw new Error('Xiaohongshu board/user response.boards must be an array');
+    }
+    const boardCount = response.boardCount == null ? rawBoards.length : response.boardCount;
+    if (!Number.isSafeInteger(boardCount) || boardCount < 0) {
       throw new Error('Xiaohongshu board/user response.boardCount must be a non-negative integer');
     }
-    if (!Array.isArray(response.boards) || response.boards.length !== response.boardCount) {
+    if (rawBoards.length !== boardCount) {
       throw new Error('Xiaohongshu board/user response.boards must match boardCount');
     }
     const ids = new Set();
     const names = new Set();
-    const boards = response.boards.map((board, index) => {
+    const boards = rawBoards.map((board, index) => {
       const id = board && typeof board.id === 'string' ? board.id.trim() : '';
       const name = board && typeof board.name === 'string' ? board.name.trim() : '';
       if (!/^[0-9a-f]{24}$/i.test(id) || !name) {
@@ -152,7 +157,7 @@ def build_create_board_job(args: argparse.Namespace) -> str:
       names.add(name);
       return { id, name, privacy: board.privacy };
     });
-    return { boardCount: response.boardCount, boards };
+    return { boardCount, boards };
   }
 
   function assertOldBoardsUnchanged(before, after) {
@@ -182,13 +187,32 @@ def build_create_board_job(args: argparse.Namespace) -> str:
     const existing = before.boards.filter((board) => board.name === payload.name);
     if (existing.length > 1) throw new Error('multiple boards already use the requested name');
     if (existing.length === 1) {
+      if (!payload.execute) {
+        return {
+          status: 'already_exists',
+          writePerformed: false,
+          board: existing[0],
+          boardCountBefore: before.boardCount,
+          boardCountAfter: before.boardCount,
+          events: ['preflight:board_already_exists']
+        };
+      }
+      if (Number(existing[0].privacy) !== payload.privacy) {
+        throw new Error('existing board privacy does not match the approved value');
+      }
+      const snapshot = await boardSnapshot(api, existing[0].id, payload.verifyPages, assertContext);
+      assertContext();
+      if (snapshot.accessibleTotal !== 0 || snapshot.noteIds.length !== 0) {
+        throw new Error('existing board with the approved name is not empty');
+      }
       return {
         status: 'already_exists',
         writePerformed: false,
         board: existing[0],
         boardCountBefore: before.boardCount,
         boardCountAfter: before.boardCount,
-        events: ['preflight:board_already_exists']
+        emptyBoardVerified: true,
+        events: ['preflight:board_already_exists', 'verify:existing_board_empty']
       };
     }
     if (!payload.execute) {
@@ -318,8 +342,8 @@ def validate_result(result: Any, execute: bool) -> Dict[str, Any]:
             raise MembershipContractError('create-board result has invalid board id')
         if not board_name:
             raise MembershipContractError('create-board result has empty board name')
-    if status == 'created' and result.get('emptyBoardVerified') is not True:
-        raise MembershipContractError('created board was not verified empty')
+    if execute and status in {'already_exists', 'created'} and result.get('emptyBoardVerified') is not True:
+        raise MembershipContractError('created or pre-existing planned board was not verified empty')
     return result
 
 

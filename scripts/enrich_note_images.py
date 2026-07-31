@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import re
 import time
 import urllib.error
@@ -154,6 +155,29 @@ def atomic_write_json(path, data):
     temp_path.replace(path)
 
 
+def refuse_workbuddy_capture_artifact(src):
+    """Never send a WorkBuddy capture back through the cookie-less HTTP path."""
+    src = Path(src).resolve()
+    for evidence_name in ('crawl_manifest.json', 'capture_progress.json'):
+        evidence_path = src.parent / evidence_name
+        if not evidence_path.is_file():
+            continue
+        try:
+            evidence = load_json(evidence_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(evidence, dict)
+            and evidence.get('capture_mode') == 'workbuddy_segmented'
+        ):
+            raise RuntimeError(
+                '该输入来自 WorkBuddy Plugin，禁止使用无登录态的 '
+                'enrich_note_images.py。请重新调用 '
+                'xhs_workbuddy_capture(organizing_depth=light)，'
+                '由插件在同一登录态前端会话内完成详情补齐和 OCR。'
+            )
+
+
 def enrich_item_from_html(item, html_text):
     note_id = str(item.get('id') or '')
     if not NOTE_ID_RE.fullmatch(note_id):
@@ -196,6 +220,15 @@ def enrich_item_from_html(item, html_text):
 
 
 def main():
+    if (
+        str(os.environ.get('XHS_HOST') or '').strip().lower() == 'workbuddy'
+        or str(os.environ.get('WORKBUDDY_CONFIG_DIR') or '').strip()
+    ):
+        raise RuntimeError(
+            'WorkBuddy 中禁止使用无浏览器登录态的 enrich_note_images.py。'
+            '请让 xhs_workbuddy_capture 启用 image_ocr_enabled，'
+            '由插件在同一专用 Playwright 会话内完成详情补齐和 OCR。'
+        )
     parser = argparse.ArgumentParser(description='补齐图文笔记的封面和全部内页图片列表。')
     parser.add_argument('src', help='visible_items.json 路径')
     parser.add_argument('out', nargs='?', default='image_items.json', help='补全图片列表后的输出路径')
@@ -209,6 +242,7 @@ def main():
 
     src = Path(args.src)
     out = Path(args.out)
+    refuse_workbuddy_capture_artifact(src)
     if args.allow_detail_requests:
         if args.max_items is None:
             parser.error('访问图文详情必须同时明确传入 --max-items；不会默认请求全部笔记。')

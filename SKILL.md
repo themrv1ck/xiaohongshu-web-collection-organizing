@@ -1,6 +1,6 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: Reorganize a logged-in Xiaohongshu web 收藏 / 点赞 / 专辑 library, classify saved notes, or batch reassign notes through browser automation. WorkBuddy must use the bundled WorkBuddy Plugin MCP plus its dedicated Playwright Chromium profile; macOS direct use supports Arc/Chrome/Safari plus Vision OCR, and Windows direct use supports Chrome/Edge plus Tesseract/EasyOCR. It can optionally classify videos from verified transcripts and full-timeline visual evidence through an explicitly selected analysis provider. Use when the user asks to inspect or organize Xiaohongshu favorites, liked notes, videos, or boards. It defaults to dry-run and requires confirmation before account changes.
+description: "Reorganize a logged-in Xiaohongshu web 收藏 / 点赞 / 专辑 library, classify saved notes, or batch reassign notes through browser automation. WorkBuddy must use the bundled WorkBuddy Plugin MCP with a dedicated managed browser profile: Edge on Windows and Chromium on macOS/Linux. macOS direct use supports Arc/Chrome/Safari plus Vision OCR, and Windows direct use supports Chrome/Edge plus Tesseract/EasyOCR. It can optionally classify videos from verified transcripts and full-timeline visual evidence through an explicitly selected analysis provider. Use when the user asks to inspect or organize Xiaohongshu favorites, liked notes, videos, or boards. It defaults to dry-run and requires confirmation before account changes."
 ---
 
 # 小红书工作流 Skill
@@ -14,16 +14,18 @@ This is the umbrella for Xiaohongshu web workflows. Use the collection/liked org
 检测到 WorkBuddy Plugin 后：
 
 1. 浏览器阶段只允许调用上述 `xhs_workbuddy_*` 工具。禁止直接运行 `osascript`、Safari/Arc/Chrome Apple Events、Computer Use、CDP，禁止调用脚本时传 `--browser safari|arc|chrome` 或 `--backend macos-*`。
-2. 先调用 `xhs_workbuddy_status`。若 `install_required=true`，先向用户说明需要把 Python Playwright 与 Chromium 下载到插件持久化目录并取得明确同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)`，随后再次调用 status。
-3. 范围、整理深度和本段上限确定后，只询问一次：“允许打开 WorkBuddy 专用浏览器，并只读整理本次所选范围（最多 N 条）吗？”这次授权覆盖本轮 `login → capture → prepare` 三个只读阶段；不得在三个阶段之间重复索要授权。
-4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的专用 Chromium 完成登录；插件必须自动识别当前账号、进入所选收藏/点赞页、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放。不得要求用户打开目标页、关闭窗口或复制 URL。
-5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,...)`，不得再次询问或让用户粘贴地址。抓取只读取该精确页面的当前可见段，不滚动、不点击、不写账号。快速整理传 `quick_classify=true`；轻度/深度整理传 `false`，再让既有 OCR/视频链路把最终结果写到工具返回的 `run_dir/classification.json`。
-6. 分类完成后立即调用 `xhs_workbuddy_prepare` 生成真实 `board_snapshot.json`、`created_boards.json` 和硬闸门 `run_report.json`。只有工具返回 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0` 和非空 `approval_digest`，才可向用户展示逐条“当前专辑 → 目标专辑”并请求执行确认。若 `planned_move_count=0`，直接展示已在正确专辑和待人工复核的条目，禁止请求执行。
-7. 普通整理结果直接在当前对话里用简短纯文本报告，不调用可视化 Skill、可视化指南、组件渲染、HTML、仪表盘或 `present_files`，也不为已有 JSON 产物额外生成展示文件；只有用户明确要求图表、网页或文件交付时才允许。报告只列工具顺序、抓取/分类数量、`mode`、`ready_for_execute`、`blockers`、`warnings`、`planned_move_count`、是否写入账号、`run_dir`，以及已正确归档/待复核条目；不要展开全部专辑库存。
-8. 用户明确确认逐条映射与本次移动上限后，原样传回 `approval_digest`，并调用 `xhs_workbuddy_execute(browser_authorized=true,user_confirmed=true,...)`。任何分类、专辑证据或计划变化都会让 digest 失效，并在打开浏览器前拒绝执行。
-9. 如果六个工具缺少任何一个，且当前环境存在 `WORKBUDDY_CONFIG_DIR`，不要让普通用户寻找连接器页面、编辑 JSON 或处理 MCP 名词。只说明：“小红书插件需要一次性启用；回复‘启用’后，我只会启用 `xiaohongshu-organizer`，然后你重开一次 WorkBuddy。”用户明确回复“启用”后，运行 `python3 scripts/enable_workbuddy_mcp.py`；脚本只能把这一项加入 WorkBuddy 白名单，必须保留其他设置。若返回 `restart_required=true`，只让用户完全退出并重开 WorkBuddy，再重发原请求。若该项已存在但工具仍缺失，直接让用户重开 WorkBuddy，不重复修改。其他宿主仍按“WorkBuddy Plugin 未安装或未加载”停止；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
+2. 先调用 `xhs_workbuddy_status`，并确认返回 `plugin_version=2.0.5`；缺失或版本不同都按第 11 步走官方 Plugin 安装/更新入口，重开 WorkBuddy 后再继续。版本正确但 `install_required=true` 时，先取得一次依赖安装同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)` 并复验 status。Windows 只安装 Python Playwright 并检查系统 Edge，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。
+3. 范围和整理深度确定后，WorkBuddy 的 capture 必须显式传唯一档位：快速整理为 `organizing_depth=quick`，轻度整理为 `organizing_depth=light`。当前 WorkBuddy Plugin 尚未接入视频语音与完整时轴画面证据；若用户选择深度整理，必须在打开浏览器前明确停止，不得把视频元数据冒充深度结果；只有用户另行授权非 WorkBuddy 的具体浏览器后，才可改走下面的直接路径。快速或轻度确定后，只询问一次是否允许打开 WorkBuddy 专用浏览器完成本轮只读整理。WorkBuddy 固定每组 200 条、非末组间隔 3 分钟，这两个参数不暴露给模型或普通用户修改，也不得重复询问。用户同意后，这次授权覆盖本轮 `login → capture（轻度含同会话登录态详情补齐与本地 OCR）→ prepare` 三个只读阶段。
+4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的 WorkBuddy 专用浏览器完成登录：Windows 使用系统 Edge 程序和插件独立 profile，macOS/Linux 使用插件独立 Chromium。插件必须自动识别当前账号、进入所选范围、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放；不得要求用户打开目标页、关闭窗口或复制 URL。
+5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,organizing_depth=quick|light)`，不得再次询问或让用户粘贴地址。WorkBuddy 插件必须在同一个专用浏览器会话中自动翻页：固定每 200 条独立保存一组，非最后一组真实等待 3 分钟后继续。轻度整理必须在关闭这次浏览器前，用只存在于插件进程内的原始卡片链接逐条打开全部已授权详情，用权威 `noteData.type` 纠正列表类型并取得完整图片列表；随后必须用同一个登录态 BrowserContext 下载图片字节到权限为 0600 的运行目录，只把相对本地路径与内容 SHA256 写入 `image_items.json`，清除源图片 URL 后再关闭浏览器并运行本地 OCR。Cookie、卡片原始 query、签名图片 URL 和 xsec 不得落盘、返回模型或出现在错误中。页面到底后只能在前端声明总数每次连读均未变化、真实唯一条数完全相等、且 `page_index ↔ note_id` 双向唯一并精确覆盖 `0..总数-1` 时结束；任一条缺少索引、同一笔记占多个位置、同一位置换笔记、总数变化/缺失、数量不符或索引缺口，都要保存已读数据并硬停，禁止把首屏约 10 条称为完整范围。列表采集不得点击、刷新、自动重试或写账号。只有 `ready_for_classification=true` 时插件才签发 capture receipt；WorkBuddy 必须自动传递，不得让用户查看、复制或保存。
+6. 抓取完成后，先调用一次不带 `classification` 的 `xhs_workbuddy_prepare(...)`，并自动传入 capture 返回的 `evidence_receipt`。这一次只读生成与本次账号、页面和 `verify_pages` 绑定的 `board_snapshot.json`，返回 `phase=board_inventory`、`existing_board_names`、完整脱敏 `classification_inputs` 和新的 inventory receipt。`classification_required=true` 表示继续分类；即使 `existing_board_names=[]` 也不是失败，必须进入第 7 步，禁止生成任何固定默认类别。
+7. 只能使用第一次 prepare 返回的 `classification_inputs` 为全部真实 note id 分类。优先选择 `existing_board_names`；只有真实内容确实需要且没有合适专辑时，才可从本次输入归纳最多 20 个 `proposed_board_names`，不得从模板、示例或插件注入类别。存在提议时必须明确 `new_board_privacy=public|private`，并让每个提议至少被一条真实分类使用；无法准确判断的条目保持 `target_board=""`。禁止模型读取运行目录或原始 URL/凭据；轻度 OCR 失败不得静默改用元数据。
+8. 把完整逐条分类、可选的 `proposed_board_names`、对应隐私和 inventory receipt 自动传给第二次 `xhs_workbuddy_prepare(...)`。工具必须机械核验完整抓取、OCR、分类 ID、真实已有专辑和待创建名称，并把待创建专辑、隐私、逐条移动与上限全部绑定进同一个 `approval_digest`。第二次调用只生成 dry-run，不打开浏览器、不创建专辑。只有返回 `phase=dry_run`、`mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0`、非空 `approval_digest` 和 plan receipt，才可请求一次执行确认。
+9. 普通整理结果直接在当前对话里用简短纯文本报告，不调用可视化 Skill、可视化指南、组件渲染、HTML、仪表盘或 `present_files`，也不为已有 JSON 产物额外生成展示文件；只有用户明确要求图表、网页或文件交付时才允许。报告只列工具顺序、抓取/分类数量、`mode`、`ready_for_execute`、`blockers`、`warnings`、`planned_move_count`、是否写入账号、`run_dir`，以及已正确归档/待复核条目；不要展开全部专辑库存。
+10. 用户明确确认待创建专辑及隐私、逐条映射与本次移动上限后，原样传回绑定这些内容的 `approval_digest` 并调用 `xhs_workbuddy_execute(...)`。Python 按 receipt 哈希把最终输入读入内存，启动本轮专用浏览器并核验精确 profile、`tab` 与前端“我”账号；MCP 重算哈希并回传 `COMMIT` 后，若有待创建专辑，必须在同一个 BrowserContext 中逐个创建，核验名称、隐私和空成员，再开始移动。若同名专辑已因前次不确定写入而存在，只有隐私一致且确认为空时才可继续；任一创建写入状态不确定都要安全停机，禁止继续移动。不得直接运行 `run_reassign_batch.py --execute` 或修改 JSON 绕过 receipt。
+11. 如果六个工具缺少任何一个，且当前环境存在 `WORKBUDDY_CONFIG_DIR`，不要让普通用户寻找连接器页面、编辑 JSON、粘贴命令或处理 MCP 名词。只说明：“小红书插件需要一次性启用；回复‘启用’后，我会用 WorkBuddy 官方安装器安装或启用唯一的 `xiaohongshu-organizer`，然后你只需重开一次 WorkBuddy。”用户明确回复“启用”后，运行 `python3 scripts/enable_workbuddy_mcp.py --install-plugin`。脚本必须只从固定 GitHub marketplace `themrv1ck/xiaohongshu-web-collection-organizing` 安装/启用 `xiaohongshu-organizer@xiaohongshu-skill-marketplace`，再只把 `xiaohongshu-organizer` 加入 MCP 白名单；已有本地开发 marketplace 不得更新或覆盖，其他设置必须完整保留。任一步失败都不得写入成功状态。返回 `restart_required=true` 后，只让用户完全退出并重开 WorkBuddy，再重发原请求。其他宿主仍按“WorkBuddy Plugin 未安装或未加载”停止；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
 
-WorkBuddy 路径由插件显式注入 `XHS_HOST=workbuddy`；三个已有浏览器入口会再次在代码层强制为 Playwright 自带 `chromium`、可见窗口和插件独立 profile，并拒绝 CDP、headless 与其他 `user-data-dir`。这条约束与选择 GLM、Hy3 或其他模型无关。完整安装和工具合同见 `references/workbuddy-plugin.md`。
+WorkBuddy 路径由插件显式注入 `XHS_HOST=workbuddy` 与真实平台；浏览器入口会在代码层强制 Windows 为 Playwright `msedge`、macOS/Linux 为 `chromium`，始终使用可见窗口和插件独立 profile，并拒绝 CDP、headless 与用户日常浏览器目录。这条约束与选择 GLM、Hy3 或其他模型无关。完整合同见 `references/workbuddy-plugin.md`。
 
 ## 单篇笔记研究 / note research
 
@@ -145,8 +147,8 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
      >
      > 例如：
      >
-     > - 标题只写“太香了”，但视频里的讲解实际在教番茄炒蛋。声音分析可以判断它属于“做饭 / 菜谱”。
-     > - 视频里没人说话，只在演示怎样整理衣柜。只分析声音时无法判断；同时分析画面后，可以归入“收纳整理”。
+     > - 标题没有说明主题，但视频讲解包含完整步骤。声音分析可以先识别真实主题，再与本次分类体系匹配。
+     > - 视频里没人说话，只用画面演示一个过程。只分析声音时无法判断；同时分析画面后，才能依据真实内容分类。
      >
      > 这项功能包含两部分：
      >
@@ -180,7 +182,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
    - **只有图文 OCR 开关已开启时**，运行 `python3 scripts/check_environment.py --ocr`（Windows：`python scripts/check_environment.py --ocr`），读取 `ocr_checked` / `ocr_status` / `ocr_ready` / `ocr_provider` / `tesseract_chi_sim` / `ocr_install_size`。若缺失，按 `references/image-ocr-classification.md` 安装并复验；不得重复询问安装同意，但系统权限窗口仍由用户确认。
    - 图文 OCR 开关未开启时，不得运行 `--ocr`、不得安装 OCR、不得执行 `enrich_note_images.py` 或 `ocr_note_images.py`。PaddleOCR 不是受支持 provider；Tesseract 缺少 `chi_sim` 时不得静默回退英文，EasyOCR 也不得自动作为默认替代。
-   - WorkBuddy 先按“WorkBuddy 固定入口”分流，只能使用插件专用 Playwright Chromium；不要检查或请求 Safari/Arc/Chrome 的自动化权限。
+   - WorkBuddy 先按“WorkBuddy 固定入口”分流，只能使用插件管理的独立浏览器：Windows Edge，macOS/Linux Chromium；不要检查或请求 Safari/Arc/Chrome/Edge 的系统自动化权限。
    - 非 WorkBuddy 的 macOS 直接使用路径不自动选择浏览器。先取得当前回合对具体浏览器的明确授权，再检查该浏览器的小红书登录态和自动化能力；用户选择 Arc 时使用 `--backend macos-arc` / `--browser arc`。
    - Windows 默认走 Chrome/Edge + Playwright 或已启动浏览器 CDP；OCR 走 Tesseract 或 EasyOCR，必须使用用户自己的网页登录态，不抓取或复制敏感 token。
    - 如果 Chrome 未登录但用户说“用 Safari”，立即切换 Safari，打开 `https://www.xiaohongshu.com/explore` 并验证 Safari 登录态，不要继续卡在 Chrome。
@@ -199,7 +201,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
    - “我全都要”时，收藏与点赞各自按被动分段保存；本地按 note id 合并，并保留来源列表。
    - 抓取结果必须保留 `content_type`。开启视频内容分类后，只有明确的 `video` 进入视频链路；`unknown` 保留为人工复核，不得按简介猜测。
    - 列表页取得的 `cover_image_url` / `image_urls` 和 `content_type` 都只是 observed 线索：图片必须写成 `image_urls_complete=false`，不得作为完整图片集合；类型只用于决定详情补齐候选。详情页 `LAUNCHER_SSR_STORE_PAGE_DATA.noteData.type` 才是图文/视频类型的权威来源。
-3. 图文 OCR 开关开启时，先在本地确定本次详情补齐范围。`enrich_note_images.py` 默认不会访问详情；只有用户明确同意这一次请求且给出 1–200 条上限，才传 `--allow-detail-requests --max-items <n>`。它从详情 `noteData.imageList` 为明确图文笔记取得按原顺序排列的封面和全部内页图片列表，并用详情 `noteData.type` 覆盖 observed 类型；只有 `image_list_source=mobile_ssr_note_data.imageList`、`image_urls_complete=true` 且声明数量一致时，才运行 `scripts/ocr_note_images.py` 逐张 OCR 并写入 `ocr_results.json`。任一图文笔记的图片列表不完整时，必须保留 `incomplete_image_set`，不得只识别封面后声称完成。若详情触发 `security_blocked`，补齐脚本必须立即停止后续请求、写出未请求状态和 `xhs_safety_state.json`，不得继续 OCR 或用 `--resume` 重发。开关关闭时跳过这两步并在分类时显式传 `--skip-ocr`。视频内容分类开关开启时不能用视频封面 OCR 下结论。
+3. 图文 OCR 开关开启时，先在本地确定本次详情补齐范围。WorkBuddy 轻度整理必须在 `xhs_workbuddy_capture` 中传 `organizing_depth=light`，由同一登录态前端会话按每组最多 200 条、组间默认 3 分钟补齐所选范围，并在浏览器关闭后运行本地 OCR；严禁运行 `enrich_note_images.py`。其他宿主的 `enrich_note_images.py` 默认不会访问详情；只有用户明确同意这一次请求且给出 1–200 条上限，才传 `--allow-detail-requests --max-items <n>`。两条路径都必须从详情权威 `noteData.imageList` 为明确图文笔记取得按原顺序排列的封面和全部内页图片列表，并用详情 `noteData.type` 覆盖 observed 类型；只有权威 `image_list_source`、`image_enrichment_status=ok`、`image_urls_complete=true` 且声明数量一致时，才允许 `scripts/ocr_note_images.py` 逐张 OCR并写入 `ocr_results.json`。任一图文笔记的图片列表不完整时，必须保留 `incomplete_image_set`，不得只识别封面后声称完成。若详情触发 `security_blocked`，必须立即停止后续请求、写出未请求状态和 `xhs_safety_state.json`，不得继续 OCR 或用 `--resume` 重发。开关关闭时跳过这两步并在分类时显式传 `--skip-ocr`。视频内容分类开关开启时不能用视频封面 OCR 下结论。
 4. 如果用户选择不动已有专辑，先用 `scripts/build_existing_boards_inventory.py` 建立 `existing_boards_inventory.json`。
 5. 生成 `classification.json`。图文 OCR 开启时，只有 `status=ok`、完整图片集合哈希和本次 `ocr_run_fingerprint` 都一致才复用 `ocr_results.json`，否则补跑 OCR；关闭时必须传 `--skip-ocr`。传入 `--existing-boards-inventory` 时，默认排除已有专辑里的笔记，只有显式传 `--include-existing-boards` 才纳入。
    - 视频开关开启时，视频访问也必须先确定本次范围：`transcribe_video_items.py` 需要 `--allow-video-access` 与明确的 `--video-id` 或 `--max-videos <1–200>`；视觉分析的 `--all-videos` 还必须同时给 `--max-videos <1–200>`。每段保存后停下，下一段需用户再次明确开始。任何安全提示会写入同一份 `xhs_safety_state.json` 并阻止续跑。完成全部本地保存分段后，才生成文字 memo、完整时轴视觉 memo 和 `classification.json`。
@@ -241,7 +243,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 2. 生成专辑分类建议
    - 基于全部收藏条目的标题、正文/描述、标签、作者，以及图文笔记封面和全部内页图片中的 OCR 文本，先生成“可创建专辑”的建议清单。OCR 不提供无文字纯画面的视觉理解。
-   - 专辑建议应面向用户真实收藏主题，例如：装潢、穿搭、攀岩、滑雪、潜水、自我成长、灵感、旅行、健康、效率、审美参考等；不要机械照搬示例，必须从实际收藏中归纳。
+   - 专辑建议只能从用户本次真实收藏和真实已有专辑中归纳；Skill 不提供任何预设主题名称。不确定项留空待复核，禁止机械套用示例或默认“杂项”。
    - 输出时同时给出：建议专辑名、包含的代表笔记、为什么这样分、可能需要合并/拆分的边界。
 
 3. 专辑创建前必须询问用户
@@ -288,7 +290,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - `xhs_safety_state.json`：可恢复的 `active` 或不可由 `--resume` 清除的 `security_halted` 状态
 
 ## 分类复核要求
-- 图文 OCR 开关开启时，只对用户明确选择范围内的图文条目运行 `enrich_note_images.py -> ocr_note_images.py`：封面和全部内页图片必须按原顺序逐张 OCR；关闭时不安装、不运行，预检结果也不得用于分类，并把对应条目标记为 `ocr_status=skipped` 或 `skipped_by_user`。视频视觉模块开启时，每个明确选择的视频分段都跑完整时轴真实帧 + 逐帧 Vision OCR；所有本地分段完成前不得声称已覆盖全部视频。未开启视频视觉模块时只能使用合格文字稿并标记 `transcript_only`。图文 OCR 与视频画面分析是两个独立开关；Vision OCR 不可用时，有视觉能力的 analysis provider 仍可直接看真实帧，但必须记录 `ocr_status=unavailable`。
+- 图文 OCR 开关开启时，WorkBuddy 轻度整理只允许 `xhs_workbuddy_capture(organizing_depth=light)`；其他宿主运行 `enrich_note_images.py -> ocr_note_images.py`。两条路径都必须把封面和全部内页图片按原顺序逐张 OCR；关闭时不安装、不运行，预检结果也不得用于分类，并把对应条目标记为 `ocr_status=skipped` 或 `skipped_by_user`。视频视觉模块开启时，每个明确选择的视频分段都跑完整时轴真实帧 + 逐帧 Vision OCR；所有本地分段完成前不得声称已覆盖全部视频。未开启视频视觉模块时只能使用合格文字稿并标记 `transcript_only`。图文 OCR 与视频画面分析是两个独立开关；Vision OCR 不可用时，有视觉能力的 analysis provider 仍可直接看真实帧，但必须记录 `ocr_status=unavailable`。
 - `scripts/ocr_note_images.py` 的后端按平台自动选择：macOS 优先 `scripts/ocr_image.swift` + Vision；Windows 优先 Tesseract / EasyOCR。所有后端必须逐图回写同一份 `ocr_results.json`；OCR 成功但未发现文字与图片下载/OCR 失败必须明确区分。
 - 如果用户关闭图文 OCR，分类流程继续走标题、desc、tags、作者等元数据，但必须在 `classification.json` 保留 `ocr_status=skipped` 或 `skipped_by_user`，并说明图片文字未参与分类、准确性可能下降。
 - 复核顺序：标题/desc/tags/作者 -> OCR 文本 -> 人工判断。

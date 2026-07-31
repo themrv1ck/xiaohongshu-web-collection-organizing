@@ -9,7 +9,7 @@
 ## 当前能力
 
 - 可被 Hermes Agent 安装和识别。
-- 可作为 WorkBuddy Plugin 安装；WorkBuddy 浏览器阶段固定使用插件独立的 Playwright Chromium，不依赖 Safari Automation。
+- 可作为 WorkBuddy Plugin 安装；Windows 固定使用插件独立 profile 的 Edge，macOS/Linux 使用插件独立 Chromium，不依赖 Safari Automation，也不接管用户日常浏览器目录。
 - 核心非视频流程支持 macOS 默认 Python 3.9+，不要求额外 Python 包。
 - 支持 macOS Arc/Chrome/Safari + AppleScript/JXA 抓取收藏页、点赞页或当前小红书列表页。
 - 支持 macOS Swift + Vision OCR。
@@ -35,7 +35,7 @@
 - 目标专辑必须已经存在；当前脚本只核对缺失专辑，不自动创建专辑。
 - `run_reassign_batch.py` 不会自动推断来源专辑；跨专辑条目缺少真实 `source_board_id` 时不得进入 execute 清单。
 - 小红书网页结构和前端模块可能变化；如果页面变更，需要重新验证。
-- 默认分类建议由本地规则和 OCR 结果生成；视频开关开启时，视频改由合格文字稿、视觉模块开启时的完整时轴真实帧 + 所选 provider 分类。低置信度条目默认不会真实移动。
+- 分类体系默认是空的，只能从本次真实内容和用户已有专辑生成；图文可使用元数据与 OCR，视频开关开启时使用合格文字稿、完整时轴真实帧（若启用视觉模块）和所选 provider。低置信度条目默认不会真实移动。
 - 200 是程序的防误操作分段上限，不是平台公开的安全阈值，不能保证不会出现验证。
 
 ## 目录结构
@@ -85,6 +85,8 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.0.5` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+
 在 WorkBuddy 对话中执行：
 
 ```text
@@ -93,11 +95,13 @@
 /reload-plugins
 ```
 
-加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意依赖下载后才安装 Playwright Chromium。首次使用会打开一个与 Safari、Arc、系统 Chrome 完全分开的可见 Chromium，用户只需在这里登录一次小红书。
+加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意后才安装 Playwright 依赖。Windows 复用系统 Edge 程序但使用插件独立 profile，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。用户只需在这个专用窗口登录一次小红书。
 
-正常使用时，用户不需要寻找收藏页 URL、复制地址或手动关闭浏览器。插件会从小红书前端的“我”入口定位当前账号，自动进入用户已选择的收藏/点赞范围，完成只读抓取与 dry-run 后关闭自己的浏览器。只有真正移动收藏前才会再次请求逐条确认。
+正常使用时，用户不需要寻找 URL、复制地址、手动滚动或关闭浏览器。插件在同一个专用浏览器会话中自动完成列表和轻度 OCR 详情读取，固定每 200 条独立保存一组，非末组真实等待 3 分钟；只有声明总数、实际条数与全部位置严格一致才算完整，绝不会把首屏约 10 条当作全部。Cookie、原始 query、签名图片 URL 和 xsec 不写入 JSON。插件先只读取得真实已有专辑；没有合适专辑时，模型只能依据本次真实内容提议新名称，不附带任何固定类别。待创建专辑及公开/私密设置、逐条移动和上限会合并为一次确认；执行时在同一个受管 BrowserContext 中先创建并核验空专辑，再移动收藏。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.0`。
+`capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
+
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.5`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -142,9 +146,9 @@ hermes skills list
 WorkBuddy：
 
 - 必须安装 `xiaohongshu-organizer` Plugin，不能只复制 `SKILL.md`
-- 浏览器固定为插件专用 Playwright Chromium
+- Windows 固定为插件独立 profile 的 Playwright Edge；macOS/Linux 为插件独立 Chromium
 - 不需要给 WorkBuddy 开 Safari/Arc/Chrome 自动化权限
-- 禁止改用系统浏览器、CDP、headless 或其他登录目录
+- 禁止使用用户日常 Edge/Chrome profile、CDP、headless 或其他登录目录
 
 macOS：
 
@@ -353,7 +357,7 @@ cd ~/.hermes/skills/social-media/xiaohongshu-web-collection-organizing
 python3 -m compileall -q .
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/check_environment.py
-printf '{"boards":[{"name":"滑雪","notes":[{"id":"694d3390000000002203ae33","title":"固定器角度"}]}]}\n' > /tmp/xhs_existing_boards_source.json
+printf '{"boards":[{"name":"用户已有专辑A","notes":[{"id":"694d3390000000002203ae33","title":"示例笔记"}]}]}\n' > /tmp/xhs_existing_boards_source.json
 python3 scripts/build_existing_boards_inventory.py /tmp/xhs_existing_boards_source.json /tmp/xhs_existing_boards_inventory.json
 python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs_classification_skip.json
 python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_classification_preview.json
@@ -364,8 +368,8 @@ python3 scripts/summarize_run_report.py /tmp/xhs_classification_preview.json
 没有 `board_snapshot.json` 和 `created_boards.json` 时，上述命令必须输出 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，不能输出 `planned`。如果要核对目标专辑：
 
 ```bash
-printf '{"boards":["杂项灵感","滑雪"]}\n' > /tmp/xhs_existing_boards.json
-python3 scripts/build_created_boards.py templates/board_taxonomy.template.json /tmp/xhs_existing_boards.json /tmp/xhs_created_boards.json
+printf '{"boards":["用户已有专辑A","用户已有专辑B"]}\n' > /tmp/xhs_existing_boards.json
+python3 scripts/build_created_boards.py board_taxonomy.json /tmp/xhs_existing_boards.json /tmp/xhs_created_boards.json
 ```
 
 ## 最短真实使用路径
@@ -475,7 +479,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 
 - `scripts/check_environment.py`：默认只检查基础运行环境；只有传 `--ocr` 才检测图文 OCR，只有传 `--video-content` 才检测视频依赖。
 - `scripts/extract_visible_items.py`：默认被动读取当前浏览器页面已显示的收藏 / 点赞 / 专辑条目，单段最多 200 条；不会自动滚动、刷新或进入下一段。列表页 `content_type` 和图片都只是 observed 线索，图片集合必须保持 `image_urls_complete=false`。
-- `scripts/enrich_note_images.py`：默认不访问详情；只有传 `--allow-detail-requests --max-items <1–200>` 才从笔记详情 `noteData` 读取权威类型，并补齐按原顺序排列的 `noteData.imageList`。遇到 `security_blocked` 时立即写状态并停机。
+- `scripts/enrich_note_images.py`：仅供非 WorkBuddy 直接运行路径使用；默认不访问详情，只有传 `--allow-detail-requests --max-items <1–200>` 才从笔记详情 `noteData` 读取权威类型并补齐图片。WorkBuddy 环境会拒绝该无浏览器登录态入口，轻度整理必须改由 `xhs_workbuddy_capture(organizing_depth=light)` 在同一登录态前端会话内完成。
 - `scripts/transcribe_video_items.py`：只处理明确、用户选定范围的视频；需要 `--allow-video-access` 与明确的 `--video-id` 或 `--max-videos <1–200>`。
 - `scripts/analyze_video_transcripts.py`：通过明确选择的 `codex-cli`、`mimo-vl-mlx` 或 `command` provider，只根据合格文字稿生成视频内容分类 memo。
 - `scripts/analyze_video_visuals.py`：对显式列入的当前视频段按全时轴抽真实帧、逐帧 Vision OCR，再交给所选视觉 provider；`--all-videos` 也必须同时给 `--allow-video-access --max-videos <1–200>`。
@@ -494,7 +498,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 
 ## 安全边界
 
-- 不保存、不打印 cookies、token、xsec、signed URL。
+- Cookie、卡片 query、签名图片地址与 xsec 只留在浏览器/进程内；轻度整理只把已下载的图片字节、相对本地路径和内容 SHA256 写入权限为 0600 的运行目录，不把源 URL 写入 JSON、模型、分类、正式报告或错误输出。
 - 不自动创建、删除、重命名专辑。
 - 不把 `.collect-wrapper` 图标变化当成“已加入目标专辑”。
 - 不把 UI 总数当成完整抓取数。

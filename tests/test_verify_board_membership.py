@@ -4,8 +4,10 @@ import copy
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +15,7 @@ SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
 from run_reassign_batch import BOARD_VERIFICATION_JS, LIVE_API_RESOLVER_JS  # noqa: E402
-from capture_board_snapshot import validate_args as validate_snapshot_capture_args  # noqa: E402
+from capture_board_snapshot import capture_snapshot, validate_args as validate_snapshot_capture_args  # noqa: E402
 from verify_board_membership import (  # noqa: E402
     MembershipContractError,
     build_snapshot_job,
@@ -120,7 +122,12 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         by_name[target_name]['declared_total'] += 1
 
     def test_snapshot_job_reuses_exact_resolver_and_is_read_only(self):
-        job = build_snapshot_job('1' * 24, 100, 'worker-marker', '/user/profile/')
+        job = build_snapshot_job(
+            '1' * 24,
+            100,
+            'worker-marker',
+            'https://www.xiaohongshu.com/user/profile/' + '1' * 24 + '?tab=fav',
+        )
         self.assertIn(LIVE_API_RESOLVER_JS, job)
         self.assertIn(BOARD_VERIFICATION_JS, job)
         self.assertIn('req.m', job)
@@ -129,6 +136,9 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         self.assertIn("dataset.xhsSkillState = 'pending'", job)
         self.assertIn('await readApi.yC(', job)
         self.assertIn('await boardSnapshot(readApi, board.id, payload.verifyPages, assertReadContext)', job)
+        self.assertIn('current profile page binding no longer matches', job)
+        self.assertIn('current account no longer matches', job)
+        self.assertIn('live_account_user_id', job)
         self.assertNotRegex(job, re.compile(r'(?:readApi|fullApi)\.(?:LN|B1|d0)\s*\('))
         self.assertNotIn('fetch(', job)
         subprocess.run(
@@ -175,6 +185,53 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         invalid_user.user_id = 'not-a-user-id'
         with self.assertRaisesRegex(MembershipContractError, '24-character'):
             validate_snapshot_capture_args(invalid_user)
+
+    def test_snapshot_count_mismatch_makes_full_membership_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'board_snapshot.json'
+            args = argparse.Namespace(
+                output=str(output),
+                browser='playwright',
+                user_id='1' * 24,
+                expected_url_substring='/user/profile/',
+                verify_pages=100,
+                timeout_sec=300,
+                safety_state=str(Path(tmp) / 'xhs_safety_state.json'),
+                arc_window_id='',
+                arc_tab_id='',
+                arc_tab_marker='',
+                arc_expected_url_substring='',
+            )
+            normalized = {
+                'mode': 'read_only',
+                'source': {'writes_performed': False},
+                'boards': [{
+                    'id': 'a' * 24,
+                    'name': '专辑A',
+                    'declared_vs_accessible_delta': 1,
+                    'note_ids': ['2' * 24],
+                }],
+                'validation': {
+                    'pagination_cursor_invariants_passed': True,
+                    'within_board_duplicates': [],
+                },
+            }
+            with (
+                patch('capture_board_snapshot.ensure_active_session'),
+                patch('capture_board_snapshot.BrowserRunner') as runner,
+                patch('capture_board_snapshot.parse_browser_job_id', return_value='run-1'),
+                patch('capture_board_snapshot.poll_browser_job', return_value={}),
+                patch(
+                    'capture_board_snapshot.normalize_live_snapshot',
+                    return_value=copy.deepcopy(normalized),
+                ),
+            ):
+                runner.return_value.eval.return_value = '{}'
+                snapshot = capture_snapshot(args)
+
+            self.assertFalse(snapshot['validation']['display_count_consistent'])
+            self.assertFalse(snapshot['validation']['full_membership_complete'])
+            self.assertEqual(snapshot['validation']['count_mismatch_boards'], ['专辑A'])
 
     def test_strict_success_is_160_target_38_source_absent_and_no_duplicates(self):
         contract, result, args = self.fixture()

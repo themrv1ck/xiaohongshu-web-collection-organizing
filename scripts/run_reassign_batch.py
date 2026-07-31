@@ -10,7 +10,8 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 from extract_visible_items import arc_js_macos, require_macos_app_running
 from xhs_safety import (
@@ -19,10 +20,13 @@ from xhs_safety import (
     classify_safety_error,
     default_safety_state_path,
     ensure_active_session,
+    is_security_halted,
+    load_safety_state,
     mark_security_halted,
+    redact_persisted_errors,
     resolve_safety_state_path,
 )
-from workbuddy_runtime import apply_workbuddy_browser_policy
+from workbuddy_runtime import apply_workbuddy_browser_policy, is_workbuddy_host
 
 
 LOGIN_MARKERS = ('手机号登录', '登录后推荐', '马上登录即可', '扫码登录', '验证码登录')
@@ -422,7 +426,7 @@ def sha256_file(path: Path) -> str:
 
 
 def write_json(path: Path, data: Any) -> None:
-    atomic_write_json(path, data)
+    atomic_write_json(path, redact_persisted_errors(data))
 
 
 def utc_now() -> str:
@@ -499,6 +503,7 @@ class BrowserRunner:
         self.browser = None
         self.context = None
         self.page = None
+        self.close_context = True
         if self.backend == 'playwright':
             self._open_playwright()
 
@@ -508,23 +513,25 @@ class BrowserRunner:
         except Exception as exc:
             raise RuntimeError('Playwright Python 未安装。先运行：python -m pip install playwright && python -m playwright install chromium') from exc
         self.playwright = sync_playwright().start()
-        close_context = True
-        if self.args.cdp_url:
-            self.browser = self.playwright.chromium.connect_over_cdp(self.args.cdp_url)
-            self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-            close_context = False
-        else:
-            profile_dir = Path(self.args.user_data_dir or Path.home() / '.xhs-skill-browser-profile')
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            launch_args: Dict[str, Any] = {'headless': self.args.headless}
-            if self.args.channel and self.args.channel != 'chromium':
-                launch_args['channel'] = self.args.channel
-            self.context = self.playwright.chromium.launch_persistent_context(str(profile_dir), **launch_args)
-        self.close_context = close_context
-        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-        if self.args.url:
-            self.page.goto(self.args.url, wait_until='domcontentloaded', timeout=60000)
-        self.page.wait_for_load_state('domcontentloaded', timeout=60000)
+        try:
+            if self.args.cdp_url:
+                self.browser = self.playwright.chromium.connect_over_cdp(self.args.cdp_url)
+                self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+                self.close_context = False
+            else:
+                profile_dir = Path(self.args.user_data_dir or Path.home() / '.xhs-skill-browser-profile')
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                launch_args: Dict[str, Any] = {'headless': self.args.headless}
+                if self.args.channel and self.args.channel != 'chromium':
+                    launch_args['channel'] = self.args.channel
+                self.context = self.playwright.chromium.launch_persistent_context(str(profile_dir), **launch_args)
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+            if self.args.url:
+                self.page.goto(self.args.url, wait_until='domcontentloaded', timeout=60000)
+            self.page.wait_for_load_state('domcontentloaded', timeout=60000)
+        except Exception:
+            self.close()
+            raise
 
     def eval(self, js: str) -> str:
         if self.backend == 'arc':
@@ -715,6 +722,7 @@ def prepare_execution_preflight(
     created_boards: Any,
     *,
     allow_low_confidence: bool,
+    allow_planned_board_creation: bool = False,
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     warnings: List[str] = []
@@ -738,8 +746,10 @@ def prepare_execution_preflight(
         blockers.append('board_names_not_unique')
     if validation.get('within_board_duplicates'):
         blockers.append('within_board_duplicates')
-    if not isinstance(boards, list) or not boards:
-        raise ExecutionPreflightError('board_snapshot.boards must be a non-empty array')
+    if validation.get('full_membership_complete') is not True:
+        blockers.append('full_membership_incomplete')
+    if not isinstance(boards, list):
+        raise ExecutionPreflightError('board_snapshot.boards must be an array')
 
     board_by_name: Dict[str, Dict[str, str]] = {}
     board_by_id: Dict[str, Dict[str, str]] = {}
@@ -774,7 +784,9 @@ def prepare_execution_preflight(
         declared_total = board.get('declared_total')
         accessible_total = len(set(normalized_note_ids))
         if declared_total != accessible_total:
-            warnings.append(f'board_display_count_mismatch:{board_name}')
+            if 'full_membership_incomplete' not in blockers:
+                blockers.append('full_membership_incomplete')
+            blockers.append(f'board_count_mismatch:{board_name}')
         board_counts[board_name] = accessible_total
         board_count_checks[board_name] = {
             'declared_total': declared_total,
@@ -787,6 +799,36 @@ def prepare_execution_preflight(
         raise ExecutionPreflightError('created_boards must be an object')
     confirmed_boards = set(_normalize_string_list(created_boards.get('confirmed'), 'created_boards.confirmed'))
     declared_missing = set(_normalize_string_list(created_boards.get('missing'), 'created_boards.missing'))
+    planned_rows = created_boards.get('planned', [])
+    if not isinstance(planned_rows, list):
+        raise ExecutionPreflightError('created_boards.planned must be an array')
+    planned_boards: List[Dict[str, Any]] = []
+    planned_board_names = set()
+    for index, entry in enumerate(planned_rows):
+        if not isinstance(entry, dict):
+            raise ExecutionPreflightError(
+                f'created_boards.planned[{index}] must be an object'
+            )
+        name = str(entry.get('name') or '').strip()
+        privacy = entry.get('privacy')
+        if not name or privacy not in {0, 1} or isinstance(privacy, bool):
+            raise ExecutionPreflightError(
+                f'created_boards.planned[{index}] has invalid name/privacy'
+            )
+        if name in planned_board_names:
+            raise ExecutionPreflightError('created_boards.planned names must be unique')
+        if name in confirmed_boards or name in board_by_name or name in declared_missing:
+            raise ExecutionPreflightError(
+                f'planned board conflicts with inventory state: {name}'
+            )
+        planned_board_names.add(name)
+        planned_boards.append({'name': name, 'privacy': privacy})
+    if planned_boards and not allow_planned_board_creation:
+        raise ExecutionPreflightError(
+            'planned board creation requires explicit allow_planned_board_creation'
+        )
+    if not boards and not planned_boards:
+        raise ExecutionPreflightError('board_snapshot.boards must be a non-empty array')
 
     resolved_items: List[Dict[str, Any]] = []
     required_targets = set()
@@ -821,6 +863,16 @@ def prepare_execution_preflight(
             resolved_items.append(resolved)
             continue
         target = board_by_name.get(target_board)
+        target_is_planned = (
+            allow_planned_board_creation and target_board in planned_board_names
+        )
+        if target_is_planned:
+            resolved['membership_state'] = 'target_board_planned'
+            resolved['source_board'] = ''
+            resolved['source_board_id'] = ''
+            membership_counts['not_in_any_board'] += 1
+            resolved_items.append(resolved)
+            continue
         if not target or target_board not in confirmed_boards or target_board in declared_missing:
             missing_targets.add(target_board)
             resolved_items.append(resolved)
@@ -858,7 +910,14 @@ def prepare_execution_preflight(
         resolved_items.append(resolved)
 
     for target in sorted(required_targets):
-        if target not in board_by_name or target not in confirmed_boards or target in declared_missing:
+        if (
+            target not in planned_board_names
+            and (
+                target not in board_by_name
+                or target not in confirmed_boards
+                or target in declared_missing
+            )
+        ):
             missing_targets.add(target)
     blockers.extend(f'missing_target_board:{name}' for name in sorted(missing_targets))
     blockers = list(dict.fromkeys(blockers))
@@ -875,6 +934,7 @@ def prepare_execution_preflight(
         ),
         'membership_validation_status': 'verified' if ready else 'blocked',
         'missing_boards': sorted(missing_targets),
+        'planned_board_creations': planned_boards,
         'required_target_boards': sorted(required_targets),
         'membership_counts': membership_counts,
         'resolved_items': resolved_items,
@@ -915,6 +975,22 @@ def execution_binding_blockers(snapshot_source: Any, args: argparse.Namespace) -
     ).strip()
     if not snapshot_url or current_url != snapshot_url:
         blockers.append('snapshot_page_binding_changed')
+    live_page_binding = str(snapshot_source.get('live_page_binding') or '').strip()
+    live_account_user_id = str(snapshot_source.get('live_account_user_id') or '').strip()
+    if backend == 'playwright' or live_page_binding or live_account_user_id:
+        if live_page_binding != current_url:
+            blockers.append('snapshot_live_page_binding_changed')
+        if live_account_user_id != current_user_id:
+            blockers.append('snapshot_live_account_changed')
+    snapshot_verify_pages = snapshot_source.get('verify_pages')
+    current_verify_pages = getattr(args, 'verify_pages', None)
+    if (
+        not isinstance(snapshot_verify_pages, int)
+        or isinstance(snapshot_verify_pages, bool)
+        or snapshot_verify_pages < 1
+        or current_verify_pages != snapshot_verify_pages
+    ):
+        blockers.append('snapshot_verify_pages_changed')
     snapshot_safety_state = str(snapshot_source.get('safety_state') or '').strip()
     current_safety_state = str(getattr(args, 'safety_state', '') or '').strip()
     if (
@@ -924,6 +1000,96 @@ def execution_binding_blockers(snapshot_source: Any, args: argparse.Namespace) -
     ):
         blockers.append('snapshot_safety_session_changed')
     return blockers
+
+
+def expected_profile_binding(
+    args: argparse.Namespace,
+    *,
+    required: bool = True,
+) -> Optional[Dict[str, str]]:
+    raw = str(
+        getattr(args, 'expected_url_substring', '')
+        or getattr(args, 'arc_expected_url_substring', '')
+        or ''
+    ).strip()
+    parsed = urlparse(raw)
+    match = re.fullmatch(r'/user/profile/([0-9a-fA-F]{24})/?', parsed.path)
+    tab = (parse_qs(parsed.query).get('tab') or [''])[0].strip().lower()
+    user_id = str(getattr(args, 'user_id', '') or '').strip().lower()
+    host = (parsed.hostname or '').lower()
+    if (
+        parsed.scheme != 'https'
+        or not (host == 'xiaohongshu.com' or host.endswith('.xiaohongshu.com'))
+        or not match
+        or match.group(1).lower() != user_id
+        or tab not in {'fav', 'liked', 'like'}
+    ):
+        if required:
+            raise RuntimeError('执行页必须绑定当前账号的精确 profile 列表与 tab。')
+        return None
+    return {
+        'origin': f'{parsed.scheme}://{parsed.netloc}',
+        'path': parsed.path.rstrip('/'),
+        'tab': tab,
+        'user_id': user_id,
+    }
+
+
+def build_execute_binding_probe(args: argparse.Namespace) -> str:
+    payload = expected_profile_binding(args, required=True)
+    return r"""
+JSON.stringify((() => {
+  const payload = PAYLOAD_JSON;
+  const bodyText = (document.body && document.body.innerText) || '';
+  const securityMarkers = [
+    '安全验证', '异常访问', '访问异常', '访问过于频繁', '操作过于频繁',
+    '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
+    '拖动滑块', 'captcha', 'security verification', 'abnormal access',
+    'too many requests'
+  ];
+  const securityText = `${window.location.origin}${window.location.pathname}\n${bodyText}`.toLowerCase();
+  const marker = securityMarkers.find(value => securityText.includes(value.toLowerCase())) || '';
+  if (marker) return {ok: false, code: 'security_challenge', marker};
+  if (/手机号登录|登录后推荐|马上登录即可|扫码登录|验证码登录/.test(bodyText)) {
+    return {ok: false, code: 'login_required'};
+  }
+  const current = new URL(window.location.href);
+  const currentTab = String(current.searchParams.get('tab') || '').trim().toLowerCase();
+  if (
+    current.origin !== payload.origin
+    || current.pathname.replace(/\/$/, '') !== payload.path
+    || currentTab !== payload.tab
+  ) return {ok: false, code: 'page_binding_mismatch'};
+  const own = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'))
+    .find(link => (link.textContent || '').trim() === '我');
+  if (!own) return {ok: false, code: 'account_binding_unavailable'};
+  const ownUrl = new URL(own.getAttribute('href') || '', window.location.origin);
+  const ownMatch = ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
+  if (!ownMatch || ownMatch[1].toLowerCase() !== payload.user_id) {
+    return {ok: false, code: 'account_binding_mismatch'};
+  }
+  return {
+    ok: true,
+    page_binding: `${current.origin}${current.pathname}?tab=${currentTab}`,
+    user_id: ownMatch[1].toLowerCase()
+  };
+})())
+""".replace('PAYLOAD_JSON', json.dumps(payload, ensure_ascii=False))
+
+
+def validate_execute_live_binding(runner: 'BrowserRunner', args: argparse.Namespace) -> Dict[str, Any]:
+    raw = runner.eval(build_execute_binding_probe(args))
+    value = raw
+    for _ in range(2):
+        if not isinstance(value, str):
+            break
+        value = json.loads(value)
+    if not isinstance(value, dict) or value.get('ok') is not True:
+        code = str(value.get('code') or 'execute_page_binding_invalid') if isinstance(value, dict) else 'execute_page_binding_invalid'
+        if code == 'security_challenge':
+            raise SafetyHaltedError('执行前检测到小红书安全验证，已停止。')
+        raise RuntimeError(code)
+    return value
 
 
 def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confidence: bool) -> None:
@@ -963,12 +1129,14 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
 
 
 def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> str:
+    binding = expected_profile_binding(args, required=False)
     payload = {
         'items': items,
         'allowLowConfidence': args.allow_low_confidence,
         'verifyPages': args.verify_pages,
         'userId': args.user_id or '',
         'expectedTabMarker': getattr(args, 'arc_tab_marker', '') or '',
+        'expectedPageBinding': binding,
         'expectedUrlSubstring': (
             getattr(args, 'expected_url_substring', '')
             or getattr(args, 'arc_expected_url_substring', '')
@@ -1032,15 +1200,29 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
   }
 
   function assertExpectedExecutePage() {
-    const location = String(window.location.href || '');
-    if (!location.includes('xiaohongshu.com')) {
-      throw new ExecutePageBindingError('current page is not xiaohongshu.com: ' + location);
+    const current = new URL(window.location.href);
+    const expected = payload.expectedPageBinding;
+    const currentTab = String(current.searchParams.get('tab') || '').trim().toLowerCase();
+    if (expected && (
+      current.origin !== expected.origin
+      || current.pathname.replace(/\/$/, '') !== expected.path
+      || currentTab !== expected.tab
+    )) throw new ExecutePageBindingError('current page binding no longer matches');
+    if (!expected && payload.expectedUrlSubstring && !current.href.includes(payload.expectedUrlSubstring)) {
+      throw new ExecutePageBindingError('expected URL no longer matches');
     }
     if (payload.expectedTabMarker && window.name !== payload.expectedTabMarker) {
       throw new ExecutePageBindingError('Arc worker runtime marker no longer matches');
     }
-    if (payload.expectedUrlSubstring && !location.includes(payload.expectedUrlSubstring)) {
-      throw new ExecutePageBindingError('Arc worker expected URL no longer matches');
+    if (expected) {
+      const own = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'))
+        .find(link => (link.textContent || '').trim() === '我');
+      if (!own) throw new ExecutePageBindingError('current account cannot be verified');
+      const ownUrl = new URL(own.getAttribute('href') || '', window.location.origin);
+      const ownMatch = ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
+      if (!ownMatch || ownMatch[1].toLowerCase() !== expected.user_id) {
+        throw new ExecutePageBindingError('current account no longer matches');
+      }
     }
   }
 
@@ -1371,7 +1553,28 @@ def move_session_limit(args: argparse.Namespace) -> int:
     return value
 
 
-def execute_batch(classification: List[Dict[str, Any]], report: Dict[str, Any], args: argparse.Namespace, report_path: Path) -> None:
+def is_executable_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
+    status = str(item.get('status') or '').strip()
+    if status and status != 'planned':
+        return False
+    return all((
+        not item.get('excluded'),
+        not item.get('exclude_reason'),
+        item.get('membership_state') != 'already_in_target',
+        bool(str(item.get('id') or '').strip()),
+        bool(str(item.get('target_board') or '').strip()),
+        item.get('confidence') != 'low' or allow_low_confidence,
+    ))
+
+
+def execute_batch(
+    classification: List[Dict[str, Any]],
+    report: Dict[str, Any],
+    args: argparse.Namespace,
+    report_path: Path,
+    commit_callback: Optional[Callable[[], None]] = None,
+    post_commit_callback: Optional[Callable[['BrowserRunner'], None]] = None,
+) -> None:
     backend = choose_backend(args.browser, args)
     arc_selector = {
         '--arc-window-id': str(getattr(args, 'arc_window_id', '') or '').strip(),
@@ -1394,20 +1597,25 @@ def execute_batch(classification: List[Dict[str, Any]], report: Dict[str, Any], 
         raise RuntimeError('--verify-pages 必须是大于 0 的整数')
     session_limit = move_session_limit(args)
     safety_state = resolve_safety_state_path(getattr(args, 'safety_state', ''), report_path)
-    ensure_active_session(
-        safety_state,
-        stage='move',
-        policy={
-            'auto_scroll': False,
-            'auto_navigation': False,
-            'auto_retry': False,
-            'max_moves_per_session': session_limit,
-        },
-    )
+    move_policy = {
+        'auto_scroll': False,
+        'auto_navigation': False,
+        'auto_retry': False,
+        'max_moves_per_session': session_limit,
+    }
+    if commit_callback is None:
+        ensure_active_session(safety_state, stage='move', policy=move_policy)
+    elif is_security_halted(load_safety_state(safety_state)):
+        raise SafetyHaltedError('此前会话已安全停机，不能执行移动。')
     report['safety_state_file'] = str(safety_state)
     report['move_session_limit'] = session_limit
-    planned_items = classification[:session_limit]
-    remaining_count = len(classification) - len(planned_items)
+    executable_items = [
+        item
+        for item in classification
+        if is_executable_move(item, args.allow_low_confidence)
+    ]
+    planned_items = executable_items[:session_limit]
+    remaining_count = len(executable_items) - len(planned_items)
     if not planned_items:
         report['session_status'] = 'completed'
         report['updated_at'] = utc_now()
@@ -1415,6 +1623,34 @@ def execute_batch(classification: List[Dict[str, Any]], report: Dict[str, Any], 
         return
     runner = BrowserRunner(backend, args)
     try:
+        if commit_callback is not None:
+            validate_execute_live_binding(runner, args)
+            commit_callback()
+            ensure_active_session(safety_state, stage='move', policy=move_policy)
+        if post_commit_callback is not None:
+            try:
+                post_commit_callback(runner)
+            except Exception as exc:
+                classified = classify_safety_error(exc)
+                if isinstance(exc, SafetyHaltedError) or classified:
+                    reason_code, message = classified or ('security_challenge', str(exc))
+                    mark_security_halted(
+                        safety_state,
+                        stage='create_board',
+                        reason_code=reason_code,
+                        message=message,
+                    )
+                    report['security_halted'] = True
+                    report['safety_halt'] = {
+                        'reason_code': reason_code,
+                        'message': message,
+                        'state_file': str(safety_state),
+                    }
+                report['session_status'] = 'stopped_on_board_creation_error'
+                report['board_creation_error'] = str(exc)
+                report['updated_at'] = utc_now()
+                write_json(report_path, report)
+                raise
         for index, item in enumerate(planned_items):
             if index > 0 and inter_item_delay_sec > 0:
                 time.sleep(inter_item_delay_sec)
@@ -1508,7 +1744,18 @@ def main() -> None:
     parser.add_argument('--resume', action='store_true', help='读取已有 run_report.json，跳过已经 success 且核验过的条目')
     parser.add_argument('--board-snapshot', default='', help='capture_board_snapshot.py 生成的只读全专辑快照；与 --created-boards 同时提供后才生成可执行 dry-run')
     parser.add_argument('--created-boards', default='', help='build_created_boards.py 生成的目标专辑核验结果；与 --board-snapshot 同时提供')
+    parser.add_argument('--allow-planned-board-creation', action='store_true', help='仅供受信 WorkBuddy dry-run：允许审批证据中声明待创建专辑')
     args = parser.parse_args()
+
+    if args.execute and is_workbuddy_host():
+        raise SystemExit(
+            'WorkBuddy 中禁止直接运行 --execute；必须通过 xhs_workbuddy_execute 的签名审批通路。'
+        )
+    if args.execute and args.allow_planned_board_creation:
+        raise SystemExit(
+            '--allow-planned-board-creation 只能用于受信 WorkBuddy dry-run；'
+            '真实执行必须由插件在同一会话中创建并核验专辑。'
+        )
 
     classification = normalize_classification(load_json(args.classification))
     has_snapshot = bool(str(args.board_snapshot or '').strip())
@@ -1535,6 +1782,7 @@ def main() -> None:
             load_json(str(snapshot_path)),
             load_json(str(created_boards_path)),
             allow_low_confidence=args.allow_low_confidence,
+            allow_planned_board_creation=args.allow_planned_board_creation,
         )
         classification = preflight.pop('resolved_items')
         report.update(preflight)

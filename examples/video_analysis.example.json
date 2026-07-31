@@ -2,12 +2,12 @@
   {
     "id": "694d3390000000002203ae33",
     "status": "success",
-    "main_topic": "单板滑雪固定器角度设置",
+    "main_topic": "示例主题A固定器角度设置",
     "content_summary": "解释固定器角度对站姿的影响，并建议按个人前后脚习惯调整。",
-    "target_board": "滑雪",
+    "target_board": "示例主题A",
     "confidence": "high",
     "reason": [
-      "核心内容是单板滑雪装备设置",
+      "核心内容是示例主题A装备设置",
       "完整转写持续讨论固定器角度"
     ],
     "transcript_sha256": "aaf9c61a99dd4c0b7f8bced208796f564362ed64240c8b7e4221c056c2c9a363",

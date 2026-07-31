@@ -25,7 +25,7 @@
     },
     {
       "id": "222222222222222222222222",
-      "name": "滑雪",
+      "name": "示例主题A",
       "privacy": 0,
       "declared_total": 1,
       "accessible_unique_count": 1,
@@ -40,7 +40,7 @@
     "694d3390000000002203ae33": [
       {
         "board_id": "222222222222222222222222",
-        "board_name": "滑雪"
+        "board_name": "示例主题A"
       }
     ]
   },

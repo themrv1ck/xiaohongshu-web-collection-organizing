@@ -7,6 +7,13 @@
 - 触发后立刻落盘当前结果和停止原因；不刷新、不自动滚动、不点验证、不切换 UA/代理/IP、不模拟真人行为，也不重试当前条。
 - 用户在平台内完成必要处理后，必须使用新的安全状态文件开始新的会话；旧文件保留审计记录。
 
+## WorkBuddy 会话恢复
+
+- WorkBuddy 的 capture、专辑清单、dry-run 和 execute 由 MCP 内存中的单次证据 receipt 串联；receipt 绑定当前账号、页面、来源、整理档位和各阶段文件哈希，由插件自动传递，用户无需处理。
+- WorkBuddy 或 MCP 重启后，内存密钥和账本消失，旧 receipt 必然失效。旧运行目录只允许查看；要继续真实写入，必须重新 capture，再完成两阶段 prepare 和用户确认。
+- 运行目录、manifest、`approval_digest` 或本地哈希不能恢复这份信任；文件被编辑、替换或变成符号链接时，下一阶段必须在删除文件或启动浏览器前拒绝。
+- execute 先把最终输入按 receipt 哈希读入内存，再启动专用浏览器并只读核验精确页面、`tab` 与前端“我”账号；这些步骤在 Python 发出 `READY` 前失败时，MCP 会解除 receipt 占用，修正后可重试。收到 `READY` 后 MCP 再重算绑定文件，先消费 receipt，再以 `COMMIT` 放行第一次写入，因此同一方案不能重复执行，也不会在提交后重新按可变路径读取分类。
+
 ## 分段规则
 
 - 列表采集默认被动模式：一次只读当前已显示卡片，最多 200 条，写入独立分段文件和 manifest；不会自动进入下一段。
@@ -16,7 +23,7 @@
 
 ## 本地结果复用
 
-- `image_items.json` 只有详情 `noteData.type` 确认为图文、`image_enrichment_status=ok`、`image_list_source=mobile_ssr_note_data.imageList`、`image_urls_complete=true` 且图片集合完整时才可复用。
+- WorkBuddy 的 `image_items.json` 只有详情 `noteData.type` 确认为图文、`image_enrichment_status=ok`、来源为登录态前端详情、本地 `image_files` 与 `image_file_sha256` 一一对应且内容哈希复验通过时才可复用；签名源 URL 不落盘。非 WorkBuddy 直接路径仍按其受信详情来源与完整 URL 集合合同校验。
 - `enrich_note_images.py` 默认不请求详情；只有明确传 `--allow-detail-requests --max-items <n>` 才会访问选定范围。安全停机后不得继续 OCR。
 - `ocr_results.json` 只有条目 `status=ok`、完整性计数一致、`image_set_sha256` 与当前图片集合一致，且 `ocr_run_fingerprint` 与本次运行一致时才可复用。
 - 视频转写、画面分析和移动同样只复用本地完整成功项；安全停机或输入变化时不作猜测性补救。

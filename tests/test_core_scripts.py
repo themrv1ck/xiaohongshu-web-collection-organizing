@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, build_browser_job, choose_backend, execute_batch, execution_binding_blockers, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_execution_preflight  # noqa: E402
-from extract_visible_items import arc_js_macos, extract_with_js  # noqa: E402
+from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, build_browser_job, build_execute_binding_probe, choose_backend, execute_batch, execution_binding_blockers, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_execution_preflight  # noqa: E402
+from extract_visible_items import arc_js_macos, extract_with_js, read_stable_items_snapshot  # noqa: E402
 from xhs_ocr_common import detect_ocr_provider, infer_board, load_taxonomy, run_tesseract_ocr  # noqa: E402
 
 
@@ -95,6 +96,55 @@ function createTransactionModel(options) {
 }
 '''
 
+    def test_stable_snapshot_rejects_declared_total_change(self):
+        snapshots = iter([
+            json.dumps({
+                'declaredItemCount': 314,
+                'items': [{'id': 'a' * 24, 'page_index': 0}],
+            }),
+            json.dumps({
+                'declaredItemCount': 10,
+                'items': [{'id': 'a' * 24, 'page_index': 0}],
+            }),
+        ])
+        with self.assertRaisesRegex(RuntimeError, '声明总数.*发生变化'):
+            read_stable_items_snapshot(
+                lambda _script: next(snapshots),
+                settle_pause=0,
+                max_checks=2,
+            )
+
+    def test_empty_first_frame_must_stabilize_before_completion(self):
+        snapshots = iter([
+            json.dumps({'declaredItemCount': 0, 'items': []}),
+            json.dumps({
+                'declaredItemCount': 314,
+                'items': [{'id': 'a' * 24, 'page_index': 0}],
+            }),
+        ])
+        with self.assertRaisesRegex(RuntimeError, '声明总数.*发生变化'):
+            read_stable_items_snapshot(
+                lambda _script: next(snapshots),
+                settle_pause=0,
+                max_checks=2,
+            )
+
+    def test_workbuddy_execute_probe_binds_exact_tab_and_frontend_account(self):
+        user_id = '1' * 24
+        binding = (
+            f'https://www.xiaohongshu.com/user/profile/{user_id}?tab=fav'
+        )
+        args = type('Args', (), {
+            'user_id': user_id,
+            'expected_url_substring': binding,
+            'arc_expected_url_substring': '',
+        })()
+        probe = build_execute_binding_probe(args)
+        self.assertIn('current.pathname', probe)
+        self.assertIn("searchParams.get('tab')", probe)
+        self.assertIn("textContent || '').trim() === '我'", probe)
+        self.assertIn('account_binding_mismatch', probe)
+
     def run_script(self, *args):
         return subprocess.run(
             [sys.executable, str(SCRIPTS / args[0]), *args[1:]],
@@ -138,8 +188,13 @@ function createTransactionModel(options) {
         )
         return json.loads(proc.stdout)
 
-    def test_default_taxonomy_and_classifier(self):
+    def test_runtime_taxonomy_is_empty_until_real_user_topics_are_supplied(self):
         boards = load_taxonomy(None)
+        self.assertEqual(boards, [])
+        self.assertEqual(
+            load_taxonomy(ROOT / 'templates/board_taxonomy.template.json'),
+            [],
+        )
         item = {
             'id': '66d19b54000000001d03a93d',
             'title': '滑雪换刃练习',
@@ -149,9 +204,49 @@ function createTransactionModel(options) {
             'card_text': '滑雪 单板 换刃',
         }
         board, confidence, reason, review_state = infer_board(item, None, boards)
+        self.assertEqual(board, '')
+        self.assertEqual(confidence, 'low')
+        self.assertEqual(reason, ['no_rule_match'])
+        self.assertEqual(review_state, 'pending')
+
+        board, confidence, reason, review_state = infer_board(
+            item,
+            None,
+            ['滑雪'],
+        )
         self.assertEqual(board, '滑雪')
         self.assertIn(confidence, {'medium', 'high'})
         self.assertTrue(reason)
+        self.assertEqual(review_state, 'classified')
+
+    def test_runtime_taxonomy_never_translates_hidden_preset_keywords(self):
+        item = {
+            'id': '66d19b54000000001d03a93d',
+            'title': '家具收纳和客厅装修',
+            'desc': '餐边柜与家政柜布置',
+            'tags': ['家居'],
+            'user': '',
+            'card_text': '家具 收纳 装修',
+        }
+        board, confidence, reason, review_state = infer_board(
+            item,
+            None,
+            ['居住空间'],
+        )
+        self.assertEqual(board, '')
+        self.assertEqual(confidence, 'low')
+        self.assertEqual(reason, ['no_rule_match'])
+        self.assertEqual(review_state, 'pending')
+
+        item['title'] = '居住空间'
+        board, confidence, reason, review_state = infer_board(
+            item,
+            None,
+            ['居住空间'],
+        )
+        self.assertEqual(board, '居住空间')
+        self.assertEqual(confidence, 'medium')
+        self.assertEqual(reason, ['居住空间'])
         self.assertEqual(review_state, 'classified')
 
     def test_auto_ocr_provider_requires_working_vision_or_chinese_tesseract(self):
@@ -543,7 +638,7 @@ function createTransactionModel(options) {
         self.assertIn(f'ambiguous_membership:{note_id}', result['blockers'])
         self.assertEqual(result['resolved_items'][0]['membership_state'], 'ambiguous')
 
-    def test_preflight_treats_completed_api_pagination_as_membership_evidence(self):
+    def test_preflight_blocks_declared_board_count_mismatch(self):
         note_id = '1' * 24
         board_id = 'a' * 24
         result = prepare_execution_preflight(
@@ -576,16 +671,66 @@ function createTransactionModel(options) {
             },
             allow_low_confidence=False,
         )
-        self.assertTrue(result['ready_for_execute'])
-        self.assertEqual(result['blockers'], [])
-        self.assertEqual(
-            result['warnings'],
-            ['board_display_count_mismatch:专辑A'],
-        )
-        self.assertEqual(result['board_validation_status'], 'verified_with_warnings')
+        self.assertFalse(result['ready_for_execute'])
+        self.assertEqual(result['blockers'], [
+            'full_membership_incomplete',
+            'board_count_mismatch:专辑A',
+        ])
+        self.assertEqual(result['warnings'], [])
+        self.assertEqual(result['board_validation_status'], 'blocked')
         self.assertEqual(
             result['resolved_items'][0]['membership_state'],
             'already_in_target',
+        )
+
+    def test_preflight_accepts_empty_inventory_only_for_bound_planned_boards(self):
+        note_id = '1' * 24
+        snapshot = {
+            'mode': 'read_only',
+            'source': {'browser': 'playwright', 'writes_performed': False},
+            'boards': [],
+            'validation': {
+                'board_names_unique': True,
+                'pagination_cursor_invariants_passed': True,
+                'within_board_duplicates': [],
+                'full_membership_complete': True,
+            },
+        }
+        created = {
+            'confirmed': [],
+            'planned': [{'name': '阅读', 'privacy': 0}],
+            'created': [],
+            'missing': [],
+            'failed': [],
+        }
+        classification = [{
+            'id': note_id,
+            'title': '读后感',
+            'target_board': '阅读',
+            'confidence': 'high',
+        }]
+        with self.assertRaisesRegex(Exception, 'explicit allow_planned_board_creation'):
+            prepare_execution_preflight(
+                classification,
+                snapshot,
+                created,
+                allow_low_confidence=False,
+            )
+        result = prepare_execution_preflight(
+            classification,
+            snapshot,
+            created,
+            allow_low_confidence=False,
+            allow_planned_board_creation=True,
+        )
+        self.assertTrue(result['ready_for_execute'])
+        self.assertEqual(result['blockers'], [])
+        self.assertEqual(result['planned_board_creations'], [
+            {'name': '阅读', 'privacy': 0},
+        ])
+        self.assertEqual(
+            result['resolved_items'][0]['membership_state'],
+            'target_board_planned',
         )
 
     def test_execute_without_preflight_evidence_is_blocked_before_browser(self):
@@ -624,12 +769,41 @@ function createTransactionModel(options) {
                 'membership_validation_not_run',
             ])
 
+    def test_workbuddy_rejects_direct_execute_script_before_browser(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            classification = tmp_path / 'classification.json'
+            report = tmp_path / 'run_report.json'
+            classification.write_text(json.dumps([{
+                'id': '1' * 24,
+                'target_board': '阅读',
+                'confidence': 'high',
+            }], ensure_ascii=False), encoding='utf-8')
+            env = dict(os.environ)
+            env['XHS_HOST'] = 'workbuddy'
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'run_reassign_batch.py'),
+                    str(classification),
+                    str(report),
+                    '--execute',
+                ],
+                cwd=str(ROOT),
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn('xhs_workbuddy_execute', proc.stderr)
+
     def test_execute_binding_must_match_snapshot_browser_user_page_and_safety_session(self):
         safety_state = str(Path('/tmp/xhs-safety-state.json'))
         source = {
             'browser': 'safari',
             'user_id': '1' * 24,
             'expected_url_substring': '/user/profile/',
+            'verify_pages': 100,
             'safety_state': safety_state,
         }
         args = type('Args', (), {
@@ -637,6 +811,7 @@ function createTransactionModel(options) {
             'user_id': '1' * 24,
             'expected_url_substring': '/user/profile/',
             'arc_expected_url_substring': '',
+            'verify_pages': 100,
             'safety_state': safety_state,
         })()
         self.assertEqual(execution_binding_blockers(source, args), [])
@@ -646,12 +821,14 @@ function createTransactionModel(options) {
             'user_id': '2' * 24,
             'expected_url_substring': '/explore',
             'arc_expected_url_substring': '',
+            'verify_pages': 99,
             'safety_state': '/tmp/other-safety-state.json',
         })()
         self.assertEqual(execution_binding_blockers(source, changed), [
             'snapshot_browser_changed',
             'snapshot_user_changed',
             'snapshot_page_binding_changed',
+            'snapshot_verify_pages_changed',
             'snapshot_safety_session_changed',
         ])
 
@@ -806,6 +983,53 @@ function createTransactionModel(options) {
                 patch('run_reassign_batch.time.sleep') as sleep:
             execute_batch(classification, report, args, Path(tmp) / 'report.json')
         sleep.assert_called_once_with(2.5)
+
+    def test_execute_batch_creates_confirmed_boards_after_commit_before_moves(self):
+        args = type('Args', (), {
+            'browser': 'safari',
+            'arc_tab_marker': '',
+            'inter_item_delay_sec': 0,
+            'max_moves_per_session': 1,
+            'allow_low_confidence': False,
+            'verify_pages': 1,
+            'user_id': '',
+            'timeout_sec': 10,
+        })()
+        events = []
+
+        class Runner:
+            def eval(self, _js):
+                events.append('move')
+                return 'xhs_skill_123_456'
+
+            def close(self):
+                events.append('close')
+
+        report = {
+            'processed': [], 'errors': [], 'missing_boards': [],
+            'board_counts_before': {}, 'board_counts_after': {},
+        }
+        classification = [{
+            'id': 'note-1', 'title': '一', 'target_board': '阅读',
+            'confidence': 'high',
+        }]
+        result = {
+            'processed': [], 'errors': [], 'missing_boards': [],
+            'board_counts_before': {}, 'board_counts_after': {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
+                patch('run_reassign_batch.validate_execute_live_binding'), \
+                patch('run_reassign_batch.poll_browser_job', return_value=result):
+            execute_batch(
+                classification,
+                report,
+                args,
+                Path(tmp) / 'report.json',
+                commit_callback=lambda: events.append('commit'),
+                post_commit_callback=lambda _runner: events.append('create'),
+            )
+        self.assertEqual(events, ['commit', 'create', 'move', 'close'])
 
     def test_execute_batch_persists_first_error_then_stops_before_next_item(self):
         args = type('Args', (), {
@@ -1409,10 +1633,11 @@ states = [
   {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
   {'scrollY':1000,'innerHeight':100,'scrollHeight':1000,'location':'https://www.xiaohongshu.com/explore','title':'xhs','loginRequired':False,'items':[{'id':'note-1','title':'一','href':'https://www.xiaohongshu.com/explore/note-1'},{'id':'note-2','title':'二','href':'https://www.xiaohongshu.com/explore/note-2'}]},
 ]
+final_state = states[-1]
 def js_eval(js):
     if js.startswith('window.scrollBy') or js.startswith('window.scrollTo'):
         return 'ok'
-    return json.dumps(states.pop(0), ensure_ascii=False)
+    return json.dumps(states.pop(0) if states else final_state, ensure_ascii=False)
 out = Path(sys.argv[1])
 manifest = Path(sys.argv[2])
 print(json.dumps(extract_with_js(js_eval, out, 5, 0, manifest), ensure_ascii=False))

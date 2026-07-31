@@ -70,7 +70,7 @@
 
 ## 全图片运行契约
 
-环境就绪后，图文 OCR 的顺序固定为：
+环境就绪后，非 WorkBuddy 直接运行路径的图文 OCR 顺序固定为：
 
 ```bash
 python3 scripts/enrich_note_images.py visible_items.json image_items.json \
@@ -86,9 +86,10 @@ python scripts\ocr_note_images.py image_items.json ocr_results.json
 ```
 
 - `enrich_note_images.py` 默认低风险模式不访问详情；只有用户明确传 `--allow-detail-requests --max-items <1–200>` 才处理选定范围。它按笔记详情中的原始顺序写入封面和全部内页图片，并用 `image_urls_complete` 表示图片集合是否完整。
+- WorkBuddy 禁止运行上述无浏览器登录态入口。轻度整理必须在 `xhs_workbuddy_capture` 中传 `organizing_depth=light`；插件固定每组 200 条、非末组间隔 3 分钟，在同一登录态 Playwright context 内使用仅存于进程内的卡片链接取得详情，再用该 context 下载图片字节。`image_items.json` 只保存相对本地文件与内容 SHA256，签名源 URL 不落盘；关闭浏览器后再运行本地 OCR。WorkBuddy 深度整理尚无视频证据入口，必须在浏览器启动前停止。
 - 列表页卡片取得的封面或其它图片只能标为 observed，必须保持 `image_urls_complete=false`；只有详情 `LAUNCHER_SSR_STORE_PAGE_DATA.noteData.imageList` 可把 `image_list_source` 写为 `mobile_ssr_note_data.imageList` 并声明完整。
 - 详情 `noteData.type` 是图文/视频类型的权威来源，必须覆盖列表页 observed 类型；详情确认是视频时写为 `not_applicable`，不得送入图文 OCR。
-- 只有 `image_list_source=mobile_ssr_note_data.imageList`、`image_urls_complete=true` 且声明图片数与实际 URL 数一致时，`ocr_note_images.py` 才能执行；图片列表不完整必须写成 `incomplete_image_set`，不得只处理封面或部分内页。
+- 非 WorkBuddy 只有 `image_list_source=mobile_ssr_note_data.imageList`、`image_enrichment_status=ok`、`image_urls_complete=true` 且声明图片数与 URL 数一致时才能 OCR。WorkBuddy 则要求 `image_list_source=workbuddy_authenticated_frontend.noteData.imageList.local_copy`、`image_files` / `image_file_sha256` 一一对应、文件位于本次运行目录且内容哈希一致；任何一张缺失或变化都不得 OCR，也不得只处理封面或部分内页。
 - 详情请求触发 `security_blocked` 时，`enrich_note_images.py` 必须落盘当前状态，把后续未请求图文标为 `not_requested_after_security_block`，写入 `xhs_safety_state.json` 并立即停止；不得继续 OCR 或用 `--resume` 重发。
 - `ocr_results.json` 必须逐图保存状态、文字、置信度、哈希和错误，同时提供按图片顺序聚合的 `ocr_text`。
 - 任一图片下载或 OCR 失败时，整条笔记不得使用部分 OCR 文本分类。

@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urlencode, urlparse
 
 from verify_mimo_vl_install import EXPECTED_SHARD_SIZES
+from xhs_safety import redact_sensitive_text
 
 
 VIDEO_TRANSCRIPT_SCRIPT = Path("scripts/video_transcript_cli.py")
@@ -817,20 +818,6 @@ def normalize_content_type(value: Any) -> str:
 def transcript_sha256(segments: list[dict[str, Any]]) -> str:
     blob = json.dumps(segments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def redact_sensitive_text(value: Any) -> str:
-    text = " ".join(str(value or "").split())
-    text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?<redacted_query>", text, flags=re.IGNORECASE)
-    patterns = (
-        (r"([\"']?(?:xsec_token|sign|signature)[\"']?\s*:\s*[\"']?)[^\"'\s,}]+", r"\1<redacted>"),
-        (r"((?:xsec_token|sign|signature)\s*=\s*)[^&\s,}]+", r"\1<redacted>"),
-        (r"((?:xsec_token|sign|signature)%3D)[^%&\s]+", r"\1<redacted>"),
-        (r"((?:cookie|set-cookie)\s*[:=]\s*)[^\s]+", r"\1<redacted>"),
-    )
-    for pattern, replacement in patterns:
-        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-    return text
 
 
 def safe_error(exc: BaseException) -> str:

@@ -409,11 +409,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants);
+          this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -430,10 +430,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants);
+        this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -494,8 +494,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants) {
-        this.code = optimizeExpr(this.code, names, constants);
+      optimizeNames(names, constants2) {
+        this.code = optimizeExpr(this.code, names, constants2);
         return this;
       }
       get names() {
@@ -524,12 +524,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants))
+          if (n.optimizeNames(names, constants2))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -582,12 +582,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a3;
-        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants);
-        if (!(super.optimizeNames(names, constants) || this.else))
+        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
+        if (!(super.optimizeNames(names, constants2) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants);
+        this.condition = optimizeExpr(this.condition, names, constants2);
         return this;
       }
       get names() {
@@ -610,10 +610,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants);
+        this.iteration = optimizeExpr(this.iteration, names, constants2);
         return this;
       }
       get names() {
@@ -649,10 +649,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants);
+        this.iterable = optimizeExpr(this.iterable, names, constants2);
         return this;
       }
       get names() {
@@ -694,11 +694,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a3, _b;
-        super.optimizeNames(names, constants);
-        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants);
+        super.optimizeNames(names, constants2);
+        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants2);
         return this;
       }
       get names() {
@@ -999,7 +999,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants) {
+    function optimizeExpr(expr, names, constants2) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1014,14 +1014,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants[n.str];
+        const c = constants2[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -3228,8 +3228,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path2) {
-      let input = path2;
+    function removeDotSegments(path3) {
+      let input = path3;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3481,8 +3481,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path2, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
+        const [path3, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path3 && path3 !== "/" ? path3 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6897,7 +6897,7 @@ var require_dist = __commonJS({
 // server.mjs
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import path from "node:path";
+import path2 from "node:path";
 import process3 from "node:process";
 
 // node_modules/zod/v3/helpers/util.js
@@ -7259,8 +7259,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path2, errorMaps, issueData } = params;
-  const fullPath = [...path2, ...issueData.path || []];
+  const { data, path: path3, errorMaps, issueData } = params;
+  const fullPath = [...path3, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7375,11 +7375,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path2, key) {
+  constructor(parent, value, path3, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path2;
+    this._path = path3;
     this._key = key;
   }
   get path() {
@@ -11299,10 +11299,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path2) {
-  if (!path2)
+function getElementAtPath(obj, path3) {
+  if (!path3)
     return obj;
-  return path2.reduce((acc, key) => acc?.[key], obj);
+  return path3.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11711,11 +11711,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path2, issues) {
+function prefixIssues(path3, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path2);
+    iss.path.unshift(path3);
     return iss;
   });
 }
@@ -11862,16 +11862,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path2 = []) => {
+  const processError = (error52, path3 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path2, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path3, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path2, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path2, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
       } else {
-        const fullpath = [...path2, ...issue2.path];
+        const fullpath = [...path3, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -11898,17 +11898,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path2 = []) => {
+  const processError = (error52, path3 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path2, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path3, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path2, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path2, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path3, ...issue2.path]);
       } else {
-        const fullpath = [...path2, ...issue2.path];
+        const fullpath = [...path3, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -11940,8 +11940,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path2 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path2) {
+  const path3 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path3) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -23053,11 +23053,11 @@ function normalizeObjectSchema(schema) {
   }
   return void 0;
 }
-function getDotPath(path2) {
-  if (path2.length === 0) {
+function getDotPath(path3) {
+  if (path3.length === 0) {
     return "object root";
   }
-  return path2.reduce((acc, seg, index) => {
+  return path3.reduce((acc, seg, index) => {
     if (index === 0) {
       return String(seg);
     }
@@ -25082,13 +25082,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path2 = ref.slice(1).split("/").filter(Boolean);
-  if (path2.length === 0) {
+  const path3 = ref.slice(1).split("/").filter(Boolean);
+  if (path3.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path2[0] === defsKey) {
-    const key = path2[1];
+  if (path3[0] === defsKey) {
+    const key = path3[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -30985,16 +30985,579 @@ var StdioServerTransport = class {
   }
 };
 
+// bridge-security.mjs
+var SENSITIVE_KEY = "(?:xsec_token|xsec_source|sign|signature|authorization|cookie|set-cookie|web_session|a1)";
+var ENCODED_SENSITIVE_KEY = "(?:xsec(?:_|%5f)(?:token|source)|sign|signature|authorization|cookie|set-cookie|web(?:_|%5f)session|a1)";
+function redactSensitiveText(value) {
+  let text = value instanceof Error ? String(value.message || value.name || "Error") : String(value ?? "");
+  text = text.replace(/https?:\/\/[^\s"'<>]+/gi, (url2) => {
+    const queryIndex = url2.search(/[?#]/);
+    return queryIndex === -1 ? url2 : `${url2.slice(0, queryIndex)}?<redacted_query>`;
+  });
+  text = text.replace(
+    new RegExp(`(["']?${SENSITIVE_KEY}["']?\\s*:\\s*)(?:"[^"]*"|'[^']*')`, "gi"),
+    '$1"<redacted>"'
+  );
+  text = text.replace(
+    new RegExp(`(["']?${SENSITIVE_KEY}["']?\\s*:\\s*)[^,}\\r\\n]+`, "gi"),
+    "$1<redacted>"
+  );
+  text = text.replace(
+    new RegExp(`(${SENSITIVE_KEY}\\s*=\\s*)[^&\\s,}]+`, "gi"),
+    "$1<redacted>"
+  );
+  text = text.replace(
+    new RegExp(`(${ENCODED_SENSITIVE_KEY}%3d)[^&\\s,}]+`, "gi"),
+    "$1<redacted>"
+  );
+  text = text.replace(
+    new RegExp(`(--(?:xsec-token|xsec-source|sign|signature|authorization|cookie)\\s+)[^\\s]+`, "gi"),
+    "$1<redacted>"
+  );
+  return text.replace(/\s+/g, " ").trim().slice(0, 1e3);
+}
+function safeBridgeError(value, fallback = "\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u5931\u8D25\u3002") {
+  const message = redactSensitiveText(value) || fallback;
+  return new Error(message);
+}
+function parseBridgeResult(stdout, stderr, code) {
+  const stdoutText = String(stdout ?? "");
+  const stderrText = String(stderr ?? "");
+  const lines = stdoutText.trim().split(/\r?\n/).filter(Boolean);
+  let payload;
+  try {
+    payload = JSON.parse(lines.at(-1) || "{}");
+  } catch {
+    throw safeBridgeError(
+      `\u6865\u63A5\u5668\u8FD4\u56DE\u4E86\u65E0\u6548 JSON\uFF1A${stdoutText.trim() || stderrText.trim()}`,
+      "\u6865\u63A5\u5668\u8FD4\u56DE\u4E86\u65E0\u6548 JSON\u3002"
+    );
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw safeBridgeError("\u6865\u63A5\u5668\u8FD4\u56DE\u4E86\u65E0\u6548 JSON \u5BF9\u8C61\u3002");
+  }
+  if (code !== 0 || payload.ok === false) {
+    throw safeBridgeError(
+      payload.error || stderrText.trim() || stdoutText.trim() || `bridge exit=${code}`,
+      `bridge exit=${code}`
+    );
+  }
+  return payload;
+}
+
+// evidence-ledger.mjs
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual
+} from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync
+} from "node:fs";
+import path from "node:path";
+var RECEIPT_PREFIX = "xhs1";
+var RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var ARTIFACT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+var STAGE_TRANSITIONS = /* @__PURE__ */ new Map([
+  ["capture", "inventory"],
+  ["inventory", "plan"]
+]);
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, stableValue(value[key])])
+    );
+  }
+  return value;
+}
+function canonicalJson(value) {
+  return JSON.stringify(stableValue(value));
+}
+function normalizedBindings(value) {
+  const bindings = {
+    user_id: String(value?.user_id || "").trim().toLowerCase(),
+    page_binding: String(value?.page_binding || "").trim(),
+    source: String(value?.source || "").trim(),
+    organizing_depth: String(value?.organizing_depth || "").trim()
+  };
+  if (!/^[0-9a-f]{24}$/.test(bindings.user_id)) {
+    throw new Error("receipt_binding_invalid:user_id");
+  }
+  if (!bindings.page_binding.startsWith("https://")) {
+    throw new Error("receipt_binding_invalid:page_binding");
+  }
+  if (!["collection", "liked"].includes(bindings.source)) {
+    throw new Error("receipt_binding_invalid:source");
+  }
+  if (!["quick", "light"].includes(bindings.organizing_depth)) {
+    throw new Error("receipt_binding_invalid:organizing_depth");
+  }
+  return bindings;
+}
+function expectedBindingsMatch(actual, expected) {
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) {
+    throw new Error("receipt_binding_invalid");
+  }
+  const keys = Object.keys(expected);
+  if (keys.length === 0) throw new Error("receipt_binding_invalid");
+  const allowed = /* @__PURE__ */ new Set([
+    "user_id",
+    "page_binding",
+    "source",
+    "organizing_depth"
+  ]);
+  if (keys.some((key) => !allowed.has(key))) {
+    throw new Error("receipt_binding_invalid");
+  }
+  const candidate = normalizedBindings({ ...actual, ...expected });
+  return keys.every((key) => candidate[key] === actual[key]);
+}
+function pathInside(candidate, parent) {
+  const relative = path.relative(parent, candidate);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+function checkedRunId(value) {
+  const runId = String(value || "").trim();
+  if (!RUN_ID_RE.test(runId) || runId.includes("..")) {
+    throw new Error("receipt_run_id_invalid");
+  }
+  return runId;
+}
+function checkedArtifactNames(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new Error("receipt_artifacts_missing");
+  }
+  const names = values.map((value) => String(value || "").trim());
+  if (names.some((name) => !ARTIFACT_RE.test(name) || name.includes("..") || path.basename(name) !== name)) {
+    throw new Error("receipt_artifact_name_invalid");
+  }
+  if (new Set(names).size !== names.length) {
+    throw new Error("receipt_artifact_duplicate");
+  }
+  return names.sort();
+}
+function sameOpenFile(before, after) {
+  return before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs;
+}
+function hashRegularFile(runDirectory, name) {
+  const filePath = path.join(runDirectory, name);
+  const pathStat = lstatSync(filePath);
+  if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+    throw new Error(`receipt_artifact_unsafe:${name}`);
+  }
+  const realFile = realpathSync(filePath);
+  if (path.dirname(realFile) !== runDirectory) {
+    throw new Error(`receipt_artifact_path_escape:${name}`);
+  }
+  const noFollow = Number(constants.O_NOFOLLOW || 0);
+  const descriptor = openSync(realFile, constants.O_RDONLY | noFollow);
+  try {
+    const before = fstatSync(descriptor);
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (!sameOpenFile(before, after)) {
+      throw new Error(`evidence_changed:${name}`);
+    }
+    if (realpathSync(filePath) !== realFile) {
+      throw new Error(`evidence_changed:${name}`);
+    }
+    const artifact = {
+      name,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.length
+    };
+    if (name === "xhs_safety_state.json") {
+      try {
+        artifact.safety_state = JSON.parse(bytes.toString("utf8"));
+      } catch {
+        throw new Error("receipt_safety_state_invalid");
+      }
+      if (!artifact.safety_state || typeof artifact.safety_state !== "object" || Array.isArray(artifact.safety_state)) {
+        throw new Error("receipt_safety_state_invalid");
+      }
+    }
+    return artifact;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+function immutableReceiptBasis(record2) {
+  return {
+    version: 1,
+    instance_id: record2.instanceId,
+    receipt_id: record2.id,
+    parent_receipt_id: record2.parentId,
+    run_id: record2.runId,
+    stage: record2.stage,
+    bindings: record2.bindings,
+    artifacts: record2.artifacts
+  };
+}
+function trustedEvidence(record2) {
+  return {
+    schema: "xhs_workbuddy_trusted_evidence_v1",
+    receipt_id: record2.id,
+    run_id: record2.runId,
+    stage: record2.stage,
+    bindings: { ...record2.bindings },
+    artifacts: Object.fromEntries(
+      record2.artifacts.map((artifact) => [artifact.name, {
+        sha256: artifact.sha256,
+        size: artifact.size
+      }])
+    )
+  };
+}
+function createEvidenceLedger({ runsRoot }) {
+  if (!runsRoot) throw new Error("receipt_runs_root_missing");
+  mkdirSync(runsRoot, { recursive: true });
+  const trustedRunsRoot = realpathSync(runsRoot);
+  const secret = randomBytes(32);
+  const instanceId = randomUUID();
+  const records = /* @__PURE__ */ new Map();
+  const runHeads = /* @__PURE__ */ new Map();
+  function runDirectory(runId) {
+    const checked = checkedRunId(runId);
+    const candidate = path.join(trustedRunsRoot, checked);
+    const stat = lstatSync(candidate);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error("receipt_run_directory_unsafe");
+    }
+    const resolved = realpathSync(candidate);
+    if (!pathInside(resolved, trustedRunsRoot)) {
+      throw new Error("receipt_run_path_escape");
+    }
+    return resolved;
+  }
+  function currentArtifacts(runId, artifactNames) {
+    const directory = runDirectory(runId);
+    return checkedArtifactNames(artifactNames).map(
+      (name) => hashRegularFile(directory, name)
+    );
+  }
+  function macFor(record2) {
+    return createHmac("sha256", secret).update(canonicalJson(immutableReceiptBasis(record2))).digest();
+  }
+  function tokenFor(record2) {
+    return `${RECEIPT_PREFIX}.${record2.id}.${macFor(record2).toString("base64url")}`;
+  }
+  function recordFor(receipt) {
+    const [prefix, id, encodedMac, ...extra] = String(receipt || "").split(".");
+    if (prefix !== RECEIPT_PREFIX || !id || !encodedMac || extra.length) {
+      throw new Error("receipt_invalid");
+    }
+    const record2 = records.get(id);
+    if (!record2 || record2.instanceId !== instanceId) {
+      throw new Error("receipt_expired_or_foreign");
+    }
+    let provided;
+    try {
+      provided = Buffer.from(encodedMac, "base64url");
+    } catch {
+      throw new Error("receipt_invalid");
+    }
+    if (provided.toString("base64url") !== encodedMac) {
+      throw new Error("receipt_invalid");
+    }
+    const expected = macFor(record2);
+    if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+      throw new Error("receipt_invalid");
+    }
+    return record2;
+  }
+  function assertExpected(record2, { expectedStage, runId, bindings }) {
+    const checkedRun = checkedRunId(runId);
+    if (record2.stage !== expectedStage) throw new Error("receipt_stage_mismatch");
+    if (record2.runId !== checkedRun) throw new Error("receipt_run_mismatch");
+    if (!expectedBindingsMatch(record2.bindings, bindings)) {
+      throw new Error("receipt_binding_mismatch");
+    }
+    if (runHeads.get(record2.runId) !== record2.id) throw new Error("receipt_not_current");
+  }
+  function validSafetyStateProgress(before, after) {
+    if (before?.state !== "active" || before?.security_halted !== false || after?.state !== "active" || after?.security_halted !== false || typeof before.session_id !== "string" || !before.session_id || after.session_id !== before.session_id || after.schema_version !== before.schema_version || after.created_at !== before.created_at || after.halt !== null || after.last_stage !== "board_snapshot" || typeof after.updated_at !== "string" || after.updated_at < String(before.updated_at || "")) {
+      return false;
+    }
+    const beforeCheckpoints = before.checkpoints;
+    const afterCheckpoints = after.checkpoints;
+    if (!Array.isArray(beforeCheckpoints) || !Array.isArray(afterCheckpoints) || afterCheckpoints.length !== beforeCheckpoints.length + 1 || canonicalJson(afterCheckpoints.slice(0, -1)) !== canonicalJson(beforeCheckpoints)) {
+      return false;
+    }
+    const added = afterCheckpoints.at(-1);
+    if (!added || added.stage !== "board_snapshot" || added.event !== "operation_started") {
+      return false;
+    }
+    const policy = after.policy;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy) || policy.auto_scroll !== false || policy.auto_navigation !== false || policy.auto_retry !== false || policy.read_only !== true) {
+      return false;
+    }
+    const allowedChangedKeys = /* @__PURE__ */ new Set([
+      "updated_at",
+      "last_stage",
+      "policy",
+      "checkpoints"
+    ]);
+    const allKeys = /* @__PURE__ */ new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const key of allKeys) {
+      if (!allowedChangedKeys.has(key) && canonicalJson(before[key]) !== canonicalJson(after[key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function assertArtifactsUnchanged(record2, { allowSafetyStateProgress = false } = {}) {
+    const actual = currentArtifacts(
+      record2.runId,
+      record2.artifacts.map((artifact) => artifact.name)
+    );
+    const actualByName = new Map(actual.map((artifact) => [artifact.name, artifact]));
+    for (const expected of record2.artifacts) {
+      const current = actualByName.get(expected.name);
+      if (canonicalJson(current) === canonicalJson(expected)) continue;
+      if (allowSafetyStateProgress && expected.name === "xhs_safety_state.json" && validSafetyStateProgress(expected.safety_state, current?.safety_state)) {
+        continue;
+      }
+      throw new Error("evidence_changed");
+    }
+    return actual;
+  }
+  function issueRecord({ runId, stage, bindings, artifactNames, parentId = null }) {
+    const checkedRun = checkedRunId(runId);
+    const record2 = {
+      id: randomBytes(18).toString("base64url"),
+      instanceId,
+      parentId,
+      runId: checkedRun,
+      stage,
+      bindings: normalizedBindings(bindings),
+      artifacts: currentArtifacts(checkedRun, artifactNames),
+      state: "issued"
+    };
+    records.set(record2.id, record2);
+    runHeads.set(checkedRun, record2.id);
+    return {
+      receipt: tokenFor(record2),
+      trustedEvidence: trustedEvidence(record2)
+    };
+  }
+  return {
+    issue({ runId, stage, bindings, artifactNames }) {
+      if (stage !== "capture") throw new Error("receipt_root_stage_invalid");
+      const checkedRun = checkedRunId(runId);
+      if (runHeads.has(checkedRun)) throw new Error("receipt_run_already_attested");
+      return issueRecord({ runId: checkedRun, stage, bindings, artifactNames });
+    },
+    begin({ receipt, expectedStage, runId, bindings }) {
+      const record2 = recordFor(receipt);
+      assertExpected(record2, { expectedStage, runId, bindings });
+      if (record2.state !== "issued") throw new Error("receipt_already_used");
+      assertArtifactsUnchanged(record2);
+      record2.state = "in_flight";
+      return trustedEvidence(record2);
+    },
+    abort(receipt) {
+      const record2 = recordFor(receipt);
+      if (record2.state === "in_flight") record2.state = "issued";
+    },
+    advance({
+      receipt,
+      nextStage,
+      artifactNames,
+      allowSafetyStateProgress = false
+    }) {
+      const parent = recordFor(receipt);
+      if (parent.state !== "in_flight") throw new Error("receipt_transition_not_started");
+      if (runHeads.get(parent.runId) !== parent.id) throw new Error("receipt_not_current");
+      if (STAGE_TRANSITIONS.get(parent.stage) !== nextStage) {
+        throw new Error("receipt_stage_transition_invalid");
+      }
+      assertArtifactsUnchanged(parent, { allowSafetyStateProgress });
+      const issued = issueRecord({
+        runId: parent.runId,
+        stage: nextStage,
+        bindings: parent.bindings,
+        artifactNames,
+        parentId: parent.id
+      });
+      parent.state = "consumed";
+      return issued;
+    },
+    commit(receipt) {
+      const record2 = recordFor(receipt);
+      if (record2.state !== "in_flight") {
+        throw new Error("receipt_commit_not_started");
+      }
+      if (runHeads.get(record2.runId) !== record2.id) {
+        throw new Error("receipt_not_current");
+      }
+      assertArtifactsUnchanged(record2);
+      record2.state = "consumed";
+    },
+    consume({ receipt, expectedStage, runId, bindings }) {
+      const evidence = this.begin({
+        receipt,
+        expectedStage,
+        runId,
+        bindings
+      });
+      this.commit(receipt);
+      return evidence;
+    }
+  };
+}
+
+// launch-attestation.mjs
+import {
+  createHmac as createHmac2,
+  randomBytes as randomBytes2
+} from "node:crypto";
+var LAUNCH_ATTESTATION_SCHEMA = "xhs_workbuddy_launch_attestation_v1";
+function stableValue2(value) {
+  if (Array.isArray(value)) return value.map(stableValue2);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, stableValue2(value[key])])
+    );
+  }
+  return value;
+}
+function canonicalJson2(value) {
+  return JSON.stringify(stableValue2(value));
+}
+function createLaunchAttestation({ action, args, inputPayload }) {
+  if (!["prepare", "execute"].includes(action)) {
+    throw new Error("mcp_launch_attestation_action_invalid");
+  }
+  if (!Array.isArray(args) || args.some((value) => typeof value !== "string")) {
+    throw new Error("mcp_launch_attestation_args_invalid");
+  }
+  if (!inputPayload || typeof inputPayload !== "object" || Array.isArray(inputPayload) || !inputPayload.trusted_evidence || typeof inputPayload.trusted_evidence !== "object" || Array.isArray(inputPayload.trusted_evidence)) {
+    throw new Error("mcp_launch_attestation_evidence_missing");
+  }
+  const key = randomBytes2(32);
+  const nonce = randomBytes2(18).toString("base64url");
+  const basis = {
+    schema: LAUNCH_ATTESTATION_SCHEMA,
+    nonce,
+    action,
+    args: [...args],
+    trusted_evidence: inputPayload.trusted_evidence
+  };
+  const signature = createHmac2("sha256", key).update(canonicalJson2(basis)).digest("base64url");
+  return {
+    key,
+    payload: {
+      ...inputPayload,
+      launch_attestation: {
+        schema: LAUNCH_ATTESTATION_SCHEMA,
+        nonce,
+        signature
+      }
+    }
+  };
+}
+
+// page-binding.mjs
+var USER_ID_RE = /^[0-9a-f]{24}$/;
+function parsedXhsPage(pageUrl) {
+  const parsed = new URL(pageUrl);
+  const hostname3 = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "https:" || !(hostname3 === "xiaohongshu.com" || hostname3.endsWith(".xiaohongshu.com"))) {
+    throw new Error("page_url_invalid");
+  }
+  return parsed;
+}
+function sourceForTab(tab) {
+  if (tab === "fav") return "collection";
+  if (["liked", "like"].includes(tab)) return "liked";
+  throw new Error("page_source_tab_mismatch");
+}
+function canonicalPageBinding(pageUrl, expectedSource = void 0) {
+  const parsed = parsedXhsPage(pageUrl);
+  const tab = String(parsed.searchParams.get("tab") || "").trim().toLowerCase();
+  const source = sourceForTab(tab);
+  if (expectedSource !== void 0 && source !== expectedSource) {
+    throw new Error("page_source_tab_mismatch");
+  }
+  return `${parsed.origin}${parsed.pathname}?tab=${tab}`;
+}
+function receiptBindingsForPage(userId, pageUrl) {
+  const checkedUserId = String(userId || "").trim().toLowerCase();
+  if (!USER_ID_RE.test(checkedUserId)) throw new Error("page_user_id_invalid");
+  const parsed = parsedXhsPage(pageUrl);
+  const match = parsed.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
+  if (!match || match[1].toLowerCase() !== checkedUserId) {
+    throw new Error("page_user_id_mismatch");
+  }
+  const tab = String(parsed.searchParams.get("tab") || "").trim().toLowerCase();
+  const source = sourceForTab(tab);
+  return {
+    user_id: checkedUserId,
+    page_binding: canonicalPageBinding(pageUrl, source),
+    source
+  };
+}
+
 // server.mjs
-var skillRoot = path.resolve(
-  process3.env.CODEBUDDY_PLUGIN_ROOT || path.join(import.meta.dirname, "..")
+var skillRoot = path2.resolve(
+  process3.env.CODEBUDDY_PLUGIN_ROOT || path2.join(import.meta.dirname, "..")
 );
 var pluginDataArgument = process3.argv[2];
-var pluginData = pluginDataArgument ? path.resolve(pluginDataArgument) : "";
-var playwrightProfile = path.join(pluginData, "playwright-profile");
-var pythonVenv = path.join(pluginData, "python-venv");
-var playwrightBrowsers = path.join(pluginData, "playwright-browsers");
-var bridge = path.join(skillRoot, "scripts", "workbuddy_bridge.py");
+var pluginData = pluginDataArgument ? path2.resolve(pluginDataArgument) : "";
+var playwrightProfile = path2.join(pluginData, "playwright-profile");
+var pythonVenv = path2.join(pluginData, "python-venv");
+var playwrightBrowsers = path2.join(pluginData, "playwright-browsers");
+var bridge = path2.join(skillRoot, "scripts", "workbuddy_bridge.py");
+var evidenceLedger;
+var RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
+var APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+var PLUGIN_VERSION = "2.0.5";
+var MCP_LAUNCH_KEY_FD = 3;
+var MCP_EXECUTE_READY_FD = 4;
+var MCP_EXECUTE_COMMIT_FD = 5;
+function pageUserId(pageUrl) {
+  const match = new URL(pageUrl).pathname.match(
+    /^\/user\/profile\/([0-9a-fA-F]{24})\/?$/
+  );
+  if (!match) throw new Error("page_url \u5FC5\u987B\u7ED1\u5B9A\u5F53\u524D\u8D26\u53F7\u7684 profile \u9875\u3002");
+  return match[1].toLowerCase();
+}
+function captureArtifactNames(organizingDepth) {
+  const names = [
+    "visible_items.json",
+    "crawl_manifest.json",
+    "xhs_safety_state.json"
+  ];
+  if (organizingDepth === "light") {
+    names.push("image_items.json", "ocr_results.json");
+  }
+  return names;
+}
+function inventoryArtifactNames(organizingDepth) {
+  return [...captureArtifactNames(organizingDepth), "board_snapshot.json"];
+}
+function planArtifactNames(organizingDepth) {
+  return [
+    ...inventoryArtifactNames(organizingDepth),
+    "classification.json",
+    "created_boards.json",
+    "run_report.json",
+    "approval.json"
+  ];
+}
+function receiptBindings(userId, pageUrl) {
+  return receiptBindingsForPage(userId, pageUrl);
+}
 function requirePluginEnvironment() {
   if (process3.env.XHS_HOST !== "workbuddy") {
     throw new Error("XHS_HOST \u5FC5\u987B\u7531 WorkBuddy Plugin \u8BBE\u7F6E\u4E3A workbuddy\u3002");
@@ -31014,7 +31577,7 @@ function commandReady(command) {
   return result.status === 0;
 }
 function venvPython() {
-  const executable = process3.platform === "win32" ? path.join(pythonVenv, "Scripts", "python.exe") : path.join(pythonVenv, "bin", "python");
+  const executable = process3.platform === "win32" ? path2.join(pythonVenv, "Scripts", "python.exe") : path2.join(pythonVenv, "bin", "python");
   return existsSync(executable) ? executable : null;
 }
 function bootstrapPython() {
@@ -31036,29 +31599,90 @@ function pythonFor(action) {
   }
   return bootstrapPython();
 }
-function runBridge(action, args = [], timeoutMs = 6e5) {
+function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0, inputPayload = void 0, launchOptions = {}) {
   requirePluginEnvironment();
   return new Promise((resolve, reject) => {
     const python = pythonFor(action);
-    const child = spawn(python, [bridge, action, ...args], {
+    const attested = ["prepare", "execute"].includes(action);
+    const bridgeArgs = attested ? [...args, "--mcp-launch-fd", String(MCP_LAUNCH_KEY_FD)] : [...args];
+    const launch = attested ? createLaunchAttestation({
+      action,
+      args: bridgeArgs,
+      inputPayload
+    }) : null;
+    const bridgeInput = launch ? launch.payload : inputPayload;
+    const stdio = action === "execute" ? ["pipe", "pipe", "pipe", "pipe", "pipe", "pipe"] : attested ? ["pipe", "pipe", "pipe", "pipe"] : [inputPayload === void 0 ? "ignore" : "pipe", "pipe", "pipe"];
+    const child = spawn(python, [bridge, action, ...bridgeArgs], {
       cwd: skillRoot,
       env: {
         ...process3.env,
         XHS_HOST: "workbuddy",
+        XHS_WORKBUDDY_PLATFORM: process3.platform,
         XHS_SKILL_ROOT: skillRoot,
         CODEBUDDY_PLUGIN_DATA: pluginData,
         XHS_PLAYWRIGHT_PROFILE: playwrightProfile,
         XHS_PYTHON_VENV: pythonVenv,
         PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers
       },
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true
+      stdio,
+      windowsHide: true,
+      detached: process3.platform !== "win32"
     });
     let stdout = "";
     let stderr = "";
+    let finished = false;
+    let terminationError;
+    let forceKillTimer;
+    let executeReady = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      clearTimeout(forceKillTimer);
+      abortSignal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (error51) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      reject(safeBridgeError(error51));
+    };
+    const signalProcessTree = (signalName) => {
+      try {
+        if (process3.platform === "win32") {
+          const result = spawnSync(
+            "taskkill.exe",
+            ["/PID", String(child.pid), "/T", "/F"],
+            { windowsHide: true, stdio: "ignore" }
+          );
+          if (result.error) throw result.error;
+        } else {
+          process3.kill(-child.pid, signalName);
+        }
+      } catch (error51) {
+        if (error51?.code !== "ESRCH") throw error51;
+      }
+    };
+    const terminate = (error51) => {
+      if (finished || terminationError) return;
+      terminationError = error51;
+      try {
+        signalProcessTree("SIGTERM");
+      } catch (signalError) {
+        fail(signalError);
+        return;
+      }
+      forceKillTimer = setTimeout(() => {
+        try {
+          signalProcessTree("SIGKILL");
+        } catch (signalError) {
+          fail(signalError);
+        }
+      }, 5e3);
+    };
+    const onAbort = () => {
+      terminate(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u5DF2\u53D6\u6D88\uFF1A${action}`));
+    };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u8D85\u65F6\uFF1A${action}`));
+      terminate(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u8D85\u65F6\uFF1A${action}`));
     }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -31069,25 +31693,69 @@ function runBridge(action, args = [], timeoutMs = 6e5) {
       stderr += chunk;
     });
     child.on("error", (error51) => {
-      clearTimeout(timer);
-      reject(error51);
+      fail(error51);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
-      let payload;
+      if (finished) return;
+      finished = true;
+      cleanup();
+      if (terminationError) {
+        reject(safeBridgeError(terminationError));
+        return;
+      }
       try {
-        payload = JSON.parse(lines.at(-1) || "{}");
-      } catch {
-        reject(new Error(`\u6865\u63A5\u5668\u8FD4\u56DE\u4E86\u65E0\u6548 JSON\uFF1A${stdout.trim() || stderr.trim()}`));
+        resolve(parseBridgeResult(stdout, stderr, code));
+      } catch (error51) {
+        reject(safeBridgeError(error51));
         return;
       }
-      if (code !== 0 || payload.ok === false) {
-        reject(new Error(payload.error || stderr.trim() || `bridge exit=${code}`));
-        return;
-      }
-      resolve(payload);
     });
+    if (launch) {
+      const keyPipe = child.stdio[MCP_LAUNCH_KEY_FD];
+      keyPipe.on("error", terminate);
+      keyPipe.end(launch.key, () => launch.key.fill(0));
+    }
+    if (action === "execute") {
+      if (typeof launchOptions.onExecutePreflightReady !== "function") {
+        terminate(new Error("execute \u7F3A\u5C11 MCP \u63D0\u4EA4\u95F8\u95E8\u3002"));
+        return;
+      }
+      const readyPipe = child.stdio[MCP_EXECUTE_READY_FD];
+      const commitPipe = child.stdio[MCP_EXECUTE_COMMIT_FD];
+      let readyText = "";
+      readyPipe.setEncoding("utf8");
+      readyPipe.on("error", terminate);
+      commitPipe.on("error", terminate);
+      readyPipe.on("data", (chunk) => {
+        if (executeReady) return;
+        readyText += chunk;
+        if (readyText.length > 16) {
+          terminate(new Error("execute \u9884\u68C0\u63E1\u624B\u65E0\u6548\u3002"));
+          return;
+        }
+        if (!readyText.includes("\n")) return;
+        if (readyText !== "READY\n") {
+          terminate(new Error("execute \u9884\u68C0\u63E1\u624B\u65E0\u6548\u3002"));
+          return;
+        }
+        try {
+          launchOptions.onExecutePreflightReady();
+          executeReady = true;
+          commitPipe.end("COMMIT\n");
+        } catch (error51) {
+          terminate(error51);
+        }
+      });
+    }
+    if (abortSignal?.aborted) {
+      onAbort();
+      return;
+    }
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+    if (bridgeInput !== void 0) {
+      child.stdin.on("error", terminate);
+      child.stdin.end(JSON.stringify(bridgeInput));
+    }
   });
 }
 function requireTrue(value, label) {
@@ -31105,33 +31773,37 @@ function toolResult(payload) {
   };
 }
 function toolError(error51) {
+  const safeError = safeBridgeError(error51);
   return {
     isError: true,
     content: [{
       type: "text",
-      text: error51 instanceof Error ? error51.message : String(error51)
+      text: safeError.message
     }]
   };
 }
 var server = new McpServer(
   {
     name: "xiaohongshu-workbuddy",
-    version: "2.0.0"
+    version: PLUGIN_VERSION
   },
   {
-    instructions: "\u5728 WorkBuddy \u4E2D\u53EA\u80FD\u8C03\u7528\u672C\u670D\u52A1\u5668\u7BA1\u7406\u5C0F\u7EA2\u4E66\u6D4F\u89C8\u5668\u9636\u6BB5\u3002\u5148 status\uFF1B\u7F3A\u4F9D\u8D56\u65F6\u7ECF\u7528\u6237\u540C\u610F\u540E setup\uFF1B\u9996\u6B21\u767B\u5F55\u7528 login\uFF1B\u6293\u53D6\u7528 capture\uFF1B\u771F\u5B9E\u5206\u7C7B\u5B8C\u6210\u540E\u7528 prepare\uFF1B\u53EA\u6709 prepare \u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u4E14\u7528\u6237\u786E\u8BA4\u6620\u5C04\u548C\u4E0A\u9650\u540E\u624D\u53EF execute\u3002\u7981\u6B62\u8C03\u7528 Safari\u3001Arc\u3001\u7CFB\u7EDF Chrome\u3001CDP \u6216 osascript\u3002"
+    instructions: "\u5728 WorkBuddy \u4E2D\u53EA\u80FD\u8C03\u7528\u672C\u670D\u52A1\u5668\u7BA1\u7406\u5C0F\u7EA2\u4E66\u6D4F\u89C8\u5668\u9636\u6BB5\u3002\u5148 status\uFF1B\u7F3A\u4F9D\u8D56\u65F6\u7ECF\u7528\u6237\u540C\u610F\u540E setup\uFF1B\u9996\u6B21\u767B\u5F55\u7528 login\uFF1B\u6293\u53D6\u5728\u540C\u4E00\u6D4F\u89C8\u5668\u4F1A\u8BDD\u4E2D\u81EA\u52A8\u7FFB\u9875\uFF0C\u9ED8\u8BA4\u6BCF 200 \u6761\u4E00\u7EC4\u3001\u7EC4\u95F4\u6682\u505C 3 \u5206\u949F\uFF1Bcapture \u5FC5\u987B\u663E\u5F0F\u4F20 organizing_depth\uFF1Bquick \u4E0D\u505A OCR\uFF0Clight \u5728\u5173\u95ED\u540C\u4E00\u6D4F\u89C8\u5668\u524D\u5B8C\u6210\u767B\u5F55\u6001\u8BE6\u60C5\u8865\u9F50\u5E76\u5728\u672C\u5730 OCR\uFF1Bdeep \u56E0\u5C1A\u65E0\u89C6\u9891\u8BED\u97F3\u548C\u5B8C\u6574\u65F6\u8F74\u753B\u9762\u8BC1\u636E\u5165\u53E3\u800C\u5728\u6D4F\u89C8\u5668\u542F\u52A8\u524D\u505C\u6B62\uFF1B\u7981\u6B62\u5728 WorkBuddy \u4E2D\u8FD0\u884C\u65E0\u767B\u5F55\u6001 enrich_note_images.py \u6216\u9759\u9ED8\u6539\u7528\u5143\u6570\u636E\u5206\u7C7B\uFF1Bcapture \u540E\u5148\u8C03\u7528\u4E0D\u5E26 classification \u7684 prepare \u8BFB\u53D6\u771F\u5B9E\u5DF2\u6709\u4E13\u8F91\uFF1B\u5206\u7C7B\u4F18\u5148\u9009\u62E9\u771F\u5B9E\u5DF2\u6709\u4E13\u8F91\uFF1B\u6CA1\u6709\u5408\u9002\u4E13\u8F91\u65F6\u53EA\u80FD\u4F9D\u636E\u672C\u6B21\u771F\u5B9E\u5185\u5BB9\u63D0\u8BAE\u65B0\u540D\u79F0\uFF0C\u4E0D\u5F97\u4F7F\u7528\u9884\u8BBE\u4E3B\u9898\uFF1Bcapture\u3001\u4E24\u6B21 prepare \u548C execute \u4E4B\u95F4\u5FC5\u987B\u81EA\u52A8\u539F\u6837\u4F20\u9012 evidence_receipt\uFF0C\u7528\u6237\u65E0\u9700\u5904\u7406\uFF1B\u6CA1\u6709\u5DF2\u6709\u4E13\u8F91\u65F6\uFF0C\u628A\u63D0\u8BAE\u540D\u79F0\u548C\u516C\u5F00\u6216\u79C1\u5BC6\u8BBE\u7F6E\u4E0E\u9010\u6761\u79FB\u52A8\u65B9\u6848\u4E00\u8D77\u4EA4\u7ED9\u7528\u6237\u4E00\u6B21\u786E\u8BA4\uFF1B\u53EA\u6709 prepare \u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u4E14\u7528\u6237\u786E\u8BA4\u6620\u5C04\u548C\u4E0A\u9650\u540E\u624D\u53EF execute\u3002\u7981\u6B62\u8C03\u7528 Safari\u3001Arc\u3001\u7CFB\u7EDF Chrome\u3001CDP \u6216 osascript\u3002"
   }
 );
 server.registerTool(
   "xhs_workbuddy_status",
   {
     title: "\u68C0\u67E5 WorkBuddy \u5C0F\u7EA2\u4E66\u8FD0\u884C\u73AF\u5883",
-    description: "\u79BB\u7EBF\u68C0\u67E5\u63D2\u4EF6\u5BBF\u4E3B\u3001\u72EC\u7ACB Playwright profile \u548C\u4F9D\u8D56\uFF1B\u4E0D\u6253\u5F00\u6D4F\u89C8\u5668\u3001\u4E0D\u8BBF\u95EE\u5C0F\u7EA2\u4E66\u3002",
+    description: "\u79BB\u7EBF\u68C0\u67E5\u63D2\u4EF6\u5BBF\u4E3B\u3001\u72EC\u7ACB Playwright profile \u548C\u4F9D\u8D56\uFF1BWindows \u4F7F\u7528\u72EC\u7ACB Edge profile\uFF0CmacOS/Linux \u4F7F\u7528\u72EC\u7ACB Chromium\uFF1B\u4E0D\u6253\u5F00\u6D4F\u89C8\u5668\u3001\u4E0D\u8BBF\u95EE\u5C0F\u7EA2\u4E66\u3002",
     inputSchema: external_exports.object({})
   },
   async () => {
     try {
-      return toolResult(await runBridge("status", [], 3e4));
+      return toolResult({
+        ...await runBridge("status", [], 3e4),
+        plugin_version: PLUGIN_VERSION
+      });
     } catch (error51) {
       return toolError(error51);
     }
@@ -31141,15 +31813,20 @@ server.registerTool(
   "xhs_workbuddy_setup",
   {
     title: "\u5B89\u88C5 WorkBuddy \u4E13\u7528 Playwright",
-    description: "\u4EC5\u5728\u7528\u6237\u660E\u786E\u540C\u610F\u4E0B\u8F7D\u4F9D\u8D56\u540E\u8C03\u7528\u3002\u628A Python Playwright \u548C Chromium \u5B89\u88C5\u5230\u63D2\u4EF6\u6301\u4E45\u5316\u76EE\u5F55\uFF1B\u4E0D\u6253\u5F00\u6D4F\u89C8\u5668\u3002",
+    description: "\u4EC5\u5728\u7528\u6237\u660E\u786E\u540C\u610F\u5B89\u88C5\u4F9D\u8D56\u540E\u8C03\u7528\u3002Windows \u590D\u7528\u7CFB\u7EDF Edge \u7A0B\u5E8F\u4F46\u4F7F\u7528\u63D2\u4EF6\u72EC\u7ACB\u767B\u5F55\u76EE\u5F55\uFF0C\u4E0D\u4E0B\u8F7D Chromium\uFF1BmacOS/Linux \u5B89\u88C5\u72EC\u7ACB Chromium\uFF1B\u4E0D\u6253\u5F00\u6D4F\u89C8\u5668\u3002",
     inputSchema: external_exports.object({
-      install_dependencies: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u660E\u786E\u540C\u610F\u5B89\u88C5\u548C\u4E0B\u8F7D Playwright Chromium")
+      install_dependencies: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u660E\u786E\u540C\u610F\u5B89\u88C5 Playwright \u8FD0\u884C\u4F9D\u8D56")
     })
   },
-  async ({ install_dependencies }) => {
+  async ({ install_dependencies }, extra) => {
     try {
       requireTrue(install_dependencies, "install_dependencies");
-      return toolResult(await runBridge("setup", [], 18e5));
+      return toolResult(await runBridge(
+        "setup",
+        [],
+        18e5,
+        extra.signal
+      ));
     } catch (error51) {
       return toolError(error51);
     }
@@ -31159,20 +31836,21 @@ server.registerTool(
   "xhs_workbuddy_login",
   {
     title: "\u767B\u5F55\u5E76\u5B9A\u4F4D\u5C0F\u7EA2\u4E66\u6574\u7406\u8303\u56F4",
-    description: "\u5728\u7528\u6237\u672C\u8F6E\u660E\u786E\u6388\u6743\u540E\u6253\u5F00\u53EF\u89C1\u7684\u4E13\u7528 Chromium\u3002\u7528\u6237\u53EA\u9700\u5B8C\u6210\u767B\u5F55\uFF1B\u63D2\u4EF6\u81EA\u52A8\u627E\u5230\u5F53\u524D\u8D26\u53F7\u3001\u8FDB\u5165\u6240\u9009\u6536\u85CF\u6216\u70B9\u8D5E\u9875\u3001\u8FD4\u56DE\u7CBE\u786E URL \u5E76\u5173\u95ED\u81EA\u5DF1\u7684\u6D4F\u89C8\u5668\u3002",
+    description: "\u5728\u7528\u6237\u672C\u8F6E\u660E\u786E\u6388\u6743\u540E\u6253\u5F00\u53EF\u89C1\u7684 WorkBuddy \u4E13\u7528\u6D4F\u89C8\u5668\uFF1BWindows \u4E3A\u72EC\u7ACB Edge profile\uFF0CmacOS/Linux \u4E3A\u72EC\u7ACB Chromium\u3002\u7528\u6237\u53EA\u9700\u5B8C\u6210\u767B\u5F55\uFF1B\u63D2\u4EF6\u81EA\u52A8\u5B9A\u4F4D\u8303\u56F4\u5E76\u5173\u95ED\u81EA\u5DF1\u521B\u5EFA\u7684\u7A97\u53E3\u3002",
     inputSchema: external_exports.object({
       browser_authorized: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u5728\u5F53\u524D\u56DE\u5408\u660E\u786E\u540C\u610F\u6253\u5F00\u4E13\u7528\u6D4F\u89C8\u5668"),
       source: external_exports.enum(["collection", "liked"]).describe("\u7528\u6237\u5DF2\u9009\u62E9\u7684\u6574\u7406\u8303\u56F4"),
       timeout_seconds: external_exports.number().int().min(60).max(900).default(600)
     })
   },
-  async ({ browser_authorized, source, timeout_seconds }) => {
+  async ({ browser_authorized, source, timeout_seconds }, extra) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
       return toolResult(await runBridge(
         "login",
         ["--source", source, "--timeout-sec", String(timeout_seconds)],
-        (timeout_seconds + 30) * 1e3
+        (timeout_seconds + 30) * 1e3,
+        extra.signal
       ));
     } catch (error51) {
       return toolError(error51);
@@ -31182,15 +31860,14 @@ server.registerTool(
 server.registerTool(
   "xhs_workbuddy_capture",
   {
-    title: "\u88AB\u52A8\u6293\u53D6\u5C0F\u7EA2\u4E66\u5F53\u524D\u8303\u56F4",
-    description: "\u53EA\u7528\u63D2\u4EF6\u72EC\u7ACB Playwright Chromium \u6253\u5F00\u7528\u6237\u63D0\u4F9B\u7684\u7CBE\u786E\u5C0F\u7EA2\u4E66 URL\uFF0C\u5E76\u88AB\u52A8\u8BFB\u53D6\u5F53\u524D\u53EF\u89C1\u6BB5\uFF1B\u4E0D\u6EDA\u52A8\u3001\u4E0D\u70B9\u51FB\u3001\u4E0D\u5199\u8D26\u53F7\u3002\u5FEB\u901F\u6574\u7406\u53EF\u540C\u65F6\u751F\u6210 skip-OCR classification.json\u3002",
+    title: "\u5206\u7EC4\u8BFB\u53D6\u5C0F\u7EA2\u4E66\u5B8C\u6574\u8303\u56F4",
+    description: "\u53EA\u7528\u63D2\u4EF6\u72EC\u7ACB Playwright Chromium \u6253\u5F00\u7CBE\u786E\u9875\u9762\u5E76\u5728\u540C\u4E00\u4F1A\u8BDD\u4E2D\u81EA\u52A8\u7FFB\u9875\uFF1Borganizing_depth \u5FC5\u586B\uFF0Cquick \u4E0D\u505A OCR\uFF0Clight \u7528\u540C\u4E00\u767B\u5F55\u6001\u8BFB\u53D6\u5168\u90E8\u8BE6\u60C5\u3001\u4E0B\u8F7D\u672C\u5730\u56FE\u7247\u5B57\u8282\u5E76 OCR\uFF0Cdeep \u5728\u89C6\u9891\u8BC1\u636E\u5165\u53E3\u63A5\u5165\u524D\u4E8E\u6D4F\u89C8\u5668\u542F\u52A8\u524D\u505C\u6B62\u3002\u56FA\u5B9A\u6BCF 200 \u6761\u72EC\u7ACB\u4FDD\u5B58\u4E00\u7EC4\u3001\u975E\u672B\u7EC4\u771F\u5B9E\u6682\u505C 3 \u5206\u949F\uFF1B\u5B8C\u6210\u540E\u7531\u63D2\u4EF6\u7B7E\u53D1\u4F1A\u8BDD receipt\uFF0C\u7528\u6237\u65E0\u9700\u5904\u7406\uFF1B\u4E0D\u5BFC\u51FA Cookie\u3001\u7B7E\u540D\u56FE\u7247 URL \u6216 xsec\u3002",
     inputSchema: external_exports.object({
       browser_authorized: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u5728\u5F53\u524D\u56DE\u5408\u660E\u786E\u6388\u6743\u6B64\u7CBE\u786E\u9875\u9762"),
       run_id: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/).optional(),
-      source: external_exports.enum(["collection", "liked", "custom"]),
+      source: external_exports.enum(["collection", "liked"]),
       page_url: external_exports.string().url(),
-      segment_limit: external_exports.number().int().min(1).max(200).default(10),
-      quick_classify: external_exports.boolean().default(false)
+      organizing_depth: external_exports.enum(["quick", "light", "deep"]).describe("\u5FC5\u586B\uFF1Aquick=\u5FEB\u901F\u6574\u7406\uFF0Clight=\u56FE\u6587\u5B8C\u6574 OCR\uFF1Bdeep \u5728\u89C6\u9891\u8BC1\u636E\u5165\u53E3\u63A5\u5165\u524D\u4F1A\u4E8E\u6D4F\u89C8\u5668\u542F\u52A8\u524D\u660E\u786E\u505C\u6B62")
     })
   },
   async ({
@@ -31198,22 +31875,60 @@ server.registerTool(
     run_id,
     source,
     page_url,
-    segment_limit,
-    quick_classify
-  }) => {
+    organizing_depth
+  }, extra) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
+      const safePageUrl = canonicalPageBinding(page_url, source);
       const args = [
         "--source",
         source,
         "--page-url",
-        page_url,
-        "--segment-limit",
-        String(segment_limit)
+        safePageUrl,
+        "--batch-size",
+        "200",
+        "--pause-minutes",
+        "3",
+        "--organizing-depth",
+        organizing_depth
       ];
+      if (organizing_depth === "deep") {
+        throw new Error(
+          "WorkBuddy Plugin \u5F53\u524D\u53EA\u652F\u6301\u5FEB\u901F\u6216\u8F7B\u5EA6\u6574\u7406\uFF1B\u6DF1\u5EA6\u6574\u7406\u9700\u8981\u89C6\u9891\u8BED\u97F3\u548C\u5B8C\u6574\u65F6\u8F74\u753B\u9762\u8BC1\u636E\uFF0C\u5C1A\u672A\u63A5\u5165\uFF0C\u672A\u6253\u5F00\u6D4F\u89C8\u5668\u3002"
+        );
+      }
       if (run_id) args.push("--run-id", run_id);
-      if (quick_classify) args.push("--quick-classify");
-      return toolResult(await runBridge("capture", args, 18e4));
+      const payload = await runBridge(
+        "capture",
+        args,
+        864e5,
+        extra.signal
+      );
+      if (payload.ready_for_classification !== true) {
+        return toolResult({
+          ...payload,
+          evidence_receipt: null,
+          receipt_stage: null
+        });
+      }
+      const capturedRunId = String(payload.run_id || "").trim();
+      const boundPage = receiptBindingsForPage(pageUserId(page_url), page_url);
+      canonicalPageBinding(page_url, source);
+      const issued = evidenceLedger.issue({
+        runId: capturedRunId,
+        stage: "capture",
+        bindings: {
+          ...boundPage,
+          organizing_depth
+        },
+        artifactNames: captureArtifactNames(organizing_depth)
+      });
+      return toolResult({
+        ...payload,
+        evidence_receipt: issued.receipt,
+        receipt_stage: "capture",
+        receipt_notice: "\u7531 WorkBuddy \u81EA\u52A8\u4F20\u7ED9\u4E0B\u4E00\u9636\u6BB5\uFF0C\u7528\u6237\u65E0\u9700\u67E5\u770B\u6216\u590D\u5236\u3002"
+      });
     } catch (error51) {
       return toolError(error51);
     }
@@ -31223,38 +31938,142 @@ server.registerTool(
   "xhs_workbuddy_prepare",
   {
     title: "\u751F\u6210\u771F\u5B9E\u4E13\u8F91\u8BC1\u636E\u4E0E\u786C\u95F8\u95E8 dry-run",
-    description: "\u8981\u6C42 run \u76EE\u5F55\u5DF2\u6709\u771F\u5B9E classification.json\u3002\u7528\u63D2\u4EF6\u72EC\u7ACB Playwright \u53EA\u8BFB\u751F\u6210 board_snapshot.json\uFF0C\u518D\u673A\u68B0\u751F\u6210 created_boards.json \u548C run_report.json\u3002\u53EA\u6709\u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u624D\u80FD\u8BF7\u6C42\u7528\u6237\u6267\u884C\u786E\u8BA4\u3002",
+    description: "\u4E24\u9636\u6BB5\u56FA\u5B9A\u5165\u53E3\uFF1A\u7B2C\u4E00\u6B21\u53EA\u8BFB\u8FD4\u56DE\u771F\u5B9E\u5DF2\u6709\u4E13\u8F91\u548C\u5B8C\u6574 classification_inputs\uFF1B\u7B2C\u4E8C\u6B21\u63D0\u4EA4\u8986\u76D6\u5168\u90E8\u771F\u5B9E ID \u7684 classification\u3002\u82E5\u9700\u65B0\u4E13\u8F91\uFF0C\u540C\u65F6\u63D0\u4EA4\u4EC5\u4F9D\u636E\u672C\u6B21\u5185\u5BB9\u751F\u6210\u7684 proposed_board_names \u4E0E\u660E\u786E\u7684\u516C\u5F00\u6216\u79C1\u5BC6\u8BBE\u7F6E\uFF1B\u4E13\u8F91\u521B\u5EFA\u548C\u9010\u6761\u79FB\u52A8\u5408\u5E76\u4E3A\u4E00\u6B21\u7528\u6237\u786E\u8BA4\u5E76\u5199\u5165 approval_digest\u3002\u4E24\u9636\u6BB5 receipt \u5747\u7531 WorkBuddy \u81EA\u52A8\u4F20\u9012\uFF0C\u7528\u6237\u65E0\u9700\u5904\u7406\u3002",
     inputSchema: external_exports.object({
       browser_authorized: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u5728\u5F53\u524D\u56DE\u5408\u6388\u6743\u53EA\u8BFB\u6838\u9A8C\u6B64\u9875\u9762"),
       run_id: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+      evidence_receipt: external_exports.string().regex(RECEIPT_PATTERN).describe(
+        "\u63D2\u4EF6\u81EA\u52A8\u4F20\u9012\u7684\u4E0A\u4E00\u9636\u6BB5 receipt\uFF1B\u7528\u6237\u65E0\u9700\u67E5\u770B\u6216\u590D\u5236"
+      ),
       user_id: external_exports.string().regex(/^[0-9a-fA-F]{24}$/),
       page_url: external_exports.string().url(),
-      expected_url_substring: external_exports.string().min(1),
-      verify_pages: external_exports.number().int().min(1).max(200).default(100)
+      verify_pages: external_exports.number().int().min(1).max(200).default(100),
+      max_moves_per_session: external_exports.number().int().min(1).max(200).optional().describe(
+        "\u7B2C\u4E8C\u9636\u6BB5\u4F20 classification \u65F6\u5FC5\u586B\uFF1B\u5C06\u5199\u5165 approval_digest\uFF0Cexecute \u5FC5\u987B\u539F\u6837\u4F7F\u7528"
+      ),
+      classification: external_exports.array(external_exports.object({
+        id: external_exports.string().regex(/^[0-9a-fA-F]{24}$/),
+        target_board: external_exports.string().default(""),
+        confidence: external_exports.enum(["low", "medium", "high"]).default("low"),
+        reason: external_exports.array(external_exports.string()).default([]),
+        review_state: external_exports.string().default(""),
+        main_topic: external_exports.string().default(""),
+        content_summary: external_exports.string().default("")
+      })).optional(),
+      proposed_board_names: external_exports.array(external_exports.string().min(1)).max(20).optional().describe(
+        "\u4EC5\u4F9D\u636E\u672C\u6B21 classification_inputs \u63D0\u8BAE\u7684\u65B0\u4E13\u8F91\u540D\u79F0\uFF1B\u4E0D\u5F97\u4F7F\u7528\u63D2\u4EF6\u9884\u8BBE\u7C7B\u522B"
+      ),
+      new_board_privacy: external_exports.enum(["public", "private"]).optional().describe(
+        "\u5B58\u5728 proposed_board_names \u65F6\u5FC5\u586B\uFF0C\u5E76\u4E0E\u521B\u5EFA\u53CA\u79FB\u52A8\u65B9\u6848\u4E00\u8D77\u7531\u7528\u6237\u786E\u8BA4"
+      )
     })
   },
   async ({
     browser_authorized,
     run_id,
+    evidence_receipt,
     user_id,
     page_url,
-    expected_url_substring,
-    verify_pages
-  }) => {
+    verify_pages,
+    max_moves_per_session,
+    classification,
+    proposed_board_names,
+    new_board_privacy
+  }, extra) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
-      return toolResult(await runBridge("prepare", [
+      const safePageUrl = canonicalPageBinding(page_url);
+      const args = [
         "--run-id",
         run_id,
         "--user-id",
         user_id,
         "--page-url",
-        page_url,
+        safePageUrl,
         "--expected-url-substring",
-        expected_url_substring,
+        safePageUrl,
         "--verify-pages",
-        String(verify_pages)
-      ], 6e5));
+        String(verify_pages),
+        "--trusted-evidence-stdin"
+      ];
+      if (classification !== void 0) {
+        if (max_moves_per_session === void 0) {
+          throw new Error(
+            "\u63D0\u4EA4 classification \u65F6\u5FC5\u987B\u540C\u65F6\u63D0\u4F9B\u7528\u6237\u5C06\u786E\u8BA4\u7684 max_moves_per_session\u3002"
+          );
+        }
+        args.push(
+          "--classification-stdin",
+          "--max-moves-per-session",
+          String(max_moves_per_session)
+        );
+      }
+      const expectedStage = classification === void 0 ? "capture" : "inventory";
+      const trustedEvidence2 = evidenceLedger.begin({
+        receipt: evidence_receipt,
+        expectedStage,
+        runId: run_id,
+        bindings: receiptBindings(user_id, page_url)
+      });
+      try {
+        const inputPayload = { trusted_evidence: trustedEvidence2 };
+        if (classification !== void 0) {
+          inputPayload.classification = classification;
+          if (proposed_board_names !== void 0) {
+            inputPayload.proposed_board_names = proposed_board_names;
+          }
+          if (new_board_privacy !== void 0) {
+            inputPayload.new_board_privacy = new_board_privacy;
+          }
+        }
+        const payload = await runBridge(
+          "prepare",
+          args,
+          6e5,
+          extra.signal,
+          inputPayload
+        );
+        if (classification === void 0) {
+          const issued = evidenceLedger.advance({
+            receipt: evidence_receipt,
+            nextStage: "inventory",
+            allowSafetyStateProgress: true,
+            artifactNames: inventoryArtifactNames(
+              trustedEvidence2.bindings.organizing_depth
+            )
+          });
+          return toolResult({
+            ...payload,
+            evidence_receipt: issued.receipt,
+            receipt_stage: "inventory",
+            receipt_notice: "\u7531 WorkBuddy \u81EA\u52A8\u4F20\u7ED9\u4E0B\u4E00\u9636\u6BB5\uFF0C\u7528\u6237\u65E0\u9700\u67E5\u770B\u6216\u590D\u5236\u3002"
+          });
+        }
+        if (payload.mode === "dry_run" && payload.ready_for_execute === true && Array.isArray(payload.blockers) && payload.blockers.length === 0 && Number.isInteger(payload.planned_move_count) && payload.planned_move_count > 0 && APPROVAL_DIGEST_PATTERN.test(payload.approval_digest || "")) {
+          const issued = evidenceLedger.advance({
+            receipt: evidence_receipt,
+            nextStage: "plan",
+            artifactNames: planArtifactNames(
+              trustedEvidence2.bindings.organizing_depth
+            )
+          });
+          return toolResult({
+            ...payload,
+            evidence_receipt: issued.receipt,
+            receipt_stage: "plan",
+            receipt_notice: "\u7531 WorkBuddy \u5728\u7528\u6237\u786E\u8BA4\u540E\u81EA\u52A8\u4F20\u7ED9 execute\uFF0C\u7528\u6237\u65E0\u9700\u67E5\u770B\u6216\u590D\u5236\u3002"
+          });
+        }
+        evidenceLedger.abort(evidence_receipt);
+        return toolResult({
+          ...payload,
+          evidence_receipt,
+          receipt_stage: "inventory"
+        });
+      } catch (error51) {
+        evidenceLedger.abort(evidence_receipt);
+        throw error51;
+      }
     } catch (error51) {
       return toolError(error51);
     }
@@ -31264,50 +32083,78 @@ server.registerTool(
   "xhs_workbuddy_execute",
   {
     title: "\u6267\u884C\u7528\u6237\u5DF2\u786E\u8BA4\u7684\u5C0F\u7EA2\u4E66\u6574\u7406\u65B9\u6848",
-    description: "\u771F\u5B9E\u5199\u5165\u5DE5\u5177\u3002\u53EA\u6709\u7528\u6237\u5DF2\u770B\u5230\u9010\u6761\u201C\u5F53\u524D\u4E13\u8F91\u2192\u76EE\u6807\u4E13\u8F91\u201D\u3001\u660E\u786E\u786E\u8BA4\u672C\u6B21\u79FB\u52A8\u4E0A\u9650\uFF0C\u5E76\u539F\u6837\u63D0\u4F9B prepare \u8FD4\u56DE\u7684 approval_digest \u65F6\u624D\u53EF\u8C03\u7528\u3002\u4EFB\u4F55\u8BC1\u636E\u53D8\u5316\u90FD\u4F1A\u5728\u6253\u5F00\u6D4F\u89C8\u5668\u524D\u62D2\u7EDD\u3002",
+    description: "\u771F\u5B9E\u5199\u5165\u5DE5\u5177\u3002\u53EA\u6709\u7528\u6237\u5DF2\u770B\u5230\u5F85\u521B\u5EFA\u4E13\u8F91\u53CA\u9690\u79C1\u3001\u9010\u6761\u201C\u5F53\u524D\u4E13\u8F91\u2192\u76EE\u6807\u4E13\u8F91\u201D\u548C\u79FB\u52A8\u4E0A\u9650\u5E76\u660E\u786E\u786E\u8BA4\u540E\u624D\u53EF\u8C03\u7528\u3002\u82E5\u6709\u65B0\u4E13\u8F91\uFF0C\u63D2\u4EF6\u4F1A\u5728\u540C\u4E00\u53D7\u7BA1\u6D4F\u89C8\u5668\u4E2D\u5148\u521B\u5EFA\u5E76\u6838\u9A8C\u4E3A\u7A7A\uFF0C\u518D\u79FB\u52A8\u6536\u85CF\uFF1B\u4EFB\u4F55\u8BC1\u636E\u6216\u53C2\u6570\u53D8\u5316\u90FD\u4F1A\u5728\u6253\u5F00\u6D4F\u89C8\u5668\u524D\u62D2\u7EDD\u3002receipt \u7531 WorkBuddy \u81EA\u52A8\u4F20\u9012\uFF0C\u7528\u6237\u65E0\u9700\u5904\u7406\u3002",
     inputSchema: external_exports.object({
       browser_authorized: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u5728\u5F53\u524D\u56DE\u5408\u660E\u786E\u6388\u6743\u4E13\u7528\u6D4F\u89C8\u5668\u5199\u5165"),
-      user_confirmed: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u660E\u786E\u786E\u8BA4\u9010\u6761\u6620\u5C04\u548C\u672C\u6B21\u79FB\u52A8\u4E0A\u9650"),
+      user_confirmed: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u660E\u786E\u786E\u8BA4\u5F85\u521B\u5EFA\u4E13\u8F91\u53CA\u9690\u79C1\u3001\u9010\u6761\u6620\u5C04\u548C\u672C\u6B21\u79FB\u52A8\u4E0A\u9650"),
       run_id: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+      evidence_receipt: external_exports.string().regex(RECEIPT_PATTERN).describe(
+        "\u63D2\u4EF6\u81EA\u52A8\u4F20\u9012\u7684 plan receipt\uFF1B\u7528\u6237\u65E0\u9700\u67E5\u770B\u6216\u590D\u5236"
+      ),
       user_id: external_exports.string().regex(/^[0-9a-fA-F]{24}$/),
       page_url: external_exports.string().url(),
-      expected_url_substring: external_exports.string().min(1),
       approval_digest: external_exports.string().regex(/^[0-9a-f]{64}$/),
-      max_moves_per_session: external_exports.number().int().min(1).max(200)
+      max_moves_per_session: external_exports.number().int().min(1).max(200),
+      verify_pages: external_exports.number().int().min(1).max(200).describe(
+        "\u5FC5\u987B\u539F\u6837\u4F7F\u7528 prepare \u8FD4\u56DE\u7684 verify_pages"
+      )
     })
   },
   async ({
     browser_authorized,
     user_confirmed,
     run_id,
+    evidence_receipt,
     user_id,
     page_url,
-    expected_url_substring,
     approval_digest,
-    max_moves_per_session
-  }) => {
+    max_moves_per_session,
+    verify_pages
+  }, extra) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
       requireTrue(user_confirmed, "user_confirmed");
-      return toolResult(await runBridge("execute", [
-        "--run-id",
-        run_id,
-        "--user-id",
-        user_id,
-        "--page-url",
-        page_url,
-        "--expected-url-substring",
-        expected_url_substring,
-        "--approval-digest",
-        approval_digest,
-        "--max-moves-per-session",
-        String(max_moves_per_session)
-      ], 18e5));
+      const safePageUrl = canonicalPageBinding(page_url);
+      const trustedEvidence2 = evidenceLedger.begin({
+        receipt: evidence_receipt,
+        expectedStage: "plan",
+        runId: run_id,
+        bindings: receiptBindings(user_id, page_url)
+      });
+      try {
+        return toolResult(await runBridge("execute", [
+          "--run-id",
+          run_id,
+          "--user-id",
+          user_id,
+          "--page-url",
+          safePageUrl,
+          "--expected-url-substring",
+          safePageUrl,
+          "--approval-digest",
+          approval_digest,
+          "--max-moves-per-session",
+          String(max_moves_per_session),
+          "--verify-pages",
+          String(verify_pages),
+          "--trusted-evidence-stdin"
+        ], 18e5, extra.signal, {
+          trusted_evidence: trustedEvidence2
+        }, {
+          onExecutePreflightReady: () => evidenceLedger.commit(evidence_receipt)
+        }));
+      } catch (error51) {
+        evidenceLedger.abort(evidence_receipt);
+        throw error51;
+      }
     } catch (error51) {
       return toolError(error51);
     }
   }
 );
 requirePluginEnvironment();
+evidenceLedger = createEvidenceLedger({
+  runsRoot: path2.join(pluginData, "runs")
+});
 var transport = new StdioServerTransport();
 await server.connect(transport);

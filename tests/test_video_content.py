@@ -332,8 +332,8 @@ class VideoContentTests(unittest.TestCase):
         self.assertIn('16.6 GB', skill)
         self.assertIn('23.2 GB', skill)
         self.assertIn('32 GB', skill)
-        self.assertIn('视频里的讲解实际在教番茄炒蛋', skill)
-        self.assertIn('视频里没人说话，只在演示怎样整理衣柜', skill)
+        self.assertIn('声音分析可以先识别真实主题，再与本次分类体系匹配', skill)
+        self.assertIn('同时分析画面后，才能依据真实内容分类', skill)
         self.assertIn('只分析声音时无法判断', skill)
         self.assertIn('1. **声音和画面都分析**', skill)
         self.assertIn('2. **只分析声音**', skill)
@@ -474,12 +474,20 @@ class VideoContentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             visible = tmp_path / 'visible.json'
+            taxonomy = tmp_path / 'taxonomy.json'
             out = tmp_path / 'classification.json'
             visible.write_text(json.dumps([{
                 'id': 'note-image', 'title': '滑雪换刃', 'desc': '', 'tags': ['滑雪'],
                 'card_text': '滑雪 单板', 'content_type': 'video',
             }], ensure_ascii=False), encoding='utf-8')
-            self.run_script('classify_items.py', '--skip-ocr', str(visible), str(out))
+            taxonomy.write_text(
+                json.dumps({'boards': ['滑雪']}, ensure_ascii=False),
+                encoding='utf-8',
+            )
+            self.run_script(
+                'classify_items.py', '--skip-ocr', str(visible), str(out),
+                '--taxonomy', str(taxonomy),
+            )
             row = json.loads(out.read_text(encoding='utf-8'))[0]
             self.assertEqual(row['target_board'], '滑雪')
             self.assertEqual(row['classification_basis'], 'metadata_only')
@@ -490,6 +498,7 @@ class VideoContentTests(unittest.TestCase):
             tmp_path = Path(tmp)
             visible = tmp_path / 'visible.json'
             analysis = tmp_path / 'analysis.json'
+            taxonomy = tmp_path / 'taxonomy.json'
             out = tmp_path / 'classification.json'
             visible.write_text(json.dumps([{
                 'id': 'note-video', 'title': '滑雪固定器', 'desc': '滑雪', 'tags': ['滑雪'],
@@ -503,8 +512,13 @@ class VideoContentTests(unittest.TestCase):
                 'analysis_provider': 'command', 'analysis_model': 'test-agent',
                 'analysis_provider_version': 'json-stdin-stdout-v1',
             }], ensure_ascii=False), encoding='utf-8')
+            taxonomy.write_text(
+                json.dumps({'boards': ['摄影审美与创作']}, ensure_ascii=False),
+                encoding='utf-8',
+            )
             self.run_script(
                 'classify_items.py', '--skip-ocr', str(visible), str(out),
+                '--taxonomy', str(taxonomy),
                 '--classify-video-by-content', '--video-analysis', str(analysis),
             )
             row = json.loads(out.read_text(encoding='utf-8'))[0]
