@@ -31036,7 +31036,7 @@ function pythonFor(action) {
   }
   return bootstrapPython();
 }
-function runBridge(action, args = [], timeoutMs = 6e5) {
+function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0) {
   requirePluginEnvironment();
   return new Promise((resolve, reject) => {
     const python = pythonFor(action);
@@ -31056,10 +31056,30 @@ function runBridge(action, args = [], timeoutMs = 6e5) {
     });
     let stdout = "";
     let stderr = "";
+    let finished = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (error51) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      reject(error51);
+    };
+    const onAbort = () => {
+      child.kill("SIGTERM");
+      fail(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u5DF2\u53D6\u6D88\uFF1A${action}`));
+    };
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u8D85\u65F6\uFF1A${action}`));
+      fail(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u8D85\u65F6\uFF1A${action}`));
     }, timeoutMs);
+    if (abortSignal?.aborted) {
+      onAbort();
+      return;
+    }
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -31069,11 +31089,12 @@ function runBridge(action, args = [], timeoutMs = 6e5) {
       stderr += chunk;
     });
     child.on("error", (error51) => {
-      clearTimeout(timer);
-      reject(error51);
+      fail(error51);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      if (finished) return;
+      finished = true;
+      cleanup();
       const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
       let payload;
       try {
@@ -31202,7 +31223,7 @@ server.registerTool(
     batch_size,
     pause_minutes,
     quick_classify
-  }) => {
+  }, extra) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
       const args = [
@@ -31217,7 +31238,12 @@ server.registerTool(
       ];
       if (run_id) args.push("--run-id", run_id);
       if (quick_classify) args.push("--quick-classify");
-      return toolResult(await runBridge("capture", args, 864e5));
+      return toolResult(await runBridge(
+        "capture",
+        args,
+        864e5,
+        extra.signal
+      ));
     } catch (error51) {
       return toolError(error51);
     }

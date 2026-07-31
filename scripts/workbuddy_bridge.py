@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -750,8 +751,15 @@ def capture_action(
         raise RuntimeError('pause_minutes 必须是大于 0 的整数。')
     require_profile_available()
     args = browser_args(checked_url)
-    runner = BrowserRunner('playwright', args)
+    runner = None
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def cancel_capture(_signum, _frame):
+        raise RuntimeError('WorkBuddy 抓取已取消；正在关闭本轮专用浏览器。')
+
+    signal.signal(signal.SIGTERM, cancel_capture)
     try:
+        runner = BrowserRunner('playwright', args)
         directory = run_dir_for(run_id, create=True)
         visible = directory / 'visible_items.json'
         safety = resolve_safety_state_path('', visible)
@@ -788,9 +796,14 @@ def capture_action(
             )
     finally:
         try:
-            runner.close()
+            if runner is not None:
+                runner.close()
         finally:
-            wait_for_profile_release(workbuddy_profile_path())
+            try:
+                if runner is not None:
+                    wait_for_profile_release(workbuddy_profile_path())
+            finally:
+                signal.signal(signal.SIGTERM, previous_sigterm)
     result.update({
         'run_id': directory.name,
         'run_dir': str(directory),

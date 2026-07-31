@@ -71,7 +71,7 @@ function pythonFor(action) {
 }
 
 
-function runBridge(action, args = [], timeoutMs = 600_000) {
+function runBridge(action, args = [], timeoutMs = 600_000, abortSignal = undefined) {
   requirePluginEnvironment();
   return new Promise((resolve, reject) => {
     const python = pythonFor(action);
@@ -91,20 +91,41 @@ function runBridge(action, args = [], timeoutMs = 600_000) {
     });
     let stdout = '';
     let stderr = '';
+    let finished = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      abortSignal?.removeEventListener('abort', onAbort);
+    };
+    const fail = (error) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => {
+      child.kill('SIGTERM');
+      fail(new Error(`固定工作流已取消：${action}`));
+    };
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      reject(new Error(`固定工作流超时：${action}`));
+      fail(new Error(`固定工作流超时：${action}`));
     }, timeoutMs);
+    if (abortSignal?.aborted) {
+      onAbort();
+      return;
+    }
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
+      fail(error);
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      if (finished) return;
+      finished = true;
+      cleanup();
       const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
       let payload;
       try {
@@ -259,7 +280,7 @@ server.registerTool(
     batch_size,
     pause_minutes,
     quick_classify,
-  }) => {
+  }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
       const args = [
@@ -270,7 +291,12 @@ server.registerTool(
       ];
       if (run_id) args.push('--run-id', run_id);
       if (quick_classify) args.push('--quick-classify');
-      return toolResult(await runBridge('capture', args, 86_400_000));
+      return toolResult(await runBridge(
+        'capture',
+        args,
+        86_400_000,
+        extra.signal,
+      ));
     } catch (error) {
       return toolError(error);
     }
