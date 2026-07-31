@@ -43,8 +43,10 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 2. `xhs_workbuddy_setup`：仅在用户明确同意依赖下载后调用；在 `${CODEBUDDY_PLUGIN_DATA}/python-venv` 安装 `requirements-workbuddy.txt` 和 Playwright Chromium。
 3. `xhs_workbuddy_login`：仅在用户当前回合明确授权打开浏览器后调用，并传入已选择的 `source=collection|liked`。用户只需完成登录；工具自动从前端“我”入口取得当前账号、进入所选范围、返回无敏感参数的 `target_page_url`，随后关闭自己的浏览器并等待 profile 锁释放。禁止要求用户关窗口或复制 URL。
 4. `xhs_workbuddy_capture`：直接复用上一步返回的 `target_page_url`；不得再次向用户索取地址。收藏 URL 必须带 `tab=fav`，点赞 URL 必须带 `tab=liked`。默认 `batch_size=200`、`pause_minutes=3`；插件在同一个专用 Chromium 会话中自动翻页，每 200 条独立保存一组，真实等待 3 分钟后续组。页面索引到达声明末尾，或页面底部状态连续两次完全不变时结束；UI 声明数与可访问笔记数不一致只记录警告，不再无限等待。全过程不点击、不刷新、不自动重试、不写账号。启动前若 profile 仍被占用，必须在创建 run 目录前停止。
-5. `xhs_workbuddy_prepare`：要求同一 run 目录已有真实 `classification.json`；顺序固定为只读专辑快照、目标专辑核验、硬闸门 dry-run。未通过或 `planned_move_count=0` 时都不生成 `approval_digest`；零计划时直接报告已正确归档与待复核条目。
-6. `xhs_workbuddy_execute`：必须同时收到 `browser_authorized=true`、`user_confirmed=true`、用户确认的移动上限和 prepare 原样返回的 `approval_digest`；digest 绑定 classification、board snapshot、created boards 和逐条计划。
+5. `xhs_workbuddy_prepare`（专辑清单阶段）：第一次不传 `classification`，只读生成与本次账号和页面绑定的完整 `board_snapshot.json`，返回 `phase=board_inventory` 与 `existing_board_names`。`classification_required` 只是继续下一阶段的标记；没有已有专辑时才返回 `no_existing_boards` 并停止，不得生成默认类别。
+6. 分类：只能根据本次真实 `visible_items.json`，从 `existing_board_names` 中为全部真实 note id 选择目标；不得从模板、示例或分类器注入任何预设类别，也不得创造不存在的专辑。不确定项保持空目标并待复核。
+7. `xhs_workbuddy_prepare`（dry-run 阶段）：第二次传入逐条 `classification`，在打开浏览器前核验 ID 与本次抓取完全一致、目标只属于已绑定的真实专辑清单，并机械生成 taxonomy、classification、created boards 和硬闸门 dry-run；复用已有快照，不再打开浏览器。未通过或 `planned_move_count=0` 时都不生成 `approval_digest`。
+8. `xhs_workbuddy_execute`：必须同时收到 `browser_authorized=true`、`user_confirmed=true`、用户确认的移动上限和 prepare 原样返回的 `approval_digest`；digest 绑定 classification、board snapshot、created boards 和逐条计划。
 
 用户只感知两次安全决策：
 

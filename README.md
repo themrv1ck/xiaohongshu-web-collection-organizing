@@ -35,7 +35,7 @@
 - 目标专辑必须已经存在；当前脚本只核对缺失专辑，不自动创建专辑。
 - `run_reassign_batch.py` 不会自动推断来源专辑；跨专辑条目缺少真实 `source_board_id` 时不得进入 execute 清单。
 - 小红书网页结构和前端模块可能变化；如果页面变更，需要重新验证。
-- 默认分类建议由本地规则和 OCR 结果生成；视频开关开启时，视频改由合格文字稿、视觉模块开启时的完整时轴真实帧 + 所选 provider 分类。低置信度条目默认不会真实移动。
+- 分类体系默认是空的，只能从本次真实内容和用户已有专辑生成；图文可使用元数据与 OCR，视频开关开启时使用合格文字稿、完整时轴真实帧（若启用视觉模块）和所选 provider。低置信度条目默认不会真实移动。
 - 200 是程序的防误操作分段上限，不是平台公开的安全阈值，不能保证不会出现验证。
 
 ## 目录结构
@@ -95,9 +95,9 @@
 
 加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意依赖下载后才安装 Playwright Chromium。首次使用会打开一个与 Safari、Arc、系统 Chrome 完全分开的可见 Chromium，用户只需在这里登录一次小红书。
 
-正常使用时，用户不需要寻找收藏页 URL、复制地址或手动关闭浏览器。插件会从小红书前端的“我”入口定位当前账号，自动进入用户已选择的收藏/点赞范围，并在同一个专用 Chromium 会话中自动翻页。默认每 200 条独立保存一组，真实等待 3 分钟后继续，直到前端列表稳定到达末尾。只有真正移动收藏前才会再次请求逐条确认。
+正常使用时，用户不需要寻找收藏页 URL、复制地址或手动关闭浏览器。插件会从小红书前端的“我”入口定位当前账号，自动进入用户已选择的收藏/点赞范围，并在同一个专用 Chromium 会话中自动翻页。默认每 200 条独立保存一组，真实等待 3 分钟后继续，直到前端列表稳定到达末尾。分类体系默认为空；插件先只读取得本次账号真实已有专辑，再只从这些专辑中为本次真实收藏选择目标，不附带任何预设类别。只有真正移动收藏前才会再次请求逐条确认。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.1`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.2`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -365,7 +365,7 @@ python3 scripts/summarize_run_report.py /tmp/xhs_classification_preview.json
 
 ```bash
 printf '{"boards":["杂项灵感","滑雪"]}\n' > /tmp/xhs_existing_boards.json
-python3 scripts/build_created_boards.py templates/board_taxonomy.template.json /tmp/xhs_existing_boards.json /tmp/xhs_created_boards.json
+python3 scripts/build_created_boards.py board_taxonomy.json /tmp/xhs_existing_boards.json /tmp/xhs_created_boards.json
 ```
 
 ## 最短真实使用路径

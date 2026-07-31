@@ -579,13 +579,53 @@ def browser_args(url: str = '') -> argparse.Namespace:
 
 
 def run_command(args: List[str], *, allow_failure: bool = False) -> subprocess.CompletedProcess:
-    proc = subprocess.run(
-        args,
-        cwd=str(ROOT),
-        env=os.environ.copy(),
-        text=True,
-        capture_output=True,
-    )
+    popen_kwargs: Dict[str, Any] = {
+        'cwd': str(ROOT),
+        'env': os.environ.copy(),
+        'text': True,
+        'stdout': subprocess.PIPE,
+        'stderr': subprocess.PIPE,
+    }
+    if os.name == 'nt':
+        popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs['start_new_session'] = True
+    child = subprocess.Popen(args, **popen_kwargs)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def terminate_child_tree() -> None:
+        if child.poll() is not None:
+            return
+        if os.name == 'nt':
+            subprocess.run(
+                ['taskkill', '/PID', str(child.pid), '/T', '/F'],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        else:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def cancel_command(_signum, _frame) -> None:
+        terminate_child_tree()
+        raise RuntimeError('WorkBuddy 固定工作流已取消；子进程和专用浏览器已关闭。')
+
+    signal.signal(signal.SIGTERM, cancel_command)
+    try:
+        stdout, stderr = child.communicate()
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+    proc = subprocess.CompletedProcess(args, child.returncode, stdout, stderr)
     if proc.returncode != 0 and not allow_failure:
         details = proc.stderr.strip() or proc.stdout.strip() or f'exit={proc.returncode}'
         raise RuntimeError(f'固定工作流命令失败：{details}')
@@ -741,7 +781,6 @@ def capture_action(
     page_url: str,
     batch_size: int,
     pause_minutes: int,
-    quick_classify: bool,
 ) -> Dict[str, Any]:
     require_workbuddy()
     checked_url = validate_xhs_url(page_url, source)
@@ -811,18 +850,11 @@ def capture_action(
         'browser_profile': str(workbuddy_profile_path()),
         'exact_url_opened': checked_url,
     })
-    if quick_classify:
-        classification = directory / 'classification.json'
-        run_command([
-            sys.executable,
-            str(ROOT / 'scripts/classify_items.py'),
-            str(visible),
-            str(classification),
-            '--skip-ocr',
-        ])
-        result['classification'] = str(classification)
-        result['classification_count'] = len(load_json(classification))
-        result['classification_depth'] = 'quick'
+    result['classification_required'] = True
+    result['next_action'] = (
+        '先调用不带 classification 的 prepare，只读取得本次账号真实已有专辑；'
+        '再根据 visible_items.json 和该专辑清单逐条分类。'
+    )
     return result
 
 
@@ -864,43 +896,211 @@ def approval_digest(directory: Path, report: Dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def validate_workbuddy_snapshot_binding(
+    snapshot: Any,
+    user_id: str,
+    expected_url_substring: str,
+) -> List[str]:
+    if not isinstance(snapshot, dict) or snapshot.get('mode') != 'read_only':
+        raise RuntimeError('board_snapshot.json 不是本次只读专辑清单。')
+    source = snapshot.get('source')
+    if not isinstance(source, dict):
+        raise RuntimeError('board_snapshot.json 缺少来源绑定。')
+    if (
+        source.get('browser') != 'playwright'
+        or source.get('writes_performed') is not False
+        or str(source.get('user_id') or '') != user_id
+        or str(source.get('expected_url_substring') or '') != expected_url_substring
+    ):
+        raise RuntimeError('board_snapshot.json 与本次 WorkBuddy 账号或页面绑定不一致。')
+    boards = snapshot.get('boards')
+    if not isinstance(boards, list):
+        raise RuntimeError('board_snapshot.json 的 boards 必须是数组。')
+    names: List[str] = []
+    for index, board in enumerate(boards):
+        if not isinstance(board, dict):
+            raise RuntimeError(f'board_snapshot.json 的 boards[{index}] 必须是对象。')
+        name = str(board.get('name') or '').strip()
+        if not name:
+            raise RuntimeError(f'board_snapshot.json 的 boards[{index}] 缺少名称。')
+        if name in names:
+            raise RuntimeError(f'board_snapshot.json 包含重复专辑名：{name}')
+        names.append(name)
+    return names
+
+
+def write_workbuddy_classification(
+    directory: Path,
+    classification_rows: Any,
+    allowed_boards: List[str],
+) -> Dict[str, Any]:
+    """Validate model classifications against the real capture and persist them."""
+    directory = Path(directory)
+    visible_path = directory / 'visible_items.json'
+    if not visible_path.is_file():
+        raise RuntimeError('缺少 visible_items.json；不能生成脱离真实抓取的分类。')
+    visible_rows = load_json(visible_path)
+    if not isinstance(visible_rows, list):
+        raise RuntimeError('visible_items.json 顶层必须是数组。')
+    visible_by_id: Dict[str, Dict[str, Any]] = {}
+    visible_order: List[str] = []
+    for item in visible_rows:
+        if not isinstance(item, dict):
+            raise RuntimeError('visible_items.json 每一项必须是对象。')
+        note_id = str(item.get('id') or '').strip()
+        if not note_id or note_id in visible_by_id:
+            raise RuntimeError('visible_items.json 含空 ID 或重复 ID。')
+        visible_by_id[note_id] = item
+        visible_order.append(note_id)
+
+    if not isinstance(classification_rows, list):
+        raise RuntimeError('classification 必须是数组。')
+    allowed_board_set = set(allowed_boards)
+    supplied: Dict[str, Dict[str, Any]] = {}
+    for row in classification_rows:
+        if not isinstance(row, dict):
+            raise RuntimeError('classification 每一项必须是对象。')
+        note_id = str(row.get('id') or '').strip()
+        if note_id not in visible_by_id:
+            raise RuntimeError(f'分类 ID 不属于本次抓取：{note_id or "<empty>"}')
+        if note_id in supplied:
+            raise RuntimeError(f'classification 包含重复 ID：{note_id}')
+        supplied[note_id] = row
+    missing_ids = [note_id for note_id in visible_order if note_id not in supplied]
+    if missing_ids:
+        raise RuntimeError(
+            f'classification 未覆盖本次抓取的 {len(missing_ids)} 条笔记。'
+        )
+
+    taxonomy: List[str] = []
+    normalized: List[Dict[str, Any]] = []
+    for note_id in visible_order:
+        source = visible_by_id[note_id]
+        proposal = supplied[note_id]
+        target = str(proposal.get('target_board') or '').strip()
+        if target and target not in allowed_board_set:
+            raise RuntimeError(
+                f'分类目标不属于本次真实已有专辑：{note_id} target_board={target!r}'
+            )
+        confidence = str(proposal.get('confidence') or 'low').strip().lower()
+        if confidence not in {'low', 'medium', 'high'}:
+            raise RuntimeError(f'分类置信度无效：{note_id} confidence={confidence!r}')
+        raw_reason = proposal.get('reason') or []
+        if not isinstance(raw_reason, list):
+            raise RuntimeError(f'分类 reason 必须是数组：{note_id}')
+        reason = [str(value).strip() for value in raw_reason if str(value).strip()]
+        review_state = str(proposal.get('review_state') or '').strip()
+        if not review_state:
+            review_state = 'classified' if target else 'pending'
+        if target and target not in taxonomy:
+            taxonomy.append(target)
+        row = dict(source)
+        row.update({
+            'target_board': target,
+            'confidence': confidence,
+            'reason': reason,
+            'review_state': review_state,
+            'classification_basis': 'workbuddy_model_real_content',
+            'main_topic': str(proposal.get('main_topic') or '').strip(),
+            'content_summary': str(proposal.get('content_summary') or '').strip(),
+        })
+        normalized.append(row)
+
+    taxonomy_path = directory / 'board_taxonomy.json'
+    classification_path = directory / 'classification.json'
+    write_private_json(taxonomy_path, {'boards': taxonomy})
+    write_private_json(classification_path, normalized)
+    return {
+        'classification': str(classification_path),
+        'classification_count': len(normalized),
+        'taxonomy_path': str(taxonomy_path),
+        'taxonomy': taxonomy,
+    }
+
+
 def prepare_action(
     run_id: str,
     user_id: str,
     page_url: str,
     expected_url_substring: str,
     verify_pages: int,
+    classification_rows: Any = None,
 ) -> Dict[str, Any]:
     require_workbuddy()
     directory = run_dir_for(run_id)
-    classification = directory / 'classification.json'
-    if not classification.is_file():
-        raise RuntimeError('缺少 classification.json；必须先完成真实分类，不能用抓取结果冒充分类。')
     if not NOTE_ID_RE.fullmatch(str(user_id or '').strip()):
         raise RuntimeError('user_id 必须是当前账号 URL 中的 24 位十六进制 id。')
+    user_id = str(user_id).strip()
     checked_url = validate_xhs_url(page_url, 'custom')
     expected = str(expected_url_substring or '').strip()
     if not expected or expected not in checked_url:
         raise RuntimeError('expected_url_substring 必须是 page_url 中的稳定片段。')
     if not isinstance(verify_pages, int) or isinstance(verify_pages, bool) or not 1 <= verify_pages <= 200:
         raise RuntimeError('verify_pages 必须是 1 到 200 的整数。')
-    require_profile_available()
 
     snapshot = directory / 'board_snapshot.json'
+    classification = directory / 'classification.json'
     created = directory / 'created_boards.json'
     report_path = directory / 'run_report.json'
     safety = directory / 'xhs_safety_state.json'
-    run_command([
-        sys.executable,
-        str(ROOT / 'scripts/capture_board_snapshot.py'),
-        str(snapshot),
-        '--browser', 'playwright',
-        '--user-id', user_id,
-        '--expected-url-substring', expected,
-        '--verify-pages', str(verify_pages),
-        '--safety-state', str(safety),
-        '--url', checked_url,
-    ])
+    approval_path = directory / 'approval.json'
+    approval_path.unlink(missing_ok=True)
+
+    if classification_rows is None:
+        require_profile_available()
+        run_command([
+            sys.executable,
+            str(ROOT / 'scripts/capture_board_snapshot.py'),
+            str(snapshot),
+            '--browser', 'playwright',
+            '--user-id', user_id,
+            '--expected-url-substring', expected,
+            '--verify-pages', str(verify_pages),
+            '--safety-state', str(safety),
+            '--url', checked_url,
+        ])
+        existing_board_names = validate_workbuddy_snapshot_binding(
+            load_json(snapshot),
+            user_id,
+            expected,
+        )
+        has_existing_boards = bool(existing_board_names)
+        return {
+            'ok': True,
+            'phase': 'board_inventory',
+            'run_id': directory.name,
+            'run_dir': str(directory),
+            'board_snapshot': str(snapshot),
+            'existing_board_names': existing_board_names,
+            'existing_board_count': len(existing_board_names),
+            'classification_required': has_existing_boards,
+            'ready_for_execute': False,
+            'blockers': [] if has_existing_boards else ['no_existing_boards'],
+            'approval_digest': None,
+            'next_action': (
+                '只允许从 existing_board_names 中为本次真实 note id 选择目标专辑；'
+                '没有准确匹配时 target_board 留空，再带完整 classification 调用 prepare。'
+                if has_existing_boards
+                else '当前账号没有真实已有专辑；停止，不得生成或移动到预设类别。'
+            ),
+        }
+
+    if not snapshot.is_file():
+        raise RuntimeError(
+            '缺少本次只读专辑清单；必须先调用不带 classification 的 prepare。'
+        )
+    existing_board_names = validate_workbuddy_snapshot_binding(
+        load_json(snapshot),
+        user_id,
+        expected,
+    )
+    if not existing_board_names:
+        raise RuntimeError('当前账号没有真实已有专辑；不能生成移动计划。')
+    classification_context = write_workbuddy_classification(
+        directory,
+        classification_rows,
+        existing_board_names,
+    )
     run_command([
         sys.executable,
         str(ROOT / 'scripts/build_created_boards.py'),
@@ -926,8 +1126,6 @@ def prepare_action(
         for row in report.get('processed', [])
         if isinstance(row, dict) and row.get('status') == 'planned'
     )
-    approval_path = directory / 'approval.json'
-    approval_path.unlink(missing_ok=True)
     digest = None
     if (
         report.get('mode') == 'dry_run'
@@ -941,8 +1139,9 @@ def prepare_action(
             'basis': approval_basis(directory, report),
             'created_at': utc_now(),
         })
-    return {
+    result = {
         'ok': proc.returncode == 0,
+        'phase': 'dry_run',
         'run_id': directory.name,
         'run_dir': str(directory),
         'mode': report.get('mode'),
@@ -969,6 +1168,8 @@ def prepare_action(
             )
         ),
     }
+    result.update(classification_context)
+    return result
 
 
 def execute_action(
@@ -1054,7 +1255,6 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument('--page-url', required=True)
     capture.add_argument('--batch-size', type=int, default=DEFAULT_CAPTURE_BATCH_SIZE)
     capture.add_argument('--pause-minutes', type=int, default=DEFAULT_CAPTURE_PAUSE_MINUTES)
-    capture.add_argument('--quick-classify', action='store_true')
 
     prepare = sub.add_parser('prepare')
     prepare.add_argument('--run-id', required=True)
@@ -1062,6 +1262,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument('--page-url', required=True)
     prepare.add_argument('--expected-url-substring', required=True)
     prepare.add_argument('--verify-pages', type=int, default=100)
+    prepare.add_argument('--classification-stdin', action='store_true')
 
     execute = sub.add_parser('execute')
     execute.add_argument('--run-id', required=True)
@@ -1089,15 +1290,21 @@ def main() -> None:
                 args.page_url,
                 args.batch_size,
                 args.pause_minutes,
-                args.quick_classify,
             )
         elif args.action == 'prepare':
+            classification_rows = None
+            if args.classification_stdin:
+                payload = json.load(sys.stdin)
+                if not isinstance(payload, dict) or 'classification' not in payload:
+                    raise RuntimeError('stdin 必须提供包含 classification 的 JSON 对象。')
+                classification_rows = payload['classification']
             result = prepare_action(
                 args.run_id,
                 args.user_id,
                 args.page_url,
                 args.expected_url_substring,
                 args.verify_pages,
+                classification_rows,
             )
         else:
             result = execute_action(

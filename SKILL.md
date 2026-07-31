@@ -17,11 +17,13 @@ This is the umbrella for Xiaohongshu web workflows. Use the collection/liked org
 2. 先调用 `xhs_workbuddy_status`。若 `install_required=true`，先向用户说明需要把 Python Playwright 与 Chromium 下载到插件持久化目录并取得明确同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)`，随后再次调用 status。
 3. 范围和整理深度确定后，只询问一次是否允许打开 WorkBuddy 专用浏览器完成本轮只读整理。分组规则默认固定为 `batch_size=200`（每组最多 200 条）和 `pause_minutes=3`（组间至少暂停 3 分钟）；除非用户主动修改，不得重复询问这两个默认值。这次授权覆盖本轮 `login → capture → prepare` 三个只读阶段。
 4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的专用 Chromium 完成登录；插件必须自动识别当前账号、进入所选收藏/点赞页、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放。不得要求用户打开目标页、关闭窗口或复制 URL。
-5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,batch_size=200,pause_minutes=3,...)`，不得再次询问或让用户粘贴地址。WorkBuddy 插件必须在同一个专用 Chromium 会话中自动翻页：每 200 条独立保存一组，组间真实等待 3 分钟后继续；用户修改过参数时使用修改后的值。页面索引到达声明末尾，或页面底部的滚动位置、页面高度、末项索引和已读数量连续两次完全不变时停止。全过程不得点击、刷新、自动重试或写账号。快速整理传 `quick_classify=true`；轻度/深度整理传 `false`，再让既有 OCR/视频链路把最终结果写到工具返回的 `run_dir/classification.json`。
-6. 分类完成后立即调用 `xhs_workbuddy_prepare` 生成真实 `board_snapshot.json`、`created_boards.json` 和硬闸门 `run_report.json`。只有工具返回 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0` 和非空 `approval_digest`，才可向用户展示逐条“当前专辑 → 目标专辑”并请求执行确认。若 `planned_move_count=0`，直接展示已在正确专辑和待人工复核的条目，禁止请求执行。
-7. 普通整理结果直接在当前对话里用简短纯文本报告，不调用可视化 Skill、可视化指南、组件渲染、HTML、仪表盘或 `present_files`，也不为已有 JSON 产物额外生成展示文件；只有用户明确要求图表、网页或文件交付时才允许。报告只列工具顺序、抓取/分类数量、`mode`、`ready_for_execute`、`blockers`、`warnings`、`planned_move_count`、是否写入账号、`run_dir`，以及已正确归档/待复核条目；不要展开全部专辑库存。
-8. 用户明确确认逐条映射与本次移动上限后，原样传回 `approval_digest`，并调用 `xhs_workbuddy_execute(browser_authorized=true,user_confirmed=true,...)`。任何分类、专辑证据或计划变化都会让 digest 失效，并在打开浏览器前拒绝执行。
-9. 如果六个工具缺少任何一个，且当前环境存在 `WORKBUDDY_CONFIG_DIR`，不要让普通用户寻找连接器页面、编辑 JSON 或处理 MCP 名词。只说明：“小红书插件需要一次性启用；回复‘启用’后，我只会启用 `xiaohongshu-organizer`，然后你重开一次 WorkBuddy。”用户明确回复“启用”后，运行 `python3 scripts/enable_workbuddy_mcp.py`；脚本只能把这一项加入 WorkBuddy 白名单，必须保留其他设置。若返回 `restart_required=true`，只让用户完全退出并重开 WorkBuddy，再重发原请求。若该项已存在但工具仍缺失，直接让用户重开 WorkBuddy，不重复修改。其他宿主仍按“WorkBuddy Plugin 未安装或未加载”停止；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
+5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,batch_size=200,pause_minutes=3,...)`，不得再次询问或让用户粘贴地址。WorkBuddy 插件必须在同一个专用 Chromium 会话中自动翻页：每 200 条独立保存一组，组间真实等待 3 分钟后继续；用户修改过参数时使用修改后的值。页面索引到达声明末尾，或页面底部的滚动位置、页面高度、末项索引和已读数量连续两次完全不变时停止。全过程不得点击、刷新、自动重试或写账号。
+6. 抓取完成后，先调用一次不带 `classification` 的 `xhs_workbuddy_prepare(...)`。这一次只读生成与本次账号、页面绑定的 `board_snapshot.json`，并返回 `phase=board_inventory` 和 `existing_board_names`；不得在拿到这份真实清单前猜测专辑。此阶段的 `classification_required` 是继续分类的阶段标记，不是失败或最终 blocker，必须立即继续第 7 步；若返回 `no_existing_boards`，才说明当前没有可用目标专辑并停止，不得生成预设类别。
+7. 读取本次真实 `visible_items.json`，并从 `existing_board_names` 中为全部真实 note id 逐条选择目标。禁止创造新专辑或注入任何预设类别；没有准确匹配时保持 `target_board=""` 并进入人工复核。轻度/深度整理再按既有 OCR/视频链路补证据。
+8. 把完整逐条分类传给第二次 `xhs_workbuddy_prepare(classification=[...])`。工具必须核验分类 ID 与本次抓取完全一致、目标只属于刚才的真实专辑清单，并只用实际非空目标机械生成本次 `board_taxonomy.json` 和 `classification.json`；第二次调用复用已绑定快照，不再打开浏览器。只有返回 `phase=dry_run`、`mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0` 和非空 `approval_digest`，才可请求执行确认。若 `planned_move_count=0`，直接展示已在正确专辑和待人工复核的条目，禁止请求执行。
+9. 普通整理结果直接在当前对话里用简短纯文本报告，不调用可视化 Skill、可视化指南、组件渲染、HTML、仪表盘或 `present_files`，也不为已有 JSON 产物额外生成展示文件；只有用户明确要求图表、网页或文件交付时才允许。报告只列工具顺序、抓取/分类数量、`mode`、`ready_for_execute`、`blockers`、`warnings`、`planned_move_count`、是否写入账号、`run_dir`，以及已正确归档/待复核条目；不要展开全部专辑库存。
+10. 用户明确确认逐条映射与本次移动上限后，原样传回 `approval_digest`，并调用 `xhs_workbuddy_execute(browser_authorized=true,user_confirmed=true,...)`。任何分类、专辑证据或计划变化都会让 digest 失效，并在打开浏览器前拒绝执行。
+11. 如果六个工具缺少任何一个，且当前环境存在 `WORKBUDDY_CONFIG_DIR`，不要让普通用户寻找连接器页面、编辑 JSON 或处理 MCP 名词。只说明：“小红书插件需要一次性启用；回复‘启用’后，我只会启用 `xiaohongshu-organizer`，然后你重开一次 WorkBuddy。”用户明确回复“启用”后，运行 `python3 scripts/enable_workbuddy_mcp.py`；脚本只能把这一项加入 WorkBuddy 白名单，必须保留其他设置。若返回 `restart_required=true`，只让用户完全退出并重开 WorkBuddy，再重发原请求。若该项已存在但工具仍缺失，直接让用户重开 WorkBuddy，不重复修改。其他宿主仍按“WorkBuddy Plugin 未安装或未加载”停止；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
 
 WorkBuddy 路径由插件显式注入 `XHS_HOST=workbuddy`；三个已有浏览器入口会再次在代码层强制为 Playwright 自带 `chromium`、可见窗口和插件独立 profile，并拒绝 CDP、headless 与其他 `user-data-dir`。这条约束与选择 GLM、Hy3 或其他模型无关。完整安装和工具合同见 `references/workbuddy-plugin.md`。
 
@@ -145,8 +147,8 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
      >
      > 例如：
      >
-     > - 标题只写“太香了”，但视频里的讲解实际在教番茄炒蛋。声音分析可以判断它属于“做饭 / 菜谱”。
-     > - 视频里没人说话，只在演示怎样整理衣柜。只分析声音时无法判断；同时分析画面后，可以归入“收纳整理”。
+     > - 标题没有说明主题，但视频讲解包含完整步骤。声音分析可以先识别真实主题，再与本次分类体系匹配。
+     > - 视频里没人说话，只用画面演示一个过程。只分析声音时无法判断；同时分析画面后，才能依据真实内容分类。
      >
      > 这项功能包含两部分：
      >
@@ -241,7 +243,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 2. 生成专辑分类建议
    - 基于全部收藏条目的标题、正文/描述、标签、作者，以及图文笔记封面和全部内页图片中的 OCR 文本，先生成“可创建专辑”的建议清单。OCR 不提供无文字纯画面的视觉理解。
-   - 专辑建议应面向用户真实收藏主题，例如：装潢、穿搭、攀岩、滑雪、潜水、自我成长、灵感、旅行、健康、效率、审美参考等；不要机械照搬示例，必须从实际收藏中归纳。
+   - 专辑建议只能从用户本次真实收藏和真实已有专辑中归纳；Skill 不提供任何预设主题名称。不确定项留空待复核，禁止机械套用示例或默认“杂项”。
    - 输出时同时给出：建议专辑名、包含的代表笔记、为什么这样分、可能需要合并/拆分的边界。
 
 3. 专辑创建前必须询问用户

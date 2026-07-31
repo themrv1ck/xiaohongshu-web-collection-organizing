@@ -138,8 +138,13 @@ function createTransactionModel(options) {
         )
         return json.loads(proc.stdout)
 
-    def test_default_taxonomy_and_classifier(self):
+    def test_runtime_taxonomy_is_empty_until_real_user_topics_are_supplied(self):
         boards = load_taxonomy(None)
+        self.assertEqual(boards, [])
+        self.assertEqual(
+            load_taxonomy(ROOT / 'templates/board_taxonomy.template.json'),
+            [],
+        )
         item = {
             'id': '66d19b54000000001d03a93d',
             'title': '滑雪换刃练习',
@@ -149,6 +154,16 @@ function createTransactionModel(options) {
             'card_text': '滑雪 单板 换刃',
         }
         board, confidence, reason, review_state = infer_board(item, None, boards)
+        self.assertEqual(board, '')
+        self.assertEqual(confidence, 'low')
+        self.assertEqual(reason, ['no_rule_match'])
+        self.assertEqual(review_state, 'pending')
+
+        board, confidence, reason, review_state = infer_board(
+            item,
+            None,
+            ['滑雪'],
+        )
         self.assertEqual(board, '滑雪')
         self.assertIn(confidence, {'medium', 'high'})
         self.assertTrue(reason)

@@ -71,7 +71,13 @@ function pythonFor(action) {
 }
 
 
-function runBridge(action, args = [], timeoutMs = 600_000, abortSignal = undefined) {
+function runBridge(
+  action,
+  args = [],
+  timeoutMs = 600_000,
+  abortSignal = undefined,
+  inputPayload = undefined,
+) {
   requirePluginEnvironment();
   return new Promise((resolve, reject) => {
     const python = pythonFor(action);
@@ -86,14 +92,18 @@ function runBridge(action, args = [], timeoutMs = 600_000, abortSignal = undefin
         XHS_PYTHON_VENV: pythonVenv,
         PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers,
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [inputPayload === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
     });
     let stdout = '';
     let stderr = '';
     let finished = false;
+    let terminationError;
+    let forceKillTimer;
     const cleanup = () => {
       clearTimeout(timer);
+      clearTimeout(forceKillTimer);
       abortSignal?.removeEventListener('abort', onAbort);
     };
     const fail = (error) => {
@@ -102,19 +112,45 @@ function runBridge(action, args = [], timeoutMs = 600_000, abortSignal = undefin
       cleanup();
       reject(error);
     };
+    const signalProcessTree = (signalName) => {
+      try {
+        if (process.platform === 'win32') {
+          const result = spawnSync(
+            'taskkill.exe',
+            ['/PID', String(child.pid), '/T', '/F'],
+            { windowsHide: true, stdio: 'ignore' },
+          );
+          if (result.error) throw result.error;
+        } else {
+          process.kill(-child.pid, signalName);
+        }
+      } catch (error) {
+        if (error?.code !== 'ESRCH') throw error;
+      }
+    };
+    const terminate = (error) => {
+      if (finished || terminationError) return;
+      terminationError = error;
+      try {
+        signalProcessTree('SIGTERM');
+      } catch (signalError) {
+        fail(signalError);
+        return;
+      }
+      forceKillTimer = setTimeout(() => {
+        try {
+          signalProcessTree('SIGKILL');
+        } catch (signalError) {
+          fail(signalError);
+        }
+      }, 5_000);
+    };
     const onAbort = () => {
-      child.kill('SIGTERM');
-      fail(new Error(`固定工作流已取消：${action}`));
+      terminate(new Error(`固定工作流已取消：${action}`));
     };
     const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      fail(new Error(`固定工作流超时：${action}`));
+      terminate(new Error(`固定工作流超时：${action}`));
     }, timeoutMs);
-    if (abortSignal?.aborted) {
-      onAbort();
-      return;
-    }
-    abortSignal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -126,6 +162,10 @@ function runBridge(action, args = [], timeoutMs = 600_000, abortSignal = undefin
       if (finished) return;
       finished = true;
       cleanup();
+      if (terminationError) {
+        reject(terminationError);
+        return;
+      }
       const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
       let payload;
       try {
@@ -140,6 +180,15 @@ function runBridge(action, args = [], timeoutMs = 600_000, abortSignal = undefin
       }
       resolve(payload);
     });
+    if (abortSignal?.aborted) {
+      onAbort();
+      return;
+    }
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
+    if (inputPayload !== undefined) {
+      child.stdin.on('error', terminate);
+      child.stdin.end(JSON.stringify(inputPayload));
+    }
   });
 }
 
@@ -176,14 +225,17 @@ function toolError(error) {
 const server = new McpServer(
   {
     name: 'xiaohongshu-workbuddy',
-    version: '2.0.1',
+    version: '2.0.2',
   },
   {
     instructions:
       '在 WorkBuddy 中只能调用本服务器管理小红书浏览器阶段。' +
       '先 status；缺依赖时经用户同意后 setup；首次登录用 login；' +
       '抓取在同一浏览器会话中自动翻页，默认每 200 条一组、组间暂停 3 分钟；' +
-      '真实分类完成后用 prepare；只有 prepare 返回 ' +
+      'capture 后先调用不带 classification 的 prepare 读取真实已有专辑；' +
+      '分类只能从这些真实专辑中选择，不得使用预设主题；再带分类调用 prepare；' +
+      '没有已有专辑时停止，不得生成默认类别；' +
+      '只有 prepare 返回 ' +
       'ready_for_execute=true、blockers=[] 且用户确认映射和上限后才可 execute。' +
       '禁止调用 Safari、Arc、系统 Chrome、CDP 或 osascript。',
   },
@@ -269,7 +321,6 @@ server.registerTool(
       page_url: z.string().url(),
       batch_size: z.number().int().min(1).max(200).default(200),
       pause_minutes: z.number().int().min(1).default(3),
-      quick_classify: z.boolean().default(false),
     }),
   },
   async ({
@@ -279,7 +330,6 @@ server.registerTool(
     page_url,
     batch_size,
     pause_minutes,
-    quick_classify,
   }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
@@ -290,7 +340,6 @@ server.registerTool(
         '--pause-minutes', String(pause_minutes),
       ];
       if (run_id) args.push('--run-id', run_id);
-      if (quick_classify) args.push('--quick-classify');
       return toolResult(await runBridge(
         'capture',
         args,
@@ -309,7 +358,7 @@ server.registerTool(
   {
     title: '生成真实专辑证据与硬闸门 dry-run',
     description:
-      '要求 run 目录已有真实 classification.json。用插件独立 Playwright 只读生成 board_snapshot.json，再机械生成 created_boards.json 和 run_report.json。只有返回 ready_for_execute=true、blockers=[] 才能请求用户执行确认。',
+      '两阶段固定入口：第一次不传 classification，只读返回本次账号真实已有专辑；模型只能从该清单中分类，没有已有专辑时停止。第二次传入覆盖全部真实 ID 的 classification，工具校验后生成 taxonomy 与硬闸门 dry-run。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合授权只读核验此页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
@@ -317,6 +366,15 @@ server.registerTool(
       page_url: z.string().url(),
       expected_url_substring: z.string().min(1),
       verify_pages: z.number().int().min(1).max(200).default(100),
+      classification: z.array(z.object({
+        id: z.string().regex(/^[0-9a-fA-F]{24}$/),
+        target_board: z.string().default(''),
+        confidence: z.enum(['low', 'medium', 'high']).default('low'),
+        reason: z.array(z.string()).default([]),
+        review_state: z.string().default(''),
+        main_topic: z.string().default(''),
+        content_summary: z.string().default(''),
+      })).optional(),
     }),
   },
   async ({
@@ -326,16 +384,29 @@ server.registerTool(
     page_url,
     expected_url_substring,
     verify_pages,
-  }) => {
+    classification,
+  }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
-      return toolResult(await runBridge('prepare', [
+      const args = [
         '--run-id', run_id,
         '--user-id', user_id,
         '--page-url', page_url,
         '--expected-url-substring', expected_url_substring,
         '--verify-pages', String(verify_pages),
-      ], 600_000));
+      ];
+      let inputPayload;
+      if (classification !== undefined) {
+        args.push('--classification-stdin');
+        inputPayload = { classification };
+      }
+      return toolResult(await runBridge(
+        'prepare',
+        args,
+        600_000,
+        extra.signal,
+        inputPayload,
+      ));
     } catch (error) {
       return toolError(error);
     }

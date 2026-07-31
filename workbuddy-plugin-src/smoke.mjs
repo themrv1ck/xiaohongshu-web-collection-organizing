@@ -63,8 +63,18 @@ try {
     || captureProperties.pause_minutes?.default !== 3
     || 'segment_limit' in captureProperties
     || 'controlled_groups_authorized' in captureProperties
+    || 'quick_classify' in captureProperties
   ) {
     throw new Error(`MCP capture group contract mismatch: ${JSON.stringify(capture)}`);
+  }
+  const prepare = listed.tools.find((tool) => tool.name === 'xhs_workbuddy_prepare');
+  const prepareProperties = prepare?.inputSchema?.properties || {};
+  const prepareRequired = prepare?.inputSchema?.required || [];
+  if (
+    prepareProperties.classification?.type !== 'array'
+    || prepareRequired.includes('classification')
+  ) {
+    throw new Error(`MCP prepare classification contract mismatch: ${JSON.stringify(prepare)}`);
   }
   const result = await client.callTool({
     name: 'xhs_workbuddy_status',

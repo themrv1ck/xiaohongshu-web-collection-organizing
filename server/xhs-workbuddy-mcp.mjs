@@ -31036,7 +31036,7 @@ function pythonFor(action) {
   }
   return bootstrapPython();
 }
-function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0) {
+function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0, inputPayload = void 0) {
   requirePluginEnvironment();
   return new Promise((resolve, reject) => {
     const python = pythonFor(action);
@@ -31051,14 +31051,18 @@ function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0) {
         XHS_PYTHON_VENV: pythonVenv,
         PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers
       },
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true
+      stdio: [inputPayload === void 0 ? "ignore" : "pipe", "pipe", "pipe"],
+      windowsHide: true,
+      detached: process3.platform !== "win32"
     });
     let stdout = "";
     let stderr = "";
     let finished = false;
+    let terminationError;
+    let forceKillTimer;
     const cleanup = () => {
       clearTimeout(timer);
+      clearTimeout(forceKillTimer);
       abortSignal?.removeEventListener("abort", onAbort);
     };
     const fail = (error51) => {
@@ -31067,19 +31071,45 @@ function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0) {
       cleanup();
       reject(error51);
     };
+    const signalProcessTree = (signalName) => {
+      try {
+        if (process3.platform === "win32") {
+          const result = spawnSync(
+            "taskkill.exe",
+            ["/PID", String(child.pid), "/T", "/F"],
+            { windowsHide: true, stdio: "ignore" }
+          );
+          if (result.error) throw result.error;
+        } else {
+          process3.kill(-child.pid, signalName);
+        }
+      } catch (error51) {
+        if (error51?.code !== "ESRCH") throw error51;
+      }
+    };
+    const terminate = (error51) => {
+      if (finished || terminationError) return;
+      terminationError = error51;
+      try {
+        signalProcessTree("SIGTERM");
+      } catch (signalError) {
+        fail(signalError);
+        return;
+      }
+      forceKillTimer = setTimeout(() => {
+        try {
+          signalProcessTree("SIGKILL");
+        } catch (signalError) {
+          fail(signalError);
+        }
+      }, 5e3);
+    };
     const onAbort = () => {
-      child.kill("SIGTERM");
-      fail(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u5DF2\u53D6\u6D88\uFF1A${action}`));
+      terminate(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u5DF2\u53D6\u6D88\uFF1A${action}`));
     };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      fail(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u8D85\u65F6\uFF1A${action}`));
+      terminate(new Error(`\u56FA\u5B9A\u5DE5\u4F5C\u6D41\u8D85\u65F6\uFF1A${action}`));
     }, timeoutMs);
-    if (abortSignal?.aborted) {
-      onAbort();
-      return;
-    }
-    abortSignal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -31095,6 +31125,10 @@ function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0) {
       if (finished) return;
       finished = true;
       cleanup();
+      if (terminationError) {
+        reject(terminationError);
+        return;
+      }
       const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
       let payload;
       try {
@@ -31109,6 +31143,15 @@ function runBridge(action, args = [], timeoutMs = 6e5, abortSignal = void 0) {
       }
       resolve(payload);
     });
+    if (abortSignal?.aborted) {
+      onAbort();
+      return;
+    }
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+    if (inputPayload !== void 0) {
+      child.stdin.on("error", terminate);
+      child.stdin.end(JSON.stringify(inputPayload));
+    }
   });
 }
 function requireTrue(value, label) {
@@ -31137,10 +31180,10 @@ function toolError(error51) {
 var server = new McpServer(
   {
     name: "xiaohongshu-workbuddy",
-    version: "2.0.1"
+    version: "2.0.2"
   },
   {
-    instructions: "\u5728 WorkBuddy \u4E2D\u53EA\u80FD\u8C03\u7528\u672C\u670D\u52A1\u5668\u7BA1\u7406\u5C0F\u7EA2\u4E66\u6D4F\u89C8\u5668\u9636\u6BB5\u3002\u5148 status\uFF1B\u7F3A\u4F9D\u8D56\u65F6\u7ECF\u7528\u6237\u540C\u610F\u540E setup\uFF1B\u9996\u6B21\u767B\u5F55\u7528 login\uFF1B\u6293\u53D6\u5728\u540C\u4E00\u6D4F\u89C8\u5668\u4F1A\u8BDD\u4E2D\u81EA\u52A8\u7FFB\u9875\uFF0C\u9ED8\u8BA4\u6BCF 200 \u6761\u4E00\u7EC4\u3001\u7EC4\u95F4\u6682\u505C 3 \u5206\u949F\uFF1B\u771F\u5B9E\u5206\u7C7B\u5B8C\u6210\u540E\u7528 prepare\uFF1B\u53EA\u6709 prepare \u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u4E14\u7528\u6237\u786E\u8BA4\u6620\u5C04\u548C\u4E0A\u9650\u540E\u624D\u53EF execute\u3002\u7981\u6B62\u8C03\u7528 Safari\u3001Arc\u3001\u7CFB\u7EDF Chrome\u3001CDP \u6216 osascript\u3002"
+    instructions: "\u5728 WorkBuddy \u4E2D\u53EA\u80FD\u8C03\u7528\u672C\u670D\u52A1\u5668\u7BA1\u7406\u5C0F\u7EA2\u4E66\u6D4F\u89C8\u5668\u9636\u6BB5\u3002\u5148 status\uFF1B\u7F3A\u4F9D\u8D56\u65F6\u7ECF\u7528\u6237\u540C\u610F\u540E setup\uFF1B\u9996\u6B21\u767B\u5F55\u7528 login\uFF1B\u6293\u53D6\u5728\u540C\u4E00\u6D4F\u89C8\u5668\u4F1A\u8BDD\u4E2D\u81EA\u52A8\u7FFB\u9875\uFF0C\u9ED8\u8BA4\u6BCF 200 \u6761\u4E00\u7EC4\u3001\u7EC4\u95F4\u6682\u505C 3 \u5206\u949F\uFF1Bcapture \u540E\u5148\u8C03\u7528\u4E0D\u5E26 classification \u7684 prepare \u8BFB\u53D6\u771F\u5B9E\u5DF2\u6709\u4E13\u8F91\uFF1B\u5206\u7C7B\u53EA\u80FD\u4ECE\u8FD9\u4E9B\u771F\u5B9E\u4E13\u8F91\u4E2D\u9009\u62E9\uFF0C\u4E0D\u5F97\u4F7F\u7528\u9884\u8BBE\u4E3B\u9898\uFF1B\u518D\u5E26\u5206\u7C7B\u8C03\u7528 prepare\uFF1B\u6CA1\u6709\u5DF2\u6709\u4E13\u8F91\u65F6\u505C\u6B62\uFF0C\u4E0D\u5F97\u751F\u6210\u9ED8\u8BA4\u7C7B\u522B\uFF1B\u53EA\u6709 prepare \u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u4E14\u7528\u6237\u786E\u8BA4\u6620\u5C04\u548C\u4E0A\u9650\u540E\u624D\u53EF execute\u3002\u7981\u6B62\u8C03\u7528 Safari\u3001Arc\u3001\u7CFB\u7EDF Chrome\u3001CDP \u6216 osascript\u3002"
   }
 );
 server.registerTool(
@@ -31211,8 +31254,7 @@ server.registerTool(
       source: external_exports.enum(["collection", "liked", "custom"]),
       page_url: external_exports.string().url(),
       batch_size: external_exports.number().int().min(1).max(200).default(200),
-      pause_minutes: external_exports.number().int().min(1).default(3),
-      quick_classify: external_exports.boolean().default(false)
+      pause_minutes: external_exports.number().int().min(1).default(3)
     })
   },
   async ({
@@ -31221,8 +31263,7 @@ server.registerTool(
     source,
     page_url,
     batch_size,
-    pause_minutes,
-    quick_classify
+    pause_minutes
   }, extra) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
@@ -31237,7 +31278,6 @@ server.registerTool(
         String(pause_minutes)
       ];
       if (run_id) args.push("--run-id", run_id);
-      if (quick_classify) args.push("--quick-classify");
       return toolResult(await runBridge(
         "capture",
         args,
@@ -31253,14 +31293,23 @@ server.registerTool(
   "xhs_workbuddy_prepare",
   {
     title: "\u751F\u6210\u771F\u5B9E\u4E13\u8F91\u8BC1\u636E\u4E0E\u786C\u95F8\u95E8 dry-run",
-    description: "\u8981\u6C42 run \u76EE\u5F55\u5DF2\u6709\u771F\u5B9E classification.json\u3002\u7528\u63D2\u4EF6\u72EC\u7ACB Playwright \u53EA\u8BFB\u751F\u6210 board_snapshot.json\uFF0C\u518D\u673A\u68B0\u751F\u6210 created_boards.json \u548C run_report.json\u3002\u53EA\u6709\u8FD4\u56DE ready_for_execute=true\u3001blockers=[] \u624D\u80FD\u8BF7\u6C42\u7528\u6237\u6267\u884C\u786E\u8BA4\u3002",
+    description: "\u4E24\u9636\u6BB5\u56FA\u5B9A\u5165\u53E3\uFF1A\u7B2C\u4E00\u6B21\u4E0D\u4F20 classification\uFF0C\u53EA\u8BFB\u8FD4\u56DE\u672C\u6B21\u8D26\u53F7\u771F\u5B9E\u5DF2\u6709\u4E13\u8F91\uFF1B\u6A21\u578B\u53EA\u80FD\u4ECE\u8BE5\u6E05\u5355\u4E2D\u5206\u7C7B\uFF0C\u6CA1\u6709\u5DF2\u6709\u4E13\u8F91\u65F6\u505C\u6B62\u3002\u7B2C\u4E8C\u6B21\u4F20\u5165\u8986\u76D6\u5168\u90E8\u771F\u5B9E ID \u7684 classification\uFF0C\u5DE5\u5177\u6821\u9A8C\u540E\u751F\u6210 taxonomy \u4E0E\u786C\u95F8\u95E8 dry-run\u3002",
     inputSchema: external_exports.object({
       browser_authorized: external_exports.boolean().describe("\u7528\u6237\u662F\u5426\u5728\u5F53\u524D\u56DE\u5408\u6388\u6743\u53EA\u8BFB\u6838\u9A8C\u6B64\u9875\u9762"),
       run_id: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
       user_id: external_exports.string().regex(/^[0-9a-fA-F]{24}$/),
       page_url: external_exports.string().url(),
       expected_url_substring: external_exports.string().min(1),
-      verify_pages: external_exports.number().int().min(1).max(200).default(100)
+      verify_pages: external_exports.number().int().min(1).max(200).default(100),
+      classification: external_exports.array(external_exports.object({
+        id: external_exports.string().regex(/^[0-9a-fA-F]{24}$/),
+        target_board: external_exports.string().default(""),
+        confidence: external_exports.enum(["low", "medium", "high"]).default("low"),
+        reason: external_exports.array(external_exports.string()).default([]),
+        review_state: external_exports.string().default(""),
+        main_topic: external_exports.string().default(""),
+        content_summary: external_exports.string().default("")
+      })).optional()
     })
   },
   async ({
@@ -31269,11 +31318,12 @@ server.registerTool(
     user_id,
     page_url,
     expected_url_substring,
-    verify_pages
-  }) => {
+    verify_pages,
+    classification
+  }, extra) => {
     try {
       requireTrue(browser_authorized, "browser_authorized");
-      return toolResult(await runBridge("prepare", [
+      const args = [
         "--run-id",
         run_id,
         "--user-id",
@@ -31284,7 +31334,19 @@ server.registerTool(
         expected_url_substring,
         "--verify-pages",
         String(verify_pages)
-      ], 6e5));
+      ];
+      let inputPayload;
+      if (classification !== void 0) {
+        args.push("--classification-stdin");
+        inputPayload = { classification };
+      }
+      return toolResult(await runBridge(
+        "prepare",
+        args,
+        6e5,
+        extra.signal,
+        inputPayload
+      ));
     } catch (error51) {
       return toolError(error51);
     }

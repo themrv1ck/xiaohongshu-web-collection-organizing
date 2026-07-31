@@ -14,7 +14,7 @@ from typing import Optional
 
 from video_content_common import normalize_content_type, redact_sensitive_text
 
-DEFAULT_RULES = {
+EXPLICIT_TAXONOMY_KEYWORD_RULES = {
     'hermes': ['hermes', 'codex', 'token', 'skill', '自动分类'],
     '家居装修与收纳': ['家居', '装修', '餐边柜', '镜柜', '台盆柜', '厨房', '豪宅', '收纳', '客厅', '卧室', '极简', '冰箱', '浴室', '咖啡角', '水吧台', '家政柜', '布置', '图纸', '洗漱台', '锅架', '不锈钢锅'],
     '穿搭发型与品味': ['穿搭', '时尚', '男士', '香水', '老钱风', '西装', 'ootd', 'vogue', 'chanel', '高级感', '理发', '发型', '卷发', '发油', '衣服', '鞋', '莫卡辛', 't恤', '贵妇'],
@@ -53,17 +53,19 @@ def normalize_text(value) -> str:
 
 def load_taxonomy(path: Optional[Path]):
     if not path:
-        return list(DEFAULT_RULES.keys()) + ['杂项灵感']
+        return []
     data = load_json(Path(path))
     boards = data.get('boards', []) if isinstance(data, dict) else data
-    return boards or (list(DEFAULT_RULES.keys()) + ['杂项灵感'])
+    return boards if isinstance(boards, list) else []
 
 
 def compute_rule_matches(blob: str, boards):
     matches = []
     board_set = set(boards or [])
-    for index, (board, words) in enumerate(DEFAULT_RULES.items()):
-        if board_set and board not in board_set:
+    if not board_set:
+        return []
+    for index, (board, words) in enumerate(EXPLICIT_TAXONOMY_KEYWORD_RULES.items()):
+        if board not in board_set:
             continue
         hits = []
         for word in words:

@@ -2,8 +2,11 @@
 import argparse
 import json
 import os
+import signal
+import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -21,9 +24,12 @@ from workbuddy_bridge import (  # noqa: E402
     execute_action,
     login_action,
     metadata_quality,
+    prepare_action,
+    run_command,
     status_action,
     validate_run_id,
     validate_xhs_url,
+    write_workbuddy_classification,
 )
 
 
@@ -96,6 +102,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         self.assertEqual(args.batch_size, 200)
         self.assertEqual(args.pause_minutes, 3)
         self.assertNotIn('segment_limit', vars(args))
+        self.assertNotIn('quick_classify', vars(args))
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
         self.assertIn('batch_size=200', skill)
         self.assertIn('pause_minutes=3', skill)
@@ -212,6 +219,262 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             'declared_count': 209,
             'accessible_count': 205,
         }])
+
+    def test_prepare_writes_only_classification_for_real_captured_ids(self):
+        first_id = '66d19b54000000001d03a93d'
+        second_id = '66d19b54000000001d03a93e'
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / 'visible_items.json').write_text(
+                json.dumps([
+                    {'id': first_id, 'title': '客厅照明改造'},
+                    {'id': second_id, 'title': '看不出主题'},
+                ], ensure_ascii=False),
+                encoding='utf-8',
+            )
+            result = write_workbuddy_classification(directory, [
+                {
+                    'id': first_id,
+                    'target_board': '居住空间',
+                    'confidence': 'high',
+                    'reason': ['内容明确讨论客厅照明'],
+                    'review_state': 'classified',
+                },
+                {
+                    'id': second_id,
+                    'target_board': '',
+                    'confidence': 'low',
+                    'reason': ['内容不足'],
+                    'review_state': 'pending',
+                },
+            ], ['居住空间'])
+            taxonomy = json.loads(
+                (directory / 'board_taxonomy.json').read_text(encoding='utf-8')
+            )
+            classification = json.loads(
+                (directory / 'classification.json').read_text(encoding='utf-8')
+            )
+            with self.assertRaisesRegex(RuntimeError, '不属于本次抓取'):
+                write_workbuddy_classification(directory, [{
+                    'id': '66d19b54000000001d03aff',
+                    'target_board': '无关类别',
+                }], ['居住空间'])
+
+        self.assertEqual(result['taxonomy'], ['居住空间'])
+        self.assertEqual(taxonomy, {'boards': ['居住空间']})
+        self.assertEqual([row['id'] for row in classification], [first_id, second_id])
+        self.assertEqual(classification[0]['title'], '客厅照明改造')
+        self.assertEqual(classification[1]['target_board'], '')
+
+    def test_prepare_first_phase_returns_real_board_names_before_classification(self):
+        user_id = '66d19b54000000001d03a93d'
+        expected = f'/user/profile/{user_id}'
+        page_url = f'https://www.xiaohongshu.com{expected}?tab=fav'
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            directory = data_dir / 'runs' / 'run-1'
+            directory.mkdir(parents=True)
+            (directory / 'visible_items.json').write_text('[]', encoding='utf-8')
+
+            def fake_run_command(args, **_kwargs):
+                snapshot = Path(args[2])
+                snapshot.write_text(json.dumps({
+                    'mode': 'read_only',
+                    'source': {
+                        'browser': 'playwright',
+                        'writes_performed': False,
+                        'user_id': user_id,
+                        'expected_url_substring': expected,
+                    },
+                    'boards': [
+                        {'id': 'a' * 24, 'name': '阅读', 'note_ids': []},
+                        {'id': 'b' * 24, 'name': '运动', 'note_ids': []},
+                    ],
+                }, ensure_ascii=False), encoding='utf-8')
+                return subprocess.CompletedProcess(args, 0, '{}', '')
+
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch('workbuddy_bridge.run_command', side_effect=fake_run_command) as command,
+            ):
+                result = prepare_action('run-1', user_id, page_url, expected, 100)
+
+        self.assertEqual(result['phase'], 'board_inventory')
+        self.assertEqual(result['existing_board_names'], ['阅读', '运动'])
+        self.assertEqual(result['blockers'], [])
+        self.assertIsNone(result['approval_digest'])
+        self.assertEqual(command.call_count, 1)
+        self.assertIn('capture_board_snapshot.py', command.call_args.args[0][1])
+
+    def test_prepare_first_phase_stops_when_account_has_no_existing_boards(self):
+        user_id = '66d19b54000000001d03a93d'
+        expected = f'/user/profile/{user_id}'
+        page_url = f'https://www.xiaohongshu.com{expected}?tab=fav'
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            directory = data_dir / 'runs' / 'run-1'
+            directory.mkdir(parents=True)
+            (directory / 'visible_items.json').write_text('[]', encoding='utf-8')
+
+            def fake_run_command(args, **_kwargs):
+                Path(args[2]).write_text(json.dumps({
+                    'mode': 'read_only',
+                    'source': {
+                        'browser': 'playwright',
+                        'writes_performed': False,
+                        'user_id': user_id,
+                        'expected_url_substring': expected,
+                    },
+                    'boards': [],
+                }), encoding='utf-8')
+                return subprocess.CompletedProcess(args, 0, '{}', '')
+
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch('workbuddy_bridge.run_command', side_effect=fake_run_command),
+            ):
+                result = prepare_action('run-1', user_id, page_url, expected, 100)
+
+        self.assertEqual(result['existing_board_names'], [])
+        self.assertFalse(result['classification_required'])
+        self.assertEqual(result['blockers'], ['no_existing_boards'])
+
+    def test_prepare_second_phase_reuses_bound_snapshot_and_rejects_new_categories(self):
+        user_id = '66d19b54000000001d03a93d'
+        note_id = '66d19b54000000001d03a93e'
+        expected = f'/user/profile/{user_id}'
+        page_url = f'https://www.xiaohongshu.com{expected}?tab=fav'
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            directory = data_dir / 'runs' / 'run-1'
+            directory.mkdir(parents=True)
+            (directory / 'visible_items.json').write_text(json.dumps([
+                {'id': note_id, 'title': '一本书的读后感'},
+            ], ensure_ascii=False), encoding='utf-8')
+            (directory / 'board_snapshot.json').write_text(json.dumps({
+                'mode': 'read_only',
+                'source': {
+                    'browser': 'playwright',
+                    'writes_performed': False,
+                    'user_id': user_id,
+                    'expected_url_substring': expected,
+                },
+                'boards': [{
+                    'id': 'a' * 24,
+                    'name': '阅读',
+                    'declared_total': 0,
+                    'page_count': 1,
+                    'note_ids': [],
+                }],
+                'validation': {
+                    'pagination_cursor_invariants_passed': True,
+                    'board_names_unique': True,
+                    'within_board_duplicates': [],
+                },
+            }, ensure_ascii=False), encoding='utf-8')
+
+            commands = []
+
+            def fake_run_command(args, **_kwargs):
+                commands.append(args)
+                if 'build_created_boards.py' in args[1]:
+                    Path(args[4]).write_text(json.dumps({
+                        'confirmed': ['阅读'],
+                        'created': [],
+                        'missing': [],
+                        'failed': [],
+                    }, ensure_ascii=False), encoding='utf-8')
+                elif 'run_reassign_batch.py' in args[1]:
+                    Path(args[3]).write_text(json.dumps({
+                        'mode': 'dry_run',
+                        'ready_for_execute': True,
+                        'blockers': [],
+                        'warnings': [],
+                        'processed': [{
+                            'id': note_id,
+                            'target_board': '阅读',
+                            'source_board_id': '',
+                            'membership_state': 'not_in_any_board',
+                            'status': 'planned',
+                        }],
+                    }, ensure_ascii=False), encoding='utf-8')
+                return subprocess.CompletedProcess(args, 0, '{}', '')
+
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch('workbuddy_bridge.run_command', side_effect=fake_run_command),
+            ):
+                with self.assertRaisesRegex(RuntimeError, '真实已有专辑'):
+                    prepare_action('run-1', user_id, page_url, expected, 100, [{
+                        'id': note_id,
+                        'target_board': '插件预设类别',
+                    }])
+                result = prepare_action('run-1', user_id, page_url, expected, 100, [{
+                    'id': note_id,
+                    'target_board': '阅读',
+                    'confidence': 'high',
+                    'reason': ['真实内容与已有专辑一致'],
+                }])
+
+        self.assertEqual(result['phase'], 'dry_run')
+        self.assertTrue(result['ready_for_execute'])
+        self.assertEqual(result['taxonomy'], ['阅读'])
+        self.assertIsNotNone(result['approval_digest'])
+        self.assertEqual(len(commands), 2)
+        self.assertFalse(any('capture_board_snapshot.py' in args[1] for args in commands))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX process-group cancellation contract')
+    def test_run_command_sigterm_closes_spawned_process_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            pid_file = directory / 'child.pid'
+            child_script = directory / 'child.py'
+            child_script.write_text(
+                'import os, pathlib, sys, time\n'
+                'pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8")\n'
+                'time.sleep(60)\n',
+                encoding='utf-8',
+            )
+            parent_code = (
+                f'import sys; sys.path.insert(0, {str(SCRIPTS)!r}); '
+                'from workbuddy_bridge import run_command; '
+                f'run_command([{sys.executable!r}, {str(child_script)!r}, {str(pid_file)!r}])'
+            )
+            parent = subprocess.Popen(
+                [sys.executable, '-c', parent_code],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            child_pid = None
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not pid_file.is_file():
+                    time.sleep(0.05)
+                self.assertTrue(pid_file.is_file())
+                child_pid = int(pid_file.read_text(encoding='utf-8'))
+                os.kill(parent.pid, signal.SIGTERM)
+                parent.communicate(timeout=10)
+                self.assertNotEqual(parent.returncode, 0)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                if parent.poll() is None:
+                    parent.kill()
+                    parent.wait(timeout=5)
+                if child_pid is not None:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_mcp_windows_cancellation_uses_exact_spawned_process_tree(self):
+        server_source = (
+            ROOT / 'workbuddy-plugin-src' / 'server.mjs'
+        ).read_text(encoding='utf-8')
+        self.assertIn("'taskkill.exe'", server_source)
+        self.assertIn("['/PID', String(child.pid), '/T', '/F']", server_source)
 
     def test_workbuddy_normal_results_forbid_unrequested_visualization(self):
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
@@ -347,7 +610,6 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         target_url,
                         200,
                         3,
-                        True,
                     )
             self.assertFalse((data_dir / 'runs' / 'locked-run').exists())
 
