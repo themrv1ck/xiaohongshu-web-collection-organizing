@@ -31521,7 +31521,7 @@ var bridge = path2.join(skillRoot, "scripts", "workbuddy_bridge.py");
 var evidenceLedger;
 var RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
 var APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-var PLUGIN_VERSION = "2.0.5";
+var PLUGIN_VERSION = "2.0.7";
 var MCP_LAUNCH_KEY_FD = 3;
 var MCP_EXECUTE_READY_FD = 4;
 var MCP_EXECUTE_COMMIT_FD = 5;

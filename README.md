@@ -85,7 +85,7 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
-若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.0.5` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.0.7` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
 
 在 WorkBuddy 对话中执行：
 
@@ -101,7 +101,7 @@
 
 `capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.5`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.7`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -135,24 +135,25 @@ hermes skills list
 
 如果 `hermes skills list` 里出现 `xiaohongshu-web-collection-organizing`，说明 Hermes 已识别。
 
-### RedSkill 上传包
+### SkillHub / RedSkill 上传包
 
-不要手工复制文件或把任意命名的外层目录直接压缩。RedSkill ZIP 的唯一顶层目录必须与 `SKILL.md` 的 `name` 完全一致，即 `xiaohongshu-web-collection-organizing/`；WorkBuddy 版还必须包含 `.codebuddy-plugin/`、`.mcp.json`、`server/` 和 `workbuddy-plugin-src/`。
+不要手工复制文件或把任意命名的外层目录直接压缩。ZIP 的唯一顶层目录必须与 `SKILL.md` 的 `name` 完全一致，即 `xiaohongshu-web-collection-organizing/`；WorkBuddy 运行包必须包含 `.codebuddy-plugin/`、`.mcp.json` 和已构建的 `server/`。
 
 在仓库根目录运行：
 
 ```bash
-python3 scripts/build_redskill_package.py --output-dir /tmp/xhs-redskill-release
+python3 scripts/build_redskill_package.py --channel redskill --output-dir /tmp/xhs-redskill-release
+python3 scripts/build_redskill_package.py --channel skillhub --output-dir /tmp/xhs-skillhub-release
 ```
 
-脚本只收录当前 Git 提交跟踪的文件，同时生成两个内容相同的完整交付：
+两个渠道使用同一套运行文件。脚本排除不参与运行的 `tests/` 和 `workbuddy-plugin-src/` 构建源码，保留已构建 MCP 服务器与全部运行脚本，使上传包不超过 SkillHub 默认 100 文件上限。每次生成一个展开文件夹和一个对应渠道的 ZIP：
 
 - `xiaohongshu-web-collection-organizing/`：平台允许选择文件夹时使用；
-- `xiaohongshu-web-collection-organizing-redskill-<版本>.zip`：平台允许 ZIP 时使用。
+- `xiaohongshu-web-collection-organizing-<redskill|skillhub>-<版本>.zip`：平台允许 ZIP 时使用。
 
-不要只上传 `SKILL.md`。单文件不包含 WorkBuddy Plugin、MCP 服务和安全校验代码，不能作为可运行的 WorkBuddy 2.0.5 发布包。
+不要只上传 `SKILL.md`。单文件不包含 WorkBuddy Plugin、MCP 服务和安全校验代码，不能作为可运行的 WorkBuddy 2.0.7 发布包。
 
-脚本会在输出前校验顶层目录、frontmatter、WorkBuddy 运行文件、单文件 10 MB 和总大小 30 MB 限制；任一条件不满足都会失败，不会生成可误传的“通过”结果。
+脚本会在输出前校验顶层目录、frontmatter、文件数、WorkBuddy 运行文件、四处版本一致性、单文件 10 MB 和总大小 30 MB 限制；任一条件不满足都会失败，不会生成可误传的“通过”结果。
 
 ## 前置条件
 
