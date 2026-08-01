@@ -145,11 +145,12 @@ hermes skills list
 python3 scripts/build_redskill_package.py --output-dir /tmp/xhs-redskill-release
 ```
 
-脚本只收录当前 Git 提交跟踪的文件，同时生成：
+脚本只收录当前 Git 提交跟踪的文件，同时生成两个内容相同的完整交付：
 
-- `单文件上传/SKILL.md`：平台只要求单文件时使用；
 - `xiaohongshu-web-collection-organizing/`：平台允许选择文件夹时使用；
 - `xiaohongshu-web-collection-organizing-redskill-<版本>.zip`：平台允许 ZIP 时使用。
+
+不要只上传 `SKILL.md`。单文件不包含 WorkBuddy Plugin、MCP 服务和安全校验代码，不能作为可运行的 WorkBuddy 2.0.5 发布包。
 
 脚本会在输出前校验顶层目录、frontmatter、WorkBuddy 运行文件、单文件 10 MB 和总大小 30 MB 限制；任一条件不满足都会失败，不会生成可误传的“通过”结果。
 

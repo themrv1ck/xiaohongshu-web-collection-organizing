@@ -127,24 +127,19 @@ def build_redskill_package(repo_root, output_dir):
 
     output_dir.mkdir(parents=True, exist_ok=True)
     package_dir = output_dir / skill_name
-    single_dir = output_dir / '单文件上传'
     archive_path = output_dir / '{}-redskill-{}.zip'.format(skill_name, version)
 
     if package_dir.exists():
         shutil.rmtree(str(package_dir))
-    if single_dir.exists():
-        shutil.rmtree(str(single_dir))
     if archive_path.exists():
         archive_path.unlink()
     package_dir.mkdir()
-    single_dir.mkdir()
 
     for relative in tracked_files:
         source = repo_root / relative
         destination = package_dir / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(source), str(destination))
-    shutil.copy2(str(skill_path), str(single_dir / 'SKILL.md'))
 
     with zipfile.ZipFile(
         archive_path, 'w', compression=zipfile.ZIP_DEFLATED
@@ -163,7 +158,6 @@ def build_redskill_package(repo_root, output_dir):
         'version': version,
         'tracked_file_count': len(tracked_files),
         'package_dir': str(package_dir),
-        'single_file_path': str(single_dir / 'SKILL.md'),
         'archive_path': str(archive_path),
         'validation_errors': validation_errors,
     }

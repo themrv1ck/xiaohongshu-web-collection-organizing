@@ -24,9 +24,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             result = build_redskill_package(ROOT, Path(tmp))
 
             archive_path = Path(result['archive_path'])
-            single_file_path = Path(result['single_file_path'])
             self.assertTrue(archive_path.is_file())
-            self.assertTrue(single_file_path.is_file())
             self.assertEqual(result['skill_name'], 'xiaohongshu-web-collection-organizing')
             self.assertEqual(result['version'], '2.0.5')
             self.assertEqual(result['validation_errors'], [])
