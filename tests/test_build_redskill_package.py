@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -81,6 +82,21 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             self.assertIn('version: "2.0.7"', skill_text)
             self.assertIn('license: MIT', skill_text)
             self.assertIn('compatibility: "Requires network access', skill_text)
+            validation = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'build_redskill_package.py'),
+                    '--channel',
+                    'skillhub',
+                    '--validate-only',
+                    result['archive_path'],
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(validation.returncode, 0, validation.stderr)
+            self.assertTrue(json.loads(validation.stdout)['valid'])
 
     def test_skillhub_validation_rejects_plugin_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:

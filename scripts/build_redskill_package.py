@@ -359,7 +359,7 @@ def main():
         type=Path,
         default=Path(__file__).resolve().parents[1],
     )
-    parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--output-dir', type=Path)
     parser.add_argument(
         '--channel', choices=sorted(SUPPORTED_CHANNELS), default='redskill'
     )
@@ -371,6 +371,8 @@ def main():
         )
         print(json.dumps({'valid': not errors, 'errors': errors}, ensure_ascii=False))
         return 1 if errors else 0
+    if args.output_dir is None:
+        parser.error('--output-dir is required when building a package')
     result = build_redskill_package(
         args.repo_root, args.output_dir, channel=args.channel
     )
