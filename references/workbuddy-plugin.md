@@ -37,7 +37,7 @@ Windows 只复用 Edge 程序文件，不接管其日常登录目录；小红书
 
 `scripts/workbuddy_runtime.py` 同时接入 `extract_visible_items.py`、`capture_board_snapshot.py` 和 `run_reassign_batch.py`。即使模型传错参数，三个真实浏览器入口也会在接触浏览器前拒绝。
 
-WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bin/run-node` 必须从宿主注入的 `WORKBUDDY_CONFIG_DIR` 计算固定插件数据目录，并作为位置参数传给 MCP 服务器；不得把未展开的变量当作路径使用。
+WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bin/run-node.sh` 必须从宿主注入的 `WORKBUDDY_CONFIG_DIR` 计算固定插件数据目录，并作为位置参数传给 MCP 服务器；不得把未展开的变量当作路径使用。
 
 ## 工具顺序
 

@@ -18,7 +18,7 @@ enum OCRScriptError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .missingArgument:
-            return "usage: ocr_image.swift <image_path>"
+            return "usage: ocr_image.swift.txt <image_path>"
         case .imageLoadFailed(let path):
             return "failed to load image: \(path)"
         case .visionFailed(let message):

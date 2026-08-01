@@ -162,7 +162,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             ocr_run_fingerprint(
                 provider,
                 tesseract_lang,
-                ROOT / 'scripts' / 'ocr_image.swift',
+                ROOT / 'scripts' / 'ocr_image.swift.txt',
             )
             if image_ocr_enabled
             else None
@@ -257,7 +257,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             'ocr_run_fingerprint': ocr_run_fingerprint(
                 'tesseract',
                 'chi_sim',
-                ROOT / 'scripts' / 'ocr_image.swift',
+                ROOT / 'scripts' / 'ocr_image.swift.txt',
             ),
             'images': [
                 {
@@ -988,7 +988,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             ocr_run_fingerprint(
                 'tesseract',
                 'chi_sim',
-                ROOT / 'scripts' / 'ocr_image.swift',
+                ROOT / 'scripts' / 'ocr_image.swift.txt',
             ),
         )
         self.assertTrue(classification[0]['ocr_image_set_complete'])

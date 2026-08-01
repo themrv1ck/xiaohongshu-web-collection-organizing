@@ -417,7 +417,7 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Optional[Path] = 
     output_path = Path(output_path)
     base_dir = output_path.parent
     cache_dir = Path(cache_dir) if cache_dir else base_dir / 'ocr_cache'
-    swift_script = Path(swift_script) if swift_script else Path(__file__).resolve().parent / 'ocr_image.swift'
+    swift_script = Path(swift_script) if swift_script else Path(__file__).resolve().parent / 'ocr_image.swift.txt'
     provider = detect_ocr_provider(provider)
     run_fingerprint = ocr_run_fingerprint(provider, tesseract_lang, swift_script)
     if not isinstance(items, list):

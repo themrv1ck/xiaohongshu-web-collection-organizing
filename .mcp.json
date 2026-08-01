@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "xiaohongshu-organizer": {
-      "command": "${CODEBUDDY_PLUGIN_ROOT}/bin/run-node",
+      "command": "${CODEBUDDY_PLUGIN_ROOT}/bin/run-node.sh",
       "args": [
         "${CODEBUDDY_PLUGIN_ROOT}/server/xhs-workbuddy-mcp.mjs"
       ],

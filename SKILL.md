@@ -291,7 +291,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 ## 分类复核要求
 - 图文 OCR 开关开启时，WorkBuddy 轻度整理只允许 `xhs_workbuddy_capture(organizing_depth=light)`；其他宿主运行 `enrich_note_images.py -> ocr_note_images.py`。两条路径都必须把封面和全部内页图片按原顺序逐张 OCR；关闭时不安装、不运行，预检结果也不得用于分类，并把对应条目标记为 `ocr_status=skipped` 或 `skipped_by_user`。视频视觉模块开启时，每个明确选择的视频分段都跑完整时轴真实帧 + 逐帧 Vision OCR；所有本地分段完成前不得声称已覆盖全部视频。未开启视频视觉模块时只能使用合格文字稿并标记 `transcript_only`。图文 OCR 与视频画面分析是两个独立开关；Vision OCR 不可用时，有视觉能力的 analysis provider 仍可直接看真实帧，但必须记录 `ocr_status=unavailable`。
-- `scripts/ocr_note_images.py` 的后端按平台自动选择：macOS 优先 `scripts/ocr_image.swift` + Vision；Windows 优先 Tesseract / EasyOCR。所有后端必须逐图回写同一份 `ocr_results.json`；OCR 成功但未发现文字与图片下载/OCR 失败必须明确区分。
+- `scripts/ocr_note_images.py` 的后端按平台自动选择：macOS 优先 `scripts/ocr_image.swift.txt` + Vision；Windows 优先 Tesseract / EasyOCR。所有后端必须逐图回写同一份 `ocr_results.json`；OCR 成功但未发现文字与图片下载/OCR 失败必须明确区分。
 - 如果用户关闭图文 OCR，分类流程继续走标题、desc、tags、作者等元数据，但必须在 `classification.json` 保留 `ocr_status=skipped` 或 `skipped_by_user`，并说明图片文字未参与分类、准确性可能下降。
 - 复核顺序：标题/desc/tags/作者 -> OCR 文本 -> 人工判断。
 - 复核后的结论必须回写 `classification.json`，不能只留 review 文件。
@@ -415,7 +415,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 1. 补齐正式目录结构：
    - `SKILL.md`
    - `README.md`
-   - `LICENSE`
+   - `LICENSE.txt`
    - `references/`
    - `scripts/`
    - `templates/`

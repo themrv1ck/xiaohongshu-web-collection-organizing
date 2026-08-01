@@ -41,7 +41,7 @@ from xhs_safety import (
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "video_analysis.schema.json"
-OCR_SCRIPT = ROOT / "scripts" / "ocr_image.swift"
+OCR_SCRIPT = ROOT / "scripts" / "ocr_image.swift.txt"
 VISUAL_EVIDENCE_SCHEMA_VERSION = 1
 VISUAL_ANALYSIS_PROMPT_CONTRACT_VERSION = 4
 DEFAULT_MAX_FRAME_GAP_SECONDS = 10.0

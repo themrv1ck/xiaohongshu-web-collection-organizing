@@ -13,7 +13,7 @@ WORKBUDDY_REQUIRED_FILES = (
     '.codebuddy-plugin/marketplace.json',
     '.codebuddy-plugin/plugin.json',
     '.mcp.json',
-    'bin/run-node',
+    'bin/run-node.sh',
     'server/xhs-workbuddy-mcp.mjs',
     'scripts/enable_workbuddy_mcp.py',
     'scripts/workbuddy_bridge.py',
@@ -23,6 +23,14 @@ RELEASE_EXCLUDED_PREFIXES = ('tests/', 'workbuddy-plugin-src/')
 RELEASE_EXCLUDED_FILES = {'.gitignore'}
 SUPPORTED_CHANNELS = {'redskill', 'skillhub'}
 MAX_PACKAGE_FILES = 100
+SKILLHUB_ALLOWED_EXTENSIONS = frozenset({
+    '.md', '.txt', '.json', '.yaml', '.yml', '.html', '.css', '.csv', '.pdf',
+    '.toml', '.xml', '.xsd', '.xsl', '.dtd', '.ini', '.cfg', '.env',
+    '.js', '.cjs', '.mjs', '.ts', '.py', '.sh', '.rb', '.go', '.rs', '.java',
+    '.kt', '.lua', '.sql', '.r', '.bat', '.ps1', '.zsh', '.bash',
+    '.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp', '.ico',
+    '.doc', '.xls', '.ppt', '.docx', '.xlsx', '.pptx',
+})
 
 
 def _frontmatter(text):
@@ -173,6 +181,18 @@ def validate_redskill_archive(archive_path):
                     errors.append('SKILL.md 要求的 Plugin 版本与 manifest 不一致')
         if any('/.git/' in '/' + name or name.endswith('.pyc') for name in file_names):
             errors.append('ZIP 含禁止发布的 Git 或 Python 缓存文件')
+        disallowed_files = sorted(
+            name for name in file_names
+            if not any(
+                name.lower().endswith(extension)
+                for extension in SKILLHUB_ALLOWED_EXTENSIONS
+            )
+        )
+        if disallowed_files:
+            errors.append(
+                'ZIP 含 SkillHub 不允许的文件类型: '
+                + ', '.join(disallowed_files)
+            )
         if any(info.file_size > 10 * 1024 * 1024 for info in archive.infolist()):
             errors.append('ZIP 中存在超过 10 MB 的单个文件')
         total_size = sum(info.file_size for info in archive.infolist())

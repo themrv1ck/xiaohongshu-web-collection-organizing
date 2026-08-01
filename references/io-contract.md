@@ -164,7 +164,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 - 图片集合不完整时顶层必须为 `incomplete_image_set`，不执行部分 OCR。
 - 单张图片 `status=ok` 且 `ocr_text=""` 表示 OCR 成功但没有识别到可见文字；这不等于理解了无文字纯画面。OCR 不能识别人物、物体、场景或动作。
 - 续跑只可复用 `status=ok`、完整性计数与逐图 URL 哈希一致、`image_set_sha256` 与当前有序完整图片集合一致，且 `ocr_run_fingerprint` 与本次运行一致的结果。
-- `ocr_run_fingerprint` 绑定 OCR pipeline 版本和实际 provider；Tesseract 路径还绑定 `--tesseract-lang`，Swift 路径还绑定 `ocr_image.swift` 内容 SHA256 所代表的脚本版本。任一项改变都必须重跑。Tesseract 默认语言是 `chi_sim`；只有确认 `eng` 已安装时才显式选择 `chi_sim+eng`。
+- `ocr_run_fingerprint` 绑定 OCR pipeline 版本和实际 provider；Tesseract 路径还绑定 `--tesseract-lang`，Swift 路径还绑定 `ocr_image.swift.txt` 内容 SHA256 所代表的脚本版本。任一项改变都必须重跑。Tesseract 默认语言是 `chi_sim`；只有确认 `eng` 已安装时才显式选择 `chi_sim+eng`。
 
 ### `video_transcripts.json`
 

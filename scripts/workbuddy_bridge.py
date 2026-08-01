@@ -1311,7 +1311,7 @@ def run_workbuddy_ocr(directory: Path, image_items: Path) -> Dict[str, Any]:
     expected_fingerprint = ocr_run_fingerprint(
         provider,
         tesseract_lang,
-        ROOT / 'scripts' / 'ocr_image.swift',
+        ROOT / 'scripts' / 'ocr_image.swift.txt',
     )
     if provider == 'none':
         return {
@@ -2518,7 +2518,7 @@ def validate_workbuddy_capture_evidence(
     recomputed_fingerprint = ocr_run_fingerprint(
         ocr_provider,
         ocr_tesseract_lang,
-        ROOT / 'scripts' / 'ocr_image.swift',
+        ROOT / 'scripts' / 'ocr_image.swift.txt',
     )
     if (
         ocr_provider not in {'swift', 'tesseract', 'easyocr'}

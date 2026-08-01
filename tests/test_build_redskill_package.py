@@ -43,6 +43,9 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             self.assertFalse(
                 any(name.startswith(root + 'workbuddy-plugin-src/') for name in names)
             )
+            self.assertIn(root + 'LICENSE.txt', names)
+            self.assertIn(root + 'bin/run-node.sh', names)
+            self.assertIn(root + 'scripts/ocr_image.swift.txt', names)
 
     def test_builds_skillhub_archive_from_same_runtime_files(self):
         if not (ROOT / '.git').exists():
@@ -55,6 +58,31 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 result['archive_path'].endswith('-skillhub-2.0.7.zip')
             )
             self.assertEqual(result['validation_errors'], [])
+
+            with zipfile.ZipFile(result['archive_path']) as archive:
+                names = set(archive.namelist())
+            self.assertIn(
+                'xiaohongshu-web-collection-organizing/LICENSE.txt', names
+            )
+
+    def test_rejects_archive_with_platform_forbidden_license(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / 'forbidden-license.zip'
+            root = 'xiaohongshu-web-collection-organizing/'
+            with zipfile.ZipFile(archive_path, 'w') as archive:
+                archive.writestr(
+                    root + 'SKILL.md',
+                    '---\nname: xiaohongshu-web-collection-organizing\n'
+                    'description: test\n---\n',
+                )
+                archive.writestr(root + 'LICENSE', 'license text\n')
+
+            errors = validate_redskill_archive(archive_path)
+            self.assertIn(
+                'ZIP 含 SkillHub 不允许的文件类型: '
+                'xiaohongshu-web-collection-organizing/LICENSE',
+                errors,
+            )
 
     def test_rejects_archive_when_root_does_not_match_skill_name(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -106,7 +134,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                     'plugins': [{'version': '2.0.7'}],
                 }),
                 '.mcp.json': '{}',
-                'bin/run-node': '#!/bin/sh\n',
+                'bin/run-node.sh': '#!/bin/sh\n',
                 'server/xhs-workbuddy-mcp.mjs': (
                     'var PLUGIN_VERSION = "2.0.7";\n'
                 ),
