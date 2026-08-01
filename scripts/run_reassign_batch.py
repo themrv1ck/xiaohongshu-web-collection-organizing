@@ -4,7 +4,6 @@ import hashlib
 import json
 import platform
 import re
-import subprocess
 import sys
 import tempfile
 import time
@@ -13,7 +12,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
-from extract_visible_items import arc_js_macos, require_macos_app_running
+from browser_page_runtime import run_page_javascript
+from extract_visible_items import arc_js_macos, osascript, require_macos_app_running
 from xhs_safety import (
     SafetyHaltedError,
     atomic_write_json,
@@ -433,13 +433,6 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
-def osascript(script: str) -> str:
-    proc = subprocess.run(['osascript'], input=script, text=True, capture_output=True)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or 'osascript failed')
-    return proc.stdout.strip()
-
-
 def chrome_js(js: str) -> str:
     require_macos_app_running('Google Chrome')
     script = (
@@ -533,7 +526,7 @@ class BrowserRunner:
             self.close()
             raise
 
-    def eval(self, js: str) -> str:
+    def run_javascript(self, js: str) -> str:
         if self.backend == 'arc':
             return arc_js_macos(
                 js,
@@ -546,7 +539,7 @@ class BrowserRunner:
             return chrome_js(js)
         if self.backend == 'safari':
             return safari_js(js)
-        return self.page.evaluate(js)
+        return run_page_javascript(self.page, js)
 
     def close(self) -> None:
         if self.backend != 'playwright':
@@ -716,7 +709,7 @@ def _normalize_string_list(value: Any, field: str) -> List[str]:
     return result
 
 
-def prepare_execution_preflight(
+def prepare_write_preflight(
     classification: List[Dict[str, Any]],
     board_snapshot: Any,
     created_boards: Any,
@@ -952,7 +945,7 @@ def prepare_execution_preflight(
     }
 
 
-def execution_binding_blockers(snapshot_source: Any, args: argparse.Namespace) -> List[str]:
+def write_binding_blockers(snapshot_source: Any, args: argparse.Namespace) -> List[str]:
     if not isinstance(snapshot_source, dict):
         return ['snapshot_source_missing']
     blockers = []
@@ -1035,7 +1028,7 @@ def expected_profile_binding(
     }
 
 
-def build_execute_binding_probe(args: argparse.Namespace) -> str:
+def build_write_binding_probe(args: argparse.Namespace) -> str:
     payload = expected_profile_binding(args, required=True)
     return r"""
 JSON.stringify((() => {
@@ -1077,8 +1070,8 @@ JSON.stringify((() => {
 """.replace('PAYLOAD_JSON', json.dumps(payload, ensure_ascii=False))
 
 
-def validate_execute_live_binding(runner: 'BrowserRunner', args: argparse.Namespace) -> Dict[str, Any]:
-    raw = runner.eval(build_execute_binding_probe(args))
+def validate_write_live_binding(runner: 'BrowserRunner', args: argparse.Namespace) -> Dict[str, Any]:
+    raw = runner.run_javascript(build_write_binding_probe(args))
     value = raw
     for _ in range(2):
         if not isinstance(value, str):
@@ -1482,7 +1475,7 @@ def poll_browser_job(runner: BrowserRunner, run_id: str, timeout_sec: int) -> Di
 })()
 '''.replace('STATE_NODE_ID', json.dumps(state_node_id))
     while time.time() < deadline:
-        state = parse_js_json(runner.eval(poll_js))
+        state = parse_js_json(runner.run_javascript(poll_js))
         if state is None:
             raise SafetyHaltedError('browser job state bridge disappeared; 已停止以免在未知页面状态下继续写入')
         if state and state.get('done'):
@@ -1553,7 +1546,7 @@ def move_session_limit(args: argparse.Namespace) -> int:
     return value
 
 
-def is_executable_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
+def is_ready_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
     status = str(item.get('status') or '').strip()
     if status and status != 'planned':
         return False
@@ -1567,7 +1560,7 @@ def is_executable_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool
     ))
 
 
-def execute_batch(
+def apply_batch(
     classification: List[Dict[str, Any]],
     report: Dict[str, Any],
     args: argparse.Namespace,
@@ -1612,7 +1605,7 @@ def execute_batch(
     executable_items = [
         item
         for item in classification
-        if is_executable_move(item, args.allow_low_confidence)
+        if is_ready_move(item, args.allow_low_confidence)
     ]
     planned_items = executable_items[:session_limit]
     remaining_count = len(executable_items) - len(planned_items)
@@ -1624,7 +1617,7 @@ def execute_batch(
     runner = BrowserRunner(backend, args)
     try:
         if commit_callback is not None:
-            validate_execute_live_binding(runner, args)
+            validate_write_live_binding(runner, args)
             commit_callback()
             ensure_active_session(safety_state, stage='move', policy=move_policy)
         if post_commit_callback is not None:
@@ -1655,7 +1648,9 @@ def execute_batch(
             if index > 0 and inter_item_delay_sec > 0:
                 time.sleep(inter_item_delay_sec)
             try:
-                run_id = parse_browser_job_id(runner.eval(build_browser_job([item], args)))
+                run_id = parse_browser_job_id(
+                    runner.run_javascript(build_browser_job([item], args))
+                )
                 result = poll_browser_job(runner, run_id, args.timeout_sec)
             except Exception as exc:
                 if isinstance(exc, SafetyHaltedError) or classify_safety_error(exc):
@@ -1777,7 +1772,7 @@ def main() -> None:
     if has_preflight_inputs:
         snapshot_path = Path(args.board_snapshot)
         created_boards_path = Path(args.created_boards)
-        preflight = prepare_execution_preflight(
+        preflight = prepare_write_preflight(
             classification,
             load_json(str(snapshot_path)),
             load_json(str(created_boards_path)),
@@ -1803,7 +1798,7 @@ def main() -> None:
             }, ensure_ascii=False, indent=2), file=sys.stderr)
             raise SystemExit(1)
         if args.execute:
-            binding_blockers = execution_binding_blockers(report.get('snapshot_source'), args)
+            binding_blockers = write_binding_blockers(report.get('snapshot_source'), args)
             if binding_blockers:
                 report['ready_for_execute'] = False
                 report['blockers'] = binding_blockers
@@ -1842,7 +1837,7 @@ def main() -> None:
         report['skipped_success_count'] = len(preserved)
 
     if args.execute:
-        execute_batch(classification, report, args, report_path)
+        apply_batch(classification, report, args, report_path)
     elif not has_preflight_inputs:
         for item in classification:
             append_classification_preview(report, item, args.allow_low_confidence)

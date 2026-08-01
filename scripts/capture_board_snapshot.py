@@ -67,7 +67,7 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
             args.arc_tab_marker if backend == 'arc' else '',
             args.expected_url_substring,
         )
-        run_id = parse_browser_job_id(runner.eval(job))
+        run_id = parse_browser_job_id(runner.run_javascript(job))
         result = poll_browser_job(runner, run_id, args.timeout_sec)
     except Exception as exc:
         classified = classify_safety_error(exc)

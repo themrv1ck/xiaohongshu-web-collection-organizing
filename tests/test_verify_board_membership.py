@@ -226,7 +226,7 @@ class VerifyBoardMembershipTests(unittest.TestCase):
                     return_value=copy.deepcopy(normalized),
                 ),
             ):
-                runner.return_value.eval.return_value = '{}'
+                runner.return_value.run_javascript.return_value = '{}'
                 snapshot = capture_snapshot(args)
 
             self.assertFalse(snapshot['validation']['display_count_consistent'])

@@ -13,7 +13,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from extract_visible_items import capture_current_segment_with_js, extract_playwright  # noqa: E402
 from build_retry_queue import main as build_retry_queue_main  # noqa: E402
-from run_reassign_batch import execute_batch, filter_classification_for_resume  # noqa: E402
+from run_reassign_batch import apply_batch, filter_classification_for_resume  # noqa: E402
 from xhs_safety import (  # noqa: E402
     SafetyHaltedError,
     classify_safety_error,
@@ -170,7 +170,7 @@ class SafetySessionTests(unittest.TestCase):
         calls = {"eval": 0, "closed": False}
 
         class Runner:
-            def eval(self, _script):
+            def run_javascript(self, _script):
                 calls["eval"] += 1
                 return "xhs_skill_123_456"
 
@@ -187,7 +187,7 @@ class SafetySessionTests(unittest.TestCase):
                 patch("run_reassign_batch.poll_browser_job", side_effect=SafetyHaltedError("SAFETY_BREAKER: 安全验证")) as poll:
             report_path = Path(tmp) / "run_report.json"
             with self.assertRaises(SafetyHaltedError):
-                execute_batch(classification, report, self.move_args(), report_path)
+                apply_batch(classification, report, self.move_args(), report_path)
             saved = json.loads(report_path.read_text(encoding="utf-8"))
             state = load_safety_state(Path(tmp) / "xhs_safety_state.json")
 
@@ -200,7 +200,7 @@ class SafetySessionTests(unittest.TestCase):
 
     def test_persisted_move_and_safety_errors_redact_all_credential_formats(self):
         class Runner:
-            def eval(self, _script):
+            def run_javascript(self, _script):
                 return "xhs_skill_123_456"
 
             def close(self):
@@ -255,7 +255,7 @@ class SafetySessionTests(unittest.TestCase):
             root = Path(tmp)
             report_path = root / "run_report.json"
             with self.assertRaises(SafetyHaltedError):
-                execute_batch(classification, report, self.move_args(), report_path)
+                apply_batch(classification, report, self.move_args(), report_path)
             persisted = (
                 report_path.read_text(encoding="utf-8")
                 + (root / "xhs_safety_state.json").read_text(encoding="utf-8")
@@ -296,7 +296,7 @@ class SafetySessionTests(unittest.TestCase):
         calls = {"eval": 0}
 
         class Runner:
-            def eval(self, _script):
+            def run_javascript(self, _script):
                 calls["eval"] += 1
                 return "xhs_skill_123_456"
 
@@ -313,7 +313,7 @@ class SafetySessionTests(unittest.TestCase):
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.poll_browser_job", return_value=result):
             report_path = Path(tmp) / "run_report.json"
-            execute_batch(classification, report, self.move_args(max_moves_per_session=1), report_path)
+            apply_batch(classification, report, self.move_args(max_moves_per_session=1), report_path)
             saved = json.loads(report_path.read_text(encoding="utf-8"))
 
         self.assertEqual(calls["eval"], 1)
@@ -324,7 +324,7 @@ class SafetySessionTests(unittest.TestCase):
         scripts = []
 
         class Runner:
-            def eval(self, script):
+            def run_javascript(self, script):
                 scripts.append(script)
                 return "xhs_skill_123_456"
 
@@ -367,7 +367,7 @@ class SafetySessionTests(unittest.TestCase):
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.poll_browser_job", return_value=result):
             report_path = Path(tmp) / "run_report.json"
-            execute_batch(
+            apply_batch(
                 classification,
                 report,
                 self.move_args(max_moves_per_session=1),
@@ -385,7 +385,7 @@ class SafetySessionTests(unittest.TestCase):
         scripts = []
 
         class Runner:
-            def eval(self, script):
+            def run_javascript(self, script):
                 scripts.append(script)
                 return "xhs_skill_123_456"
 
@@ -439,7 +439,7 @@ class SafetySessionTests(unittest.TestCase):
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.poll_browser_job", return_value=empty_result):
             report_path = Path(tmp) / "run_report.json"
-            execute_batch(
+            apply_batch(
                 classification,
                 report,
                 self.move_args(max_moves_per_session=1),

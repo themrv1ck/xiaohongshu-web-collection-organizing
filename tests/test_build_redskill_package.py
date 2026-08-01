@@ -47,7 +47,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             self.assertIn(root + 'bin/run-node.sh', names)
             self.assertIn(root + 'scripts/ocr_image.swift.txt', names)
 
-    def test_builds_skillhub_archive_from_same_runtime_files(self):
+    def test_builds_skillhub_archive_as_pure_skill_with_bootstrap_installer(self):
         if not (ROOT / '.git').exists():
             self.skipTest('打包器只在 Git 源码仓库中构建发布包')
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,9 +61,51 @@ class BuildRedSkillPackageTests(unittest.TestCase):
 
             with zipfile.ZipFile(result['archive_path']) as archive:
                 names = set(archive.namelist())
+                skill_text = archive.read(
+                    'xiaohongshu-web-collection-organizing/SKILL.md'
+                ).decode('utf-8')
             self.assertIn(
                 'xiaohongshu-web-collection-organizing/LICENSE.txt', names
             )
+            root = 'xiaohongshu-web-collection-organizing/'
+            self.assertIn(root + 'SKILL.md', names)
+            self.assertIn(root + 'scripts/enable_workbuddy_mcp.py', names)
+            self.assertIn(root + 'scripts/workbuddy_runtime.py', names)
+            self.assertNotIn(root + '.mcp.json', names)
+            self.assertNotIn(root + '.codebuddy-plugin/plugin.json', names)
+            self.assertNotIn(root + 'bin/run-node.sh', names)
+            self.assertNotIn(root + 'server/xhs-workbuddy-mcp.mjs', names)
+            self.assertNotIn(root + 'scripts/workbuddy_bridge.py', names)
+            self.assertNotIn(root + 'README.md', names)
+            self.assertNotIn(root + 'manifest.yaml', names)
+            self.assertIn('version: "2.0.7"', skill_text)
+            self.assertIn('license: MIT', skill_text)
+            self.assertIn('compatibility: "Requires network access', skill_text)
+
+    def test_skillhub_validation_rejects_plugin_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / 'skillhub-with-plugin.zip'
+            root = 'xiaohongshu-web-collection-organizing/'
+            with zipfile.ZipFile(archive_path, 'w') as archive:
+                archive.writestr(
+                    root + 'SKILL.md',
+                    '---\nname: xiaohongshu-web-collection-organizing\n'
+                    'description: test\n---\n',
+                )
+                archive.writestr(root + 'LICENSE.txt', 'license text\n')
+                archive.writestr(
+                    root + 'scripts/enable_workbuddy_mcp.py', ''
+                )
+                archive.writestr(root + '.mcp.json', '{}')
+
+            errors = validate_redskill_archive(
+                archive_path, channel='skillhub'
+            )
+            self.assertTrue(any(
+                'SkillHub 包不得包含 Plugin/MCP 或维护文件' in error
+                and '.mcp.json' in error
+                for error in errors
+            ))
 
     def test_rejects_archive_with_platform_forbidden_license(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and validate Xiaohongshu SkillHub/RedSkill runtime packages."""
+"""Build and validate channel-specific Xiaohongshu Skill packages."""
 
 import argparse
 import json
@@ -19,8 +19,28 @@ WORKBUDDY_REQUIRED_FILES = (
     'scripts/workbuddy_bridge.py',
     'scripts/workbuddy_runtime.py',
 )
+SKILLHUB_REQUIRED_FILES = (
+    'SKILL.md',
+    'LICENSE.txt',
+    'scripts/enable_workbuddy_mcp.py',
+)
 RELEASE_EXCLUDED_PREFIXES = ('tests/', 'workbuddy-plugin-src/')
 RELEASE_EXCLUDED_FILES = {'.gitignore'}
+SKILLHUB_EXCLUDED_PREFIXES = (
+    '.codebuddy-plugin/',
+    'assets/',
+    'bin/',
+    'server/',
+)
+SKILLHUB_EXCLUDED_FILES = {
+    '.mcp.json',
+    'README.md',
+    'manifest.yaml',
+    'requirements-workbuddy.txt',
+    'references/distribution-readiness-audit.md',
+    'scripts/build_redskill_package.py',
+    'scripts/workbuddy_bridge.py',
+}
 SUPPORTED_CHANNELS = {'redskill', 'skillhub'}
 MAX_PACKAGE_FILES = 100
 SKILLHUB_ALLOWED_EXTENSIONS = frozenset({
@@ -59,6 +79,23 @@ def _manifest_version(text):
     raise ValueError('manifest.yaml 缺少 version')
 
 
+def _skillhub_skill_text(text, version):
+    """Add SkillHub-supported release metadata without changing source SKILL.md."""
+    lines = text.splitlines()
+    try:
+        end = lines.index('---', 1)
+    except ValueError as exc:
+        raise ValueError('SKILL.md frontmatter 未闭合') from exc
+    release_fields = [
+        'version: "{}"'.format(version),
+        'license: MIT',
+        'compatibility: "Requires network access for user-authorized '
+        'Xiaohongshu page and image requests; WorkBuddy users install the '
+        'GitHub Plugin on first use."',
+    ]
+    return '\n'.join(lines[:end] + release_fields + lines[end:]) + '\n'
+
+
 def _tracked_files(repo_root):
     completed = subprocess.run(
         ['git', 'ls-files', '-z'],
@@ -73,11 +110,20 @@ def _tracked_files(repo_root):
     ]
 
 
-def _release_files(repo_root):
+def _release_files(repo_root, channel):
     return [
         relative for relative in _tracked_files(repo_root)
         if relative.as_posix() not in RELEASE_EXCLUDED_FILES
         and not relative.as_posix().startswith(RELEASE_EXCLUDED_PREFIXES)
+        and (
+            channel != 'skillhub'
+            or (
+                relative.as_posix() not in SKILLHUB_EXCLUDED_FILES
+                and not relative.as_posix().startswith(
+                    SKILLHUB_EXCLUDED_PREFIXES
+                )
+            )
+        )
     ]
 
 
@@ -94,8 +140,10 @@ def _json_version(archive, path):
     return version
 
 
-def validate_redskill_archive(archive_path):
+def validate_redskill_archive(archive_path, channel='redskill'):
     archive_path = Path(archive_path)
+    if channel not in SUPPORTED_CHANNELS:
+        raise ValueError('不支持的发布渠道: ' + channel)
     errors = []
     with zipfile.ZipFile(archive_path) as archive:
         file_names = [
@@ -126,27 +174,48 @@ def validate_redskill_archive(archive_path):
                     root, skill_name or '<缺失>'
                 )
             )
-        unexpected_keys = sorted(set(metadata) - {'name', 'description'})
+        allowed_metadata = {'name', 'description'}
+        if channel == 'skillhub':
+            allowed_metadata.update({'version', 'license', 'compatibility'})
+        unexpected_keys = sorted(set(metadata) - allowed_metadata)
         if unexpected_keys:
             errors.append(
                 'SKILL.md frontmatter 含不支持字段: ' + ', '.join(unexpected_keys)
             )
-        for relative in WORKBUDDY_REQUIRED_FILES:
+        required_files = (
+            WORKBUDDY_REQUIRED_FILES
+            if channel == 'redskill'
+            else SKILLHUB_REQUIRED_FILES
+        )
+        for relative in required_files:
             if root + '/' + relative not in file_names:
-                errors.append('缺少 WorkBuddy 运行文件: ' + relative)
-        manifest_path = root + '/manifest.yaml'
-        try:
-            version = _manifest_version(
-                archive.read(manifest_path).decode('utf-8')
+                label = 'WorkBuddy 运行文件' if channel == 'redskill' else 'SkillHub 必需文件'
+                errors.append('缺少 {}: {}'.format(label, relative))
+        if channel == 'skillhub':
+            for field in ('version', 'license', 'compatibility'):
+                if not metadata.get(field):
+                    errors.append('SkillHub SKILL.md 缺少发布字段: ' + field)
+            forbidden = sorted(
+                name for name in file_names
+                if (
+                    PurePosixPath(name).relative_to(root).as_posix()
+                    in SKILLHUB_EXCLUDED_FILES
+                    or PurePosixPath(name).relative_to(root).as_posix().startswith(
+                        SKILLHUB_EXCLUDED_PREFIXES
+                    )
+                )
             )
-        except KeyError:
-            errors.append('缺少版本文件: manifest.yaml')
-            version = ''
-        except (UnicodeDecodeError, ValueError) as exc:
-            errors.append(str(exc))
-            version = ''
-        if version:
+            if forbidden:
+                errors.append(
+                    'SkillHub 包不得包含 Plugin/MCP 或维护文件: '
+                    + ', '.join(forbidden)
+                )
+        version = ''
+        if channel == 'redskill':
             try:
+                version = _manifest_version(
+                    archive.read(root + '/manifest.yaml').decode('utf-8')
+                )
                 plugin_version = _json_version(
                     archive, root + '/.codebuddy-plugin/plugin.json'
                 )
@@ -160,7 +229,9 @@ def validate_redskill_archive(archive_path):
                     root + '/server/xhs-workbuddy-mcp.mjs'
                 ).decode('utf-8')
                 skill_text = archive.read(skill_path).decode('utf-8')
-            except (KeyError, IndexError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            except KeyError:
+                errors.append('缺少版本文件: manifest.yaml')
+            except (IndexError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 errors.append('版本一致性文件无法解析: ' + str(exc))
             else:
                 versions = {
@@ -214,7 +285,7 @@ def build_redskill_package(repo_root, output_dir, channel='redskill'):
         raise ValueError('SKILL.md frontmatter 缺少 name')
     version = _manifest_version(manifest_path.read_text(encoding='utf-8'))
     tracked_files = _tracked_files(repo_root)
-    release_files = _release_files(repo_root)
+    release_files = _release_files(repo_root, channel)
     missing_required = [
         relative for relative in WORKBUDDY_REQUIRED_FILES
         if Path(relative) not in tracked_files
@@ -246,16 +317,25 @@ def build_redskill_package(repo_root, output_dir, channel='redskill'):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(source), str(destination))
 
+    if channel == 'skillhub':
+        packaged_skill = package_dir / 'SKILL.md'
+        packaged_skill.write_text(
+            _skillhub_skill_text(
+                packaged_skill.read_text(encoding='utf-8'), version
+            ),
+            encoding='utf-8',
+        )
+
     with zipfile.ZipFile(
         archive_path, 'w', compression=zipfile.ZIP_DEFLATED
     ) as archive:
         for relative in release_files:
             archive.write(
-                str(repo_root / relative),
+                str(package_dir / relative),
                 str(PurePosixPath(skill_name) / PurePosixPath(relative.as_posix())),
             )
 
-    validation_errors = validate_redskill_archive(archive_path)
+    validation_errors = validate_redskill_archive(archive_path, channel=channel)
     if validation_errors:
         raise ValueError('; '.join(validation_errors))
     return {
@@ -286,7 +366,9 @@ def main():
     parser.add_argument('--validate-only', type=Path)
     args = parser.parse_args()
     if args.validate_only:
-        errors = validate_redskill_archive(args.validate_only)
+        errors = validate_redskill_archive(
+            args.validate_only, channel=args.channel
+        )
         print(json.dumps({'valid': not errors, 'errors': errors}, ensure_ascii=False))
         return 1 if errors else 0
     result = build_redskill_package(

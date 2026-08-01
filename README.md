@@ -137,7 +137,7 @@ hermes skills list
 
 ### SkillHub / RedSkill 上传包
 
-不要手工复制文件或把任意命名的外层目录直接压缩。ZIP 的唯一顶层目录必须与 `SKILL.md` 的 `name` 完全一致，即 `xiaohongshu-web-collection-organizing/`；WorkBuddy 运行包必须包含 `.codebuddy-plugin/`、`.mcp.json` 和已构建的 `server/`。
+不要手工复制文件或把任意命名的外层目录直接压缩。ZIP 的唯一顶层目录必须与 `SKILL.md` 的 `name` 完全一致，即 `xiaohongshu-web-collection-organizing/`。
 
 在仓库根目录运行：
 
@@ -146,12 +146,17 @@ python3 scripts/build_redskill_package.py --channel redskill --output-dir /tmp/x
 python3 scripts/build_redskill_package.py --channel skillhub --output-dir /tmp/xhs-skillhub-release
 ```
 
-两个渠道使用同一套运行文件。脚本排除不参与运行的 `tests/`、`workbuddy-plugin-src/` 构建源码和 `.gitignore`；保留已构建 MCP 服务器与全部运行脚本，并按 SkillHub 官方扩展名白名单逐文件校验，使上传包不超过 SkillHub 默认 100 文件上限。每次生成一个展开文件夹和一个对应渠道的 ZIP：
+两个渠道必须分开打包：
+
+- RedSkill 包保留完整 WorkBuddy Plugin、`.mcp.json`、启动脚本和已构建 MCP 服务器。
+- SkillHub 包只保留标准 Skill、本地执行资源和 `scripts/enable_workbuddy_mcp.py`，不包含 Plugin/MCP、维护文档、测试或构建产物。WorkBuddy 首次运行时再由这个安装器从固定 GitHub marketplace 安装完整 Plugin。
+
+脚本会按 SkillHub 官方扩展名白名单逐文件校验，并让上传包保持在默认文件数上限内。每次生成一个展开文件夹和一个对应渠道的 ZIP：
 
 - `xiaohongshu-web-collection-organizing/`：平台允许选择文件夹时使用；
 - `xiaohongshu-web-collection-organizing-<redskill|skillhub>-<版本>.zip`：平台允许 ZIP 时使用。
 
-不要只上传 `SKILL.md`。单文件不包含 WorkBuddy Plugin、MCP 服务和安全校验代码，不能作为可运行的 WorkBuddy 2.0.7 发布包。
+不要只上传 `SKILL.md`。SkillHub 包必须同时包含必要脚本、参考和一次性 WorkBuddy 安装器。
 
 SkillHub 当前只分发 Skill，不会替 WorkBuddy 自动启用 Plugin。WorkBuddy 用户从 SkillHub 安装后首次运行时，Skill 会按 `SKILL.md` 第 11 步调用官方安装器，从固定 GitHub marketplace 一次性安装或启用 `xiaohongshu-organizer`；用户只需确认“启用”并重开一次 WorkBuddy。
 

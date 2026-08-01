@@ -1700,7 +1700,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             def __init__(self, *_args):
                 self.closed = False
 
-            def eval(self, _script):
+            def run_javascript(self, _script):
                 return 'ok'
 
             def close(self):
@@ -2016,7 +2016,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 self.closed = False
                 self.context = types.SimpleNamespace(new_page=lambda: detail_page)
 
-            def eval(self, _script):
+            def run_javascript(self, _script):
                 return 'ok'
 
             def close(self):
@@ -2188,7 +2188,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 self.closed = False
                 self.context = types.SimpleNamespace(new_page=lambda: detail_page)
 
-            def eval(self, _script):
+            def run_javascript(self, _script):
                 return 'ok'
 
             def close(self):
@@ -2486,7 +2486,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 self.closed = False
                 self.context = types.SimpleNamespace(new_page=lambda: detail_page)
 
-            def eval(self, _script):
+            def run_javascript(self, _script):
                 return 'ok'
 
             def close(self):
@@ -3123,7 +3123,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                     side_effect=profile_preflight,
                 ),
                 patch(
-                    'workbuddy_bridge.execute_batch',
+                    'workbuddy_bridge.apply_batch',
                     side_effect=execute_in_memory,
                 ),
                 patch(
@@ -3157,7 +3157,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
 
     def test_planned_board_creation_uses_same_runner_and_records_verified_result(self):
         runner = types.SimpleNamespace(
-            eval=lambda _job: 'xhs_skill_123_456',
+            run_javascript=lambda _job: 'xhs_skill_123_456',
         )
         args = types.SimpleNamespace(
             user_id='66d19b54000000001d03a93d',
@@ -3170,7 +3170,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         )
         report = {}
         with (
-            patch('workbuddy_bridge.validate_execute_live_binding') as binding,
+            patch('workbuddy_bridge.validate_write_live_binding') as binding,
             patch('workbuddy_bridge.poll_browser_job', return_value={
                 'status': 'created',
                 'writePerformed': True,
@@ -3200,7 +3200,9 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         }])
 
     def test_planned_board_batch_marks_partial_creation_as_uncertain(self):
-        runner = types.SimpleNamespace(eval=lambda _job: 'xhs_skill_123_456')
+        runner = types.SimpleNamespace(
+            run_javascript=lambda _job: 'xhs_skill_123_456'
+        )
         args = types.SimpleNamespace(
             user_id='66d19b54000000001d03a93d',
             verify_pages=100,
@@ -3217,7 +3219,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             'emptyBoardVerified': True,
         }
         with (
-            patch('workbuddy_bridge.validate_execute_live_binding'),
+            patch('workbuddy_bridge.validate_write_live_binding'),
             patch(
                 'workbuddy_bridge.poll_browser_job',
                 side_effect=[first, RuntimeError('second board preflight failed')],

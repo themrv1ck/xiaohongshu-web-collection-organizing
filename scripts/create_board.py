@@ -363,7 +363,9 @@ def execute_create_board(args: argparse.Namespace) -> Dict[str, Any]:
     )
     runner = BrowserRunner('arc', args)
     try:
-        run_id = parse_browser_job_id(runner.eval(build_create_board_job(args)))
+        run_id = parse_browser_job_id(
+            runner.run_javascript(build_create_board_job(args))
+        )
         browser_result = poll_browser_job(runner, run_id, args.timeout_sec)
         result = validate_result(browser_result, args.execute)
     except Exception as exc:

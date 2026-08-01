@@ -43,7 +43,7 @@ def chrome_candidates(system):
     return candidates
 
 
-def executable_exists(path):
+def path_is_runnable(path):
     return bool(path) and Path(path).exists()
 
 
@@ -166,7 +166,7 @@ def main():
     python_cmd = shutil.which('python3') or shutil.which('python')
     python_version = '.'.join(str(x) for x in sys.version_info[:3])
     python_supported = sys.version_info >= (3, 9)
-    chrome_paths = [p for p in chrome_candidates(system) if executable_exists(p)]
+    chrome_paths = [p for p in chrome_candidates(system) if path_is_runnable(p)]
     ocr_enabled = bool(args.ocr)
     ocr_checked = bool(args.ocr)
     tesseract_found = check('tesseract') if ocr_checked else False

@@ -34,14 +34,14 @@ from create_board import (
 )
 from run_reassign_batch import (
     BrowserRunner,
-    execute_batch,
-    execution_binding_blockers,
+    apply_batch,
+    write_binding_blockers,
     initial_report,
     normalize_classification,
     parse_browser_job_id,
     poll_browser_job,
-    prepare_execution_preflight,
-    validate_execute_live_binding,
+    prepare_write_preflight,
+    validate_write_live_binding,
 )
 from video_content_common import (
     normalize_content_type,
@@ -1873,7 +1873,7 @@ def execute_planned_board_creations(
     for planned in planned_boards:
         raw_result: Any = None
         try:
-            validate_execute_live_binding(runner, execute_args)
+            validate_write_live_binding(runner, execute_args)
             create_args = argparse.Namespace(
                 name=planned['name'],
                 desc='',
@@ -1886,13 +1886,13 @@ def execute_planned_board_creations(
                 arc_expected_url_substring=execute_args.expected_url_substring,
             )
             run_id = parse_browser_job_id(
-                runner.eval(build_create_board_job(create_args))
+                runner.run_javascript(build_create_board_job(create_args))
             )
             raw_result = poll_browser_job(
                 runner, run_id, execute_args.timeout_sec
             )
             result = validate_create_board_result(raw_result, True)
-            validate_execute_live_binding(runner, execute_args)
+            validate_write_live_binding(runner, execute_args)
         except Exception as exc:
             prior_or_current_write = bool(results) or bool(
                 isinstance(raw_result, dict)
@@ -2221,7 +2221,7 @@ def capture_action(
             },
         )
         result = capture_workbuddy_groups(
-            runner.eval,
+            runner.run_javascript,
             directory,
             source,
             batch_size,
@@ -3425,7 +3425,7 @@ def execute_action(
     ):
         raise RuntimeError('执行被拒：绑定的 run_report.json 不是可执行 dry-run。')
     normalized = normalize_classification(classification_payload)
-    preflight = prepare_execution_preflight(
+    preflight = prepare_write_preflight(
         normalized,
         snapshot_payload,
         created_payload,
@@ -3445,7 +3445,7 @@ def execute_action(
     execute_args.safety_state = str(safety)
     execute_args.inter_item_delay_sec = 5.0
     execute_args.timeout_sec = 120.0
-    binding_blockers = execution_binding_blockers(
+    binding_blockers = write_binding_blockers(
         preflight.get('snapshot_source'),
         execute_args,
     )
@@ -3475,7 +3475,7 @@ def execute_action(
                 runner, planned_board_creations, execute_args, execution_report
             )
         )
-    execute_batch(
+    apply_batch(
         resolved,
         execution_report,
         execute_args,

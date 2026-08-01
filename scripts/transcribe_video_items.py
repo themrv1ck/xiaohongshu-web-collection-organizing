@@ -200,9 +200,10 @@ def _mimo_audio_limits(module: Any, runtime: Any) -> tuple[int, int]:
 
 def _read_prepared_pcm_wav(module: Any, path: Path) -> tuple[Any, bytes]:
     try:
-        with wave.open(str(path), "rb") as handle:
-            params = handle.getparams()
-            frames = handle.readframes(params.nframes)
+        with path.open("rb") as wav_file:
+            with wave.open(wav_file, "rb") as handle:
+                params = handle.getparams()
+                frames = handle.readframes(params.nframes)
     except (OSError, EOFError, wave.Error) as exc:
         raise module.UserVisibleError(f"无法读取待转写 WAV：{path}") from exc
     if params.comptype != "NONE":

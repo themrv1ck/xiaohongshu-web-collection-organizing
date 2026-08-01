@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from browser_page_runtime import run_page_javascript
 from xhs_safety import (
     SafetyHaltedError,
     default_safety_state_path,
@@ -405,14 +406,14 @@ def declared_item_count(data: Dict) -> Optional[int]:
     return None
 
 
-def read_stable_items_snapshot(js_eval, settle_pause: float = 0.2, max_checks: int = 8):
+def read_stable_items_snapshot(run_script, settle_pause: float = 0.2, max_checks: int = 8):
     """Read until both virtualized positions and the declared total are stable."""
-    data = parse_js_json_result(js_eval(ITEMS_JS))
+    data = parse_js_json_result(run_script(ITEMS_JS))
     previous = stable_snapshot_signature(data)
     initial_declared = declared_item_count(data)
     for check in range(2, max_checks + 1):
         time.sleep(settle_pause)
-        candidate = parse_js_json_result(js_eval(ITEMS_JS))
+        candidate = parse_js_json_result(run_script(ITEMS_JS))
         if declared_item_count(candidate) != initial_declared:
             raise RuntimeError(
                 '小红书前端声明总数在同一次稳定读取中发生变化，已停止。'
@@ -452,9 +453,9 @@ def validate_capture_page(data: Dict, safety_state: Optional[Path] = None) -> No
         raise SafetyHaltedError(message)
 
 
-def read_capture_snapshot(js_eval, safety_state: Optional[Path] = None) -> Dict:
+def read_capture_snapshot(run_script, safety_state: Optional[Path] = None) -> Dict:
     try:
-        data = parse_js_json_result(js_eval(ITEMS_JS))
+        data = parse_js_json_result(run_script(ITEMS_JS))
     except Exception as exc:
         if safety_state and halt_if_safety_error(safety_state, stage='capture', error=exc):
             raise SafetyHaltedError('抓取器返回安全异常；已写入安全停机状态。') from exc
@@ -464,7 +465,7 @@ def read_capture_snapshot(js_eval, safety_state: Optional[Path] = None) -> Dict:
 
 
 def capture_current_segment_with_js(
-    js_eval,
+    run_script,
     out: Path,
     segment_limit: int = 200,
     manifest: Optional[Path] = None,
@@ -493,7 +494,7 @@ def capture_current_segment_with_js(
             'segment_limit': segment_limit,
         },
     )
-    data = read_capture_snapshot(js_eval, state_path)
+    data = read_capture_snapshot(run_script, state_path)
     source_label = normalize_source_label(source)
     observed_items = list(data.get('items') or [])
     captured = []
@@ -580,7 +581,7 @@ def merge_items(existing: List[Dict], incoming: List[Dict], source_label: str) -
     return [merged[note_id] for note_id in order]
 
 
-def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float, manifest: Optional[Path] = None, source: str = 'collection', append_existing: bool = False, reset_top: bool = True, safety_state: Optional[Path] = None):
+def extract_with_js(run_script, out: Path, max_scrolls: int, scroll_pause: float, manifest: Optional[Path] = None, source: str = 'collection', append_existing: bool = False, reset_top: bool = True, safety_state: Optional[Path] = None):
     seen = {}
     seen_by_page_index = {}
     source_label = normalize_source_label(source)
@@ -602,7 +603,7 @@ def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float, m
         )
     if reset_top:
         try:
-            js_eval('window.scrollTo(0, 0); "ok"')
+            run_script('window.scrollTo(0, 0); "ok"')
         except Exception as exc:
             if state_path and halt_if_safety_error(state_path, stage='capture', error=exc):
                 raise SafetyHaltedError('抓取器返回安全异常；已写入安全停机状态。') from exc
@@ -611,7 +612,7 @@ def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float, m
             time.sleep(scroll_pause)
     for index in range(max_scrolls):
         try:
-            data, stability_checks = read_stable_items_snapshot(js_eval)
+            data, stability_checks = read_stable_items_snapshot(run_script)
         except Exception as exc:
             if state_path and halt_if_safety_error(state_path, stage='capture', error=exc):
                 raise SafetyHaltedError('抓取器返回安全异常；已写入安全停机状态。') from exc
@@ -656,7 +657,7 @@ def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float, m
             stopped_reason = 'bottom_stable'
             break
         try:
-            js_eval('window.scrollBy(0, 1000); "ok"')
+            run_script('window.scrollBy(0, 1000); "ok"')
         except Exception as exc:
             if state_path and halt_if_safety_error(state_path, stage='capture', error=exc):
                 raise SafetyHaltedError('抓取器返回安全异常；已写入安全停机状态。') from exc
@@ -709,7 +710,7 @@ def extract_with_js(js_eval, out: Path, max_scrolls: int, scroll_pause: float, m
 
 
 def extract_with_capture_mode(
-    js_eval,
+    run_script,
     out: Path,
     max_scrolls: int,
     scroll_pause: float,
@@ -722,7 +723,7 @@ def extract_with_capture_mode(
 ):
     if capture_mode == 'passive':
         return capture_current_segment_with_js(
-            js_eval,
+            run_script,
             out,
             segment_limit,
             manifest,
@@ -732,7 +733,7 @@ def extract_with_capture_mode(
         )
     if capture_mode == 'scroll':
         return extract_with_js(
-            js_eval,
+            run_script,
             out,
             max_scrolls,
             scroll_pause,
@@ -775,7 +776,7 @@ def extract_macos_arc(out: Path, max_scrolls: int, scroll_pause: float, manifest
     if missing:
         raise RuntimeError(f'Arc 抓取必须提供稳定的 window id、tab id、window.name 标记和预期 URL 片段；缺少：{", ".join(missing)}')
 
-    def js_eval(js: str) -> str:
+    def run_script(js: str) -> str:
         return arc_js_macos(
             js,
             selectors['--arc-tab-marker'],
@@ -784,7 +785,7 @@ def extract_macos_arc(out: Path, max_scrolls: int, scroll_pause: float, manifest
             selectors['--arc-expected-url-substring'],
         )
 
-    result = extract_with_capture_mode(js_eval, out, max_scrolls, scroll_pause, manifest, source, append_existing, capture_mode, segment_limit, safety_state)
+    result = extract_with_capture_mode(run_script, out, max_scrolls, scroll_pause, manifest, source, append_existing, capture_mode, segment_limit, safety_state)
     if capture_mode != 'scroll':
         return result
     from video_content_common import load_arc_collection_note_contexts
@@ -838,10 +839,10 @@ def extract_playwright(out: Path, max_scrolls: int, scroll_pause: float, url: Op
             page.goto(url, wait_until='domcontentloaded', timeout=60000)
         page.wait_for_load_state('domcontentloaded', timeout=60000)
 
-        def js_eval(js: str) -> str:
-            return page.evaluate(js)
+        def run_script(js: str) -> str:
+            return run_page_javascript(page, js)
 
-        result = extract_with_capture_mode(js_eval, out, max_scrolls, scroll_pause, manifest, source, append_existing, capture_mode, segment_limit, safety_state)
+        result = extract_with_capture_mode(run_script, out, max_scrolls, scroll_pause, manifest, source, append_existing, capture_mode, segment_limit, safety_state)
         if close_context:
             context.close()
         elif browser:

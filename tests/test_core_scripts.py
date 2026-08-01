@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, build_browser_job, build_execute_binding_probe, choose_backend, execute_batch, execution_binding_blockers, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_execution_preflight  # noqa: E402
+from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, apply_batch, build_browser_job, build_write_binding_probe, choose_backend, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_write_preflight, write_binding_blockers  # noqa: E402
 from extract_visible_items import arc_js_macos, extract_with_js, read_stable_items_snapshot  # noqa: E402
 from xhs_ocr_common import detect_ocr_provider, infer_board, load_taxonomy, run_tesseract_ocr  # noqa: E402
 
@@ -139,7 +139,7 @@ function createTransactionModel(options) {
             'expected_url_substring': binding,
             'arc_expected_url_substring': '',
         })()
-        probe = build_execute_binding_probe(args)
+        probe = build_write_binding_probe(args)
         self.assertIn('current.pathname', probe)
         self.assertIn("searchParams.get('tab')", probe)
         self.assertIn("textContent || '').trim() === '我'", probe)
@@ -600,7 +600,7 @@ function createTransactionModel(options) {
         note_id = '1' * 24
         board_a = 'a' * 24
         board_b = 'b' * 24
-        result = prepare_execution_preflight(
+        result = prepare_write_preflight(
             [{
                 'id': note_id,
                 'title': '成员关系不明确',
@@ -641,7 +641,7 @@ function createTransactionModel(options) {
     def test_preflight_blocks_declared_board_count_mismatch(self):
         note_id = '1' * 24
         board_id = 'a' * 24
-        result = prepare_execution_preflight(
+        result = prepare_write_preflight(
             [{
                 'id': note_id,
                 'title': '已归档条目',
@@ -710,13 +710,13 @@ function createTransactionModel(options) {
             'confidence': 'high',
         }]
         with self.assertRaisesRegex(Exception, 'explicit allow_planned_board_creation'):
-            prepare_execution_preflight(
+            prepare_write_preflight(
                 classification,
                 snapshot,
                 created,
                 allow_low_confidence=False,
             )
-        result = prepare_execution_preflight(
+        result = prepare_write_preflight(
             classification,
             snapshot,
             created,
@@ -814,7 +814,7 @@ function createTransactionModel(options) {
             'verify_pages': 100,
             'safety_state': safety_state,
         })()
-        self.assertEqual(execution_binding_blockers(source, args), [])
+        self.assertEqual(write_binding_blockers(source, args), [])
 
         changed = type('Args', (), {
             'browser': 'chrome',
@@ -824,7 +824,7 @@ function createTransactionModel(options) {
             'verify_pages': 99,
             'safety_state': '/tmp/other-safety-state.json',
         })()
-        self.assertEqual(execution_binding_blockers(source, changed), [
+        self.assertEqual(write_binding_blockers(source, changed), [
             'snapshot_browser_changed',
             'snapshot_user_changed',
             'snapshot_page_binding_changed',
@@ -900,7 +900,7 @@ function createTransactionModel(options) {
         })()
         runner = BrowserRunner('arc', args)
         with patch('run_reassign_batch.arc_js_macos', return_value='ok') as mocked:
-            self.assertEqual(runner.eval('1 + 1'), 'ok')
+            self.assertEqual(runner.run_javascript('1 + 1'), 'ok')
             mocked.assert_called_once_with(
                 '1 + 1',
                 tab_marker='xhs-skill-worker-test',
@@ -953,7 +953,7 @@ function createTransactionModel(options) {
         })()
         with tempfile.TemporaryDirectory() as tmp, patch('run_reassign_batch.BrowserRunner') as runner:
             with self.assertRaisesRegex(RuntimeError, '--arc-tab-marker'):
-                execute_batch([], {}, args, Path(tmp) / 'report.json')
+                apply_batch([], {}, args, Path(tmp) / 'report.json')
         runner.assert_not_called()
 
     def test_execute_batch_waits_fixed_delay_between_items(self):
@@ -968,7 +968,7 @@ function createTransactionModel(options) {
             'timeout_sec': 10,
         })()
         runner = type('Runner', (), {
-            'eval': lambda self, js: 'xhs_skill_123_456',
+            'run_javascript': lambda self, js: 'xhs_skill_123_456',
             'close': lambda self: None,
         })()
         report = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}}
@@ -981,7 +981,7 @@ function createTransactionModel(options) {
                 patch('run_reassign_batch.BrowserRunner', return_value=runner), \
                 patch('run_reassign_batch.poll_browser_job', return_value=result), \
                 patch('run_reassign_batch.time.sleep') as sleep:
-            execute_batch(classification, report, args, Path(tmp) / 'report.json')
+            apply_batch(classification, report, args, Path(tmp) / 'report.json')
         sleep.assert_called_once_with(2.5)
 
     def test_execute_batch_creates_confirmed_boards_after_commit_before_moves(self):
@@ -998,7 +998,7 @@ function createTransactionModel(options) {
         events = []
 
         class Runner:
-            def eval(self, _js):
+            def run_javascript(self, _js):
                 events.append('move')
                 return 'xhs_skill_123_456'
 
@@ -1019,9 +1019,9 @@ function createTransactionModel(options) {
         }
         with tempfile.TemporaryDirectory() as tmp, \
                 patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
-                patch('run_reassign_batch.validate_execute_live_binding'), \
+                patch('run_reassign_batch.validate_write_live_binding'), \
                 patch('run_reassign_batch.poll_browser_job', return_value=result):
-            execute_batch(
+            apply_batch(
                 classification,
                 report,
                 args,
@@ -1045,7 +1045,7 @@ function createTransactionModel(options) {
         calls = {'eval': 0, 'closed': False}
 
         class Runner:
-            def eval(self, js):
+            def run_javascript(self, js):
                 calls['eval'] += 1
                 return 'xhs_skill_123_456'
 
@@ -1074,7 +1074,7 @@ function createTransactionModel(options) {
                 patch('run_reassign_batch.poll_browser_job', return_value=result) as poll:
             report_path = Path(tmp) / 'report.json'
             with self.assertRaisesRegex(RuntimeError, '已先写入报告'):
-                execute_batch(classification, report, args, report_path)
+                apply_batch(classification, report, args, report_path)
             persisted = json.loads(report_path.read_text(encoding='utf-8'))
         self.assertEqual(calls['eval'], 1)
         self.assertEqual(poll.call_count, 1)
@@ -1577,7 +1577,7 @@ async function attempt(options) {
         captured = {}
 
         class Runner:
-            def eval(self, js):
+            def run_javascript(self, js):
                 captured['js'] = js
                 return json.dumps({'done': True, 'ok': True, 'result': {'processed': []}})
 

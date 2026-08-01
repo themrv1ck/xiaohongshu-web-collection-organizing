@@ -12,13 +12,13 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 import zlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
+from dynamic_module_loader import load_module_from_path
 from verify_mimo_vl_install import EXPECTED_SHARD_SIZES
 from xhs_safety import redact_sensitive_text
 
@@ -298,13 +298,10 @@ def load_video_transcript_module(extractor_root: str | Path | None = None):
     if root is None:
         raise RuntimeError("video_transcript_extractor_missing")
     script_path = root / VIDEO_TRANSCRIPT_SCRIPT
-    spec = importlib.util.spec_from_file_location("xhs_video_transcript_cli", script_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("video_transcript_extractor_import_failed")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    try:
+        return load_module_from_path("xhs_video_transcript_cli", script_path)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError("video_transcript_extractor_import_failed") from exc
 
 
 def arc_running() -> bool:
