@@ -148,7 +148,7 @@ python3 scripts/build_redskill_package.py --channel skillhub --output-dir /tmp/x
 
 两个渠道必须分开打包：
 
-- RedSkill 包保留完整 WorkBuddy Plugin、`.mcp.json`、启动脚本和已构建 MCP 服务器。
+- RED Skill 包只保留标准 `SKILL.md`、许可证和一次性 WorkBuddy 安装器。它明确披露权限、禁止自动运营账号，并在用户确认后从公开 GitHub 仓库安装完整 Plugin；不得把开发仓库、私有接口研究或 Plugin/MCP 构建产物直接上传小红书审核。
 - SkillHub 包只保留标准 Skill、本地执行资源和 `scripts/enable_workbuddy_mcp.py`，不包含 Plugin/MCP、维护文档、测试或构建产物。WorkBuddy 首次运行时再由这个安装器从固定 GitHub marketplace 安装完整 Plugin。
 
 脚本会按 SkillHub 官方扩展名白名单逐文件校验，并让上传包保持在默认文件数上限内。每次生成一个展开文件夹和一个对应渠道的 ZIP：
@@ -156,11 +156,11 @@ python3 scripts/build_redskill_package.py --channel skillhub --output-dir /tmp/x
 - `xiaohongshu-web-collection-organizing/`：平台允许选择文件夹时使用；
 - `xiaohongshu-web-collection-organizing-<redskill|skillhub>-<版本>.zip`：平台允许 ZIP 时使用。
 
-不要只上传 `SKILL.md`。SkillHub 包必须同时包含必要脚本、参考和一次性 WorkBuddy 安装器。
+不要只上传 `SKILL.md`。两个渠道包都必须包含一次性 WorkBuddy 安装器；完整 Plugin 保留在公开 GitHub 仓库中。
 
 SkillHub 当前只分发 Skill，不会替 WorkBuddy 自动启用 Plugin。WorkBuddy 用户从 SkillHub 安装后首次运行时，Skill 会按 `SKILL.md` 第 11 步调用官方安装器，从固定 GitHub marketplace 一次性安装或启用 `xiaohongshu-organizer`；用户只需确认“启用”并重开一次 WorkBuddy。
 
-脚本会在输出前校验顶层目录、frontmatter、文件数、WorkBuddy 运行文件、四处版本一致性、单文件 10 MB 和总大小 30 MB 限制；任一条件不满足都会失败，不会生成可误传的“通过”结果。
+脚本会在输出前校验顶层目录、frontmatter、渠道必需文件、RED Skill 权限声明、文件数、扩展名、单文件 10 MB 和总大小 30 MB 限制；任一条件不满足都会失败，不会生成可误传的“通过”结果。
 
 ## 前置条件
 

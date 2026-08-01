@@ -9,15 +9,10 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-WORKBUDDY_REQUIRED_FILES = (
-    '.codebuddy-plugin/marketplace.json',
-    '.codebuddy-plugin/plugin.json',
-    '.mcp.json',
-    'bin/run-node.sh',
-    'server/xhs-workbuddy-mcp.mjs',
+REDSKILL_REQUIRED_FILES = (
+    'SKILL.md',
+    'LICENSE.txt',
     'scripts/enable_workbuddy_mcp.py',
-    'scripts/workbuddy_bridge.py',
-    'scripts/workbuddy_runtime.py',
 )
 SKILLHUB_REQUIRED_FILES = (
     'SKILL.md',
@@ -26,6 +21,7 @@ SKILLHUB_REQUIRED_FILES = (
 )
 RELEASE_EXCLUDED_PREFIXES = ('tests/', 'workbuddy-plugin-src/')
 RELEASE_EXCLUDED_FILES = {'.gitignore'}
+REDSKILL_TEMPLATE = 'templates/redskill.SKILL.md'
 SKILLHUB_EXCLUDED_PREFIXES = (
     '.codebuddy-plugin/',
     'assets/',
@@ -96,6 +92,14 @@ def _skillhub_skill_text(text, version):
     return '\n'.join(lines[:end] + release_fields + lines[end:]) + '\n'
 
 
+def _redskill_skill_text(text, version):
+    """Render the transparent RED Skill entry at the repository version."""
+    marker = '{{VERSION}}'
+    if marker not in text:
+        raise ValueError('RED Skill 模板缺少版本占位符')
+    return text.replace(marker, version)
+
+
 def _tracked_files(repo_root):
     completed = subprocess.run(
         ['git', 'ls-files', '-z'],
@@ -111,6 +115,8 @@ def _tracked_files(repo_root):
 
 
 def _release_files(repo_root, channel):
+    if channel == 'redskill':
+        return [Path(relative) for relative in REDSKILL_REQUIRED_FILES]
     return [
         relative for relative in _tracked_files(repo_root)
         if relative.as_posix() not in RELEASE_EXCLUDED_FILES
@@ -125,19 +131,6 @@ def _release_files(repo_root, channel):
             )
         )
     ]
-
-
-def _json_version(archive, path):
-    try:
-        payload = json.loads(archive.read(path).decode('utf-8'))
-    except KeyError:
-        raise ValueError('缺少版本文件: ' + path)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError('版本文件无法解析: ' + path) from exc
-    version = payload.get('version')
-    if not isinstance(version, str) or not version:
-        raise ValueError('版本文件缺少 version: ' + path)
-    return version
 
 
 def validate_redskill_archive(archive_path, channel='redskill'):
@@ -183,14 +176,35 @@ def validate_redskill_archive(archive_path, channel='redskill'):
                 'SKILL.md frontmatter 含不支持字段: ' + ', '.join(unexpected_keys)
             )
         required_files = (
-            WORKBUDDY_REQUIRED_FILES
+            REDSKILL_REQUIRED_FILES
             if channel == 'redskill'
             else SKILLHUB_REQUIRED_FILES
         )
         for relative in required_files:
             if root + '/' + relative not in file_names:
-                label = 'WorkBuddy 运行文件' if channel == 'redskill' else 'SkillHub 必需文件'
+                label = 'RED Skill 必需文件' if channel == 'redskill' else 'SkillHub 必需文件'
                 errors.append('缺少 {}: {}'.format(label, relative))
+        if channel == 'redskill':
+            allowed_files = {
+                root + '/' + relative for relative in REDSKILL_REQUIRED_FILES
+            }
+            unexpected_files = sorted(set(file_names) - allowed_files)
+            if unexpected_files:
+                errors.append(
+                    'RED Skill 上传包含非必要运行或开发文件: '
+                    + ', '.join(unexpected_files)
+                )
+            skill_text = archive.read(skill_path).decode('utf-8')
+            required_disclosures = (
+                '不发布、编辑或删除笔记',
+                '不自动运营账号',
+                '不读取系统浏览器 Cookie',
+                '只有用户确认上述完整方案后',
+                'themrv1ck/xiaohongshu-web-collection-organizing',
+            )
+            for disclosure in required_disclosures:
+                if disclosure not in skill_text:
+                    errors.append('RED Skill 缺少权限或安全声明: ' + disclosure)
         if channel == 'skillhub':
             for field in ('version', 'license', 'compatibility'):
                 if not metadata.get(field):
@@ -210,46 +224,6 @@ def validate_redskill_archive(archive_path, channel='redskill'):
                     'SkillHub 包不得包含 Plugin/MCP 或维护文件: '
                     + ', '.join(forbidden)
                 )
-        version = ''
-        if channel == 'redskill':
-            try:
-                version = _manifest_version(
-                    archive.read(root + '/manifest.yaml').decode('utf-8')
-                )
-                plugin_version = _json_version(
-                    archive, root + '/.codebuddy-plugin/plugin.json'
-                )
-                marketplace = json.loads(
-                    archive.read(
-                        root + '/.codebuddy-plugin/marketplace.json'
-                    ).decode('utf-8')
-                )
-                marketplace_version = marketplace['plugins'][0]['version']
-                runtime_text = archive.read(
-                    root + '/server/xhs-workbuddy-mcp.mjs'
-                ).decode('utf-8')
-                skill_text = archive.read(skill_path).decode('utf-8')
-            except KeyError:
-                errors.append('缺少版本文件: manifest.yaml')
-            except (IndexError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-                errors.append('版本一致性文件无法解析: ' + str(exc))
-            else:
-                versions = {
-                    'manifest.yaml': version,
-                    '.codebuddy-plugin/plugin.json': plugin_version,
-                    '.codebuddy-plugin/marketplace.json': marketplace_version,
-                }
-                for label, actual in versions.items():
-                    if actual != version:
-                        errors.append(
-                            '{} 版本 {} 与 manifest {} 不一致'.format(
-                                label, actual, version
-                            )
-                        )
-                if 'PLUGIN_VERSION = "{}"'.format(version) not in runtime_text:
-                    errors.append('MCP 构建产物版本与 manifest 不一致')
-                if 'plugin_version={}'.format(version) not in skill_text:
-                    errors.append('SKILL.md 要求的 Plugin 版本与 manifest 不一致')
         if any('/.git/' in '/' + name or name.endswith('.pyc') for name in file_names):
             errors.append('ZIP 含禁止发布的 Git 或 Python 缓存文件')
         disallowed_files = sorted(
@@ -286,12 +260,16 @@ def build_redskill_package(repo_root, output_dir, channel='redskill'):
     version = _manifest_version(manifest_path.read_text(encoding='utf-8'))
     tracked_files = _tracked_files(repo_root)
     release_files = _release_files(repo_root, channel)
+    repository_required = set(REDSKILL_REQUIRED_FILES) | {
+        REDSKILL_TEMPLATE,
+        *SKILLHUB_REQUIRED_FILES,
+    }
     missing_required = [
-        relative for relative in WORKBUDDY_REQUIRED_FILES
+        relative for relative in sorted(repository_required)
         if Path(relative) not in tracked_files
     ]
     if missing_required:
-        raise ValueError('仓库缺少 WorkBuddy 运行文件: ' + ', '.join(missing_required))
+        raise ValueError('仓库缺少发布文件: ' + ', '.join(missing_required))
     if len(release_files) > MAX_PACKAGE_FILES:
         raise ValueError(
             '发布包文件数 {} 超过上限 {}'.format(
@@ -317,7 +295,16 @@ def build_redskill_package(repo_root, output_dir, channel='redskill'):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(source), str(destination))
 
-    if channel == 'skillhub':
+    if channel == 'redskill':
+        packaged_skill = package_dir / 'SKILL.md'
+        packaged_skill.write_text(
+            _redskill_skill_text(
+                (repo_root / REDSKILL_TEMPLATE).read_text(encoding='utf-8'),
+                version,
+            ),
+            encoding='utf-8',
+        )
+    elif channel == 'skillhub':
         packaged_skill = package_dir / 'SKILL.md'
         packaged_skill.write_text(
             _skillhub_skill_text(

@@ -19,7 +19,7 @@ from build_redskill_package import (  # noqa: E402
 
 
 class BuildRedSkillPackageTests(unittest.TestCase):
-    def test_builds_complete_archive_with_matching_skill_root(self):
+    def test_builds_redskill_archive_as_transparent_bootstrap_skill(self):
         if not (ROOT / '.git').exists():
             self.skipTest('打包器只在 Git 源码仓库中构建发布包')
         with tempfile.TemporaryDirectory() as tmp:
@@ -35,18 +35,22 @@ class BuildRedSkillPackageTests(unittest.TestCase):
 
             with zipfile.ZipFile(archive_path) as archive:
                 names = set(archive.namelist())
+                skill_text = archive.read(
+                    'xiaohongshu-web-collection-organizing/SKILL.md'
+                ).decode('utf-8')
             root = 'xiaohongshu-web-collection-organizing/'
-            self.assertIn(root + 'SKILL.md', names)
-            self.assertIn(root + '.codebuddy-plugin/plugin.json', names)
-            self.assertIn(root + '.mcp.json', names)
-            self.assertIn(root + 'server/xhs-workbuddy-mcp.mjs', names)
-            self.assertFalse(any(name.startswith(root + 'tests/') for name in names))
-            self.assertFalse(
-                any(name.startswith(root + 'workbuddy-plugin-src/') for name in names)
+            self.assertEqual(names, {
+                root + 'SKILL.md',
+                root + 'LICENSE.txt',
+                root + 'scripts/enable_workbuddy_mcp.py',
+            })
+            self.assertIn('发布版本：`2.0.7`', skill_text)
+            self.assertIn('不自动运营账号', skill_text)
+            self.assertIn('不读取系统浏览器 Cookie', skill_text)
+            self.assertIn(
+                'themrv1ck/xiaohongshu-web-collection-organizing',
+                skill_text,
             )
-            self.assertIn(root + 'LICENSE.txt', names)
-            self.assertIn(root + 'bin/run-node.sh', names)
-            self.assertIn(root + 'scripts/ocr_image.swift.txt', names)
 
     def test_builds_skillhub_archive_as_pure_skill_with_bootstrap_installer(self):
         if not (ROOT / '.git').exists():
@@ -157,7 +161,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 errors,
             )
 
-    def test_rejects_archive_missing_workbuddy_runtime(self):
+    def test_rejects_redskill_archive_missing_bootstrap_installer(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_path = Path(tmp) / 'missing-runtime.zip'
             root = 'xiaohongshu-web-collection-organizing/'
@@ -167,48 +171,38 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                     '---\nname: xiaohongshu-web-collection-organizing\n'
                     'description: test\n---\n',
                 )
-                archive.writestr(root + 'manifest.yaml', 'version: 2.0.7\n')
+                archive.writestr(root + 'LICENSE.txt', 'license text\n')
 
             errors = validate_redskill_archive(archive_path)
             self.assertIn(
-                '缺少 WorkBuddy 运行文件: .codebuddy-plugin/plugin.json',
+                '缺少 RED Skill 必需文件: scripts/enable_workbuddy_mcp.py',
                 errors,
             )
 
-    def test_rejects_mixed_release_versions(self):
+    def test_rejects_redskill_archive_with_bundled_plugin_or_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_path = Path(tmp) / 'mixed-versions.zip'
             root = 'xiaohongshu-web-collection-organizing/'
+            source = ROOT / 'templates' / 'redskill.SKILL.md'
+            skill_text = source.read_text(encoding='utf-8').replace(
+                '{{VERSION}}', '2.0.7'
+            )
             files = {
-                'SKILL.md': (
-                    '---\nname: xiaohongshu-web-collection-organizing\n'
-                    'description: test\n---\nplugin_version=2.0.7\n'
-                ),
-                'manifest.yaml': 'version: 2.0.7\n',
-                '.codebuddy-plugin/plugin.json': json.dumps({
-                    'version': '2.0.5',
-                }),
-                '.codebuddy-plugin/marketplace.json': json.dumps({
-                    'plugins': [{'version': '2.0.7'}],
-                }),
-                '.mcp.json': '{}',
-                'bin/run-node.sh': '#!/bin/sh\n',
-                'server/xhs-workbuddy-mcp.mjs': (
-                    'var PLUGIN_VERSION = "2.0.7";\n'
-                ),
+                'SKILL.md': skill_text,
+                'LICENSE.txt': 'license text\n',
                 'scripts/enable_workbuddy_mcp.py': '',
-                'scripts/workbuddy_bridge.py': '',
-                'scripts/workbuddy_runtime.py': '',
+                '.mcp.json': '{}',
             }
             with zipfile.ZipFile(archive_path, 'w') as archive:
                 for relative, content in files.items():
                     archive.writestr(root + relative, content)
 
             errors = validate_redskill_archive(archive_path)
-            self.assertIn(
-                '.codebuddy-plugin/plugin.json 版本 2.0.5 与 manifest 2.0.7 不一致',
-                errors,
-            )
+            self.assertTrue(any(
+                'RED Skill 上传包含非必要运行或开发文件' in error
+                and '.mcp.json' in error
+                for error in errors
+            ))
 
 
 if __name__ == '__main__':
