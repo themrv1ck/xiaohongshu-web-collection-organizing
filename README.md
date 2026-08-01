@@ -135,6 +135,24 @@ hermes skills list
 
 如果 `hermes skills list` 里出现 `xiaohongshu-web-collection-organizing`，说明 Hermes 已识别。
 
+### RedSkill 上传包
+
+不要手工复制文件或把任意命名的外层目录直接压缩。RedSkill ZIP 的唯一顶层目录必须与 `SKILL.md` 的 `name` 完全一致，即 `xiaohongshu-web-collection-organizing/`；WorkBuddy 版还必须包含 `.codebuddy-plugin/`、`.mcp.json`、`server/` 和 `workbuddy-plugin-src/`。
+
+在仓库根目录运行：
+
+```bash
+python3 scripts/build_redskill_package.py --output-dir /tmp/xhs-redskill-release
+```
+
+脚本只收录当前 Git 提交跟踪的文件，同时生成：
+
+- `单文件上传/SKILL.md`：平台只要求单文件时使用；
+- `xiaohongshu-web-collection-organizing/`：平台允许选择文件夹时使用；
+- `xiaohongshu-web-collection-organizing-redskill-<版本>.zip`：平台允许 ZIP 时使用。
+
+脚本会在输出前校验顶层目录、frontmatter、WorkBuddy 运行文件、单文件 10 MB 和总大小 30 MB 限制；任一条件不满足都会失败，不会生成可误传的“通过”结果。
+
 ## 前置条件
 
 通用：

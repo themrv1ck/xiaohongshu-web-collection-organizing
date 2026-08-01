@@ -21,11 +21,17 @@
    - 在临时 `CODEBUDDY_CONFIG_DIR` 中添加本地 marketplace 并安装 `xiaohongshu-organizer@xiaohongshu-skill-marketplace`。
    - `cd workbuddy-plugin-src && npm ci && npm run build && npm run test:mcp` 通过；六个 `xhs_workbuddy_*` 工具齐全，status 返回 `host=workbuddy` 与 `browser_backend=playwright`。
 
-4. **脚本基础质量**
+4. **RedSkill 发布包结构正确**
+   - 运行：`python3 scripts/build_redskill_package.py --output-dir <tmp>/redskill`。
+   - ZIP 只能有一个顶层目录，且必须与 `SKILL.md` 的 `name` 一致。
+   - ZIP 根 Skill 目录必须包含 `.codebuddy-plugin/plugin.json`、`.mcp.json`、`server/xhs-workbuddy-mcp.mjs` 和 `workbuddy-plugin-src/server.mjs`；不能把缺少 Plugin 的普通 Skill 包称为 WorkBuddy 2.0.5。
+   - 用 `python3 scripts/build_redskill_package.py --output-dir <tmp>/noop --validate-only <zip>` 复验，结果必须为 `{"valid": true, "errors": []}`。
+
+5. **脚本基础质量**
    - 运行：`python3 -m compileall -q <repo>`。
    - 无输出且 exit 0 才算语法检查通过。
 
-5. **无副作用 smoke tests**
+6. **无副作用 smoke tests**
    在下载后的 repo 中运行：
 
    ```bash
@@ -44,7 +50,7 @@
    python3 scripts/build_created_boards.py templates/board_taxonomy.template.json /tmp/xhs_existing_boards.json /tmp/xhs_created_boards.json
    ```
 
-6. **有副作用功能不应盲测**
+7. **有副作用功能不应盲测**
    - `extract_visible_items.py` 依赖已登录浏览器和页面状态，可在用户授权浏览器环境中测。
    - `capture_board_snapshot.py` 依赖用户本轮授权的已登录浏览器，只读调用前端 `yC + U_ + Ks`。
    - `run_reassign_batch.py --execute` 会实际整理/移动收藏；没有 `board_snapshot.json` 和 `created_boards.json` 时必须在接触浏览器前拒绝。
