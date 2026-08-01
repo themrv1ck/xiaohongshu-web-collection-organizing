@@ -21,10 +21,12 @@
    - 在临时 `CODEBUDDY_CONFIG_DIR` 中添加本地 marketplace 并安装 `xiaohongshu-organizer@xiaohongshu-skill-marketplace`。
    - `cd workbuddy-plugin-src && npm ci && npm run build && npm run test:mcp` 通过；六个 `xhs_workbuddy_*` 工具齐全，status 返回 `host=workbuddy` 与 `browser_backend=playwright`。
 
-4. **RedSkill 发布包结构正确**
-   - 运行：`python3 scripts/build_redskill_package.py --output-dir <tmp>/redskill`。
+4. **SkillHub / RedSkill 发布包结构正确**
+   - 分别运行：`python3 scripts/build_redskill_package.py --channel redskill --output-dir <tmp>/redskill` 和 `python3 scripts/build_redskill_package.py --channel skillhub --output-dir <tmp>/skillhub`。
    - ZIP 只能有一个顶层目录，且必须与 `SKILL.md` 的 `name` 一致。
-   - ZIP 根 Skill 目录必须包含 `.codebuddy-plugin/plugin.json`、`.mcp.json`、`server/xhs-workbuddy-mcp.mjs` 和 `workbuddy-plugin-src/server.mjs`；不能把缺少 Plugin 的普通 Skill 包称为 WorkBuddy 2.0.5。
+   - ZIP 根 Skill 目录必须包含 `.codebuddy-plugin/plugin.json`、`.mcp.json` 和 `server/xhs-workbuddy-mcp.mjs`；不能把缺少 Plugin 的普通 Skill 包称为 WorkBuddy 2.0.7。
+   - 上传包不得包含 `tests/` 或 `workbuddy-plugin-src/`，文件数不得超过 100；源码和测试继续保留在 GitHub。
+   - `manifest.yaml`、Plugin、Marketplace、MCP 构建产物和 `SKILL.md` 的版本必须全部一致。
    - 用 `python3 scripts/build_redskill_package.py --output-dir <tmp>/noop --validate-only <zip>` 复验，结果必须为 `{"valid": true, "errors": []}`。
 
 5. **脚本基础质量**
