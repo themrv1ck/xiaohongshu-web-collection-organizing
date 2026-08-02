@@ -301,15 +301,13 @@ def main():
     for item in items:
         note_id = str(item.get('id') or '')
         item_type = normalize_content_type(item.get('content_type'))
-        if item_type != 'image':
+        if item_type not in {'image', 'unknown'}:
             not_applicable = dict(item)
             not_applicable['image_urls'] = []
             not_applicable['image_count'] = 0
             not_applicable['image_urls_complete'] = False
             not_applicable['image_list_source'] = ''
-            not_applicable['image_enrichment_status'] = (
-                'not_applicable' if item_type == 'video' else 'content_type_required'
-            )
+            not_applicable['image_enrichment_status'] = 'not_applicable'
             not_applicable['image_enrichment_error'] = ''
             results.append(not_applicable)
             continue

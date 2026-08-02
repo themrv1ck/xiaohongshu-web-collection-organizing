@@ -103,16 +103,22 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
      > 选一个档位即可。它只决定本次要不要使用内容识别，不会打开浏览器，也不会移动收藏。
      >
      > 1. **快速整理｜只按标题、正文、标签和作者；不做 OCR 或视频识别**
-     > 2. **轻度整理｜读取图文全部图片文字；不分析视频**
-     > 3. **深度整理｜图文 OCR + 视频语音 + 完整时轴画面**
+     > 2. **轻度整理｜图文完整 OCR + 平台字幕或轻量音频；不读取视频完整时轴画面**
+     > 3. **深度整理｜图文完整 OCR + MiMo 听觉 + MiMo-VL 完整时轴画面 + 画面 OCR**
      >
      > 请回复“快速整理”“轻度整理”或“深度整理”。如果想自己逐项决定，可以回复“自定义”。
 
    - 若宿主使用按钮或选择题工具显示上述卡片，三个按钮的 `label` 必须逐字使用上面粗体内的完整文案，让用户不点开其他说明也能看到差异；不得缩写成单独的“快速整理 / 轻度整理 / 深度整理”，不得给任何档位添加“推荐”，也不得默认选中某一档。
    - 用户选择“快速整理”：写入 `classify_images_with_ocr=false`、`classify_video_by_content=false`、`visual_analysis=false`；跳过图文 OCR 和视频卡片，不安装、不运行 OCR、语音或画面模型，分类时显式传 `--skip-ocr`。
-   - 用户选择“轻度整理”：写入 `classify_images_with_ocr=true`、`classify_video_by_content=false`、`visual_analysis=false`；跳过视频卡片，按图文 OCR 的既有安装与复验规则执行，不安装、不运行语音或画面模型。
-   - 用户选择“深度整理”：写入 `classify_images_with_ocr=true`、`classify_video_by_content=true`、`visual_analysis=true`；跳过两张逐项功能卡，按下方 OCR、语音和画面功能的既有安装与复验规则执行。若发现多个可用视觉能力，仍必须让用户选择 analysis provider；不得默认固定为 Codex CLI。
+   - 用户选择“轻度整理”：写入 `classify_images_with_ocr=true`、`classify_video_by_content=true`、`visual_analysis=false`；图文读取封面和全部内页 OCR，视频只使用可核验的平台字幕或轻量音频转写，不抽取、读取或分析完整时轴画面，也不运行 MiMo-VL。WorkBuddy 仍受上方固定入口约束：当前插件没有视频语音能力，只能使用插件实际取得的平台文字；没有可用视频正文时必须标为建议深度报告，不得声称已完成轻度视频理解。
+   - 用户选择“深度整理”：写入 `classify_images_with_ocr=true`、`classify_video_by_content=true`、`visual_analysis=true`；图文读取封面和全部内页 OCR；每条视频必须同时通过 MiMo 听觉转写、MiMo-VL 完整时轴画面分析和逐帧画面 OCR 三层质量门。深度专辑报告固定使用这套证据合同，不得改用 Codex CLI、通用宿主视觉或其他 provider 代替其中任何一层。WorkBuddy 当前不支持该合同，必须继续按上方固定入口在打开浏览器前停止；只有用户另行明确授权非 WorkBuddy 的具体浏览器后，才可进入直接路径。
    - 选择“轻度整理”或“深度整理”仅授权所选内容识别及其既有缺失组件安装流程。它不授权打开外部浏览器，也不授权移动收藏；系统权限窗口仍由用户确认。
+   - 整理深度确定后、浏览器授权前，若用户还没有明确说明文件交付需求，只询问一次是否同时生成静态 HTML 专辑报告。快速、轻度、深度三个档位都可生成；用户已经明确要求报告时不得重复询问。用户选择生成报告或明确要求文件后，静态 HTML 是正式交付，对话文本只能临时预览报告结论并提供文件入口；只有用户不生成报告时，才只在当前对话展示简短结果。
+   - 静态报告必须生成一个专辑总览和逐条报告，且文件名必须包含专辑名称与模式：桌面入口固定为 `小红书专辑《<专辑名称>》<模式>报告.html`，同级目录固定为 `小红书专辑《<专辑名称>》<模式>报告/`，其中 `<模式>` 只能是“快速”“轻度”或“深度”。用户同时要求轻度和深度时必须生成两套相互独立、可同时存在的 HTML 与目录，不得复用路径或互相覆盖；两套总览和逐条页都要醒目标出当前模式，且不得生成跨扫描深度链接。总览必须回答“这个专辑到底在讲什么”、给出主题地图和阅读顺序，每张卡片必须能点进对应单条报告。
+   - 轻度报告不是标题导航。图文必须使用完整图片 OCR；视频只允许使用可核验的平台字幕或轻量音频转写，在证据通过质量门时产出实际内容概括、关键观点和查看重点，但必须明确未核验完整时轴画面。平台字幕和轻量音频都无法形成可用正文时，单条页必须直接标为“轻度证据不足，建议生成深度报告”，不得输出“当前文字稿不足以确认视频时间主题”“标题信息与文字稿内容无法互相印证”等空泛占位话，也不得从标题、封面或元数据补写正文。
+   - 深度视频报告必须同时以通过质量门的 MiMo 听觉转写、MiMo-VL 完整时轴画面分析和逐帧画面 OCR 为证据，单条页固定包含“一句话总结 / 这条到底讲什么 / 直接结论 / 具体观点 / 可直接采用 / 注意边界”，并给出有时间戳的“值得补看”。任一必需证据层缺失、失败、哈希不一致或时轴覆盖不完整时，该条深度结论必须硬停止并标为“深度证据生成失败”；不得退回轻度报告、音频单模态、标题、封面、元数据或其他视觉 provider 继续生成深度结论，也不得声称整份深度报告已完整生成。报告只能写本地文件，不得调用小红书发布、创作中心或任何账号写入功能。
+   - 轻度报告与深度报告是彼此独立的输出集合。总览页和单条页都不得生成跨扫描深度链接；单条页只返回当前深度的专辑总览，用户选择哪一种深度就只需要交付哪一套报告。
+   - 正式报告必须复用仓库脚本，不得手写 HTML 绕过证据门。快速或轻度在准备好对应的逐条 details 后，直接调用 `scripts/generate_album_report.py`。深度固定依次使用 `analyze_video_visuals.py` 的宿主帧 manifest、`run_album_mimo_vl_timelines.py`、`assemble_album_visual_evidence.py`、`build_album_deep_details.py`，再把视频 details 与图文 OCR details 作为一个或多个 `--detail-bundle` 交给 `finalize_album_deep_report_data.py`；只有 finalizer 对任意规模专辑的 note id、证据 hash、时轴覆盖和 OCR 完整性全部核验通过后，才可把最终 details 和 classification 交给 `generate_album_report.py`。
    - 只有用户回复“自定义”时，再显示图文 OCR 卡片：
 
      > **图文 OCR 识别**
@@ -290,7 +296,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - `xhs_safety_state.json`：可恢复的 `active` 或不可由 `--resume` 清除的 `security_halted` 状态
 
 ## 分类复核要求
-- 图文 OCR 开关开启时，WorkBuddy 轻度整理只允许 `xhs_workbuddy_capture(organizing_depth=light)`；其他宿主运行 `enrich_note_images.py -> ocr_note_images.py`。两条路径都必须把封面和全部内页图片按原顺序逐张 OCR；关闭时不安装、不运行，预检结果也不得用于分类，并把对应条目标记为 `ocr_status=skipped` 或 `skipped_by_user`。视频视觉模块开启时，每个明确选择的视频分段都跑完整时轴真实帧 + 逐帧 Vision OCR；所有本地分段完成前不得声称已覆盖全部视频。未开启视频视觉模块时只能使用合格文字稿并标记 `transcript_only`。图文 OCR 与视频画面分析是两个独立开关；Vision OCR 不可用时，有视觉能力的 analysis provider 仍可直接看真实帧，但必须记录 `ocr_status=unavailable`。
+- 图文 OCR 开关开启时，WorkBuddy 轻度整理只允许 `xhs_workbuddy_capture(organizing_depth=light)`；其他宿主运行 `enrich_note_images.py -> ocr_note_images.py`。两条路径都必须把封面和全部内页图片按原顺序逐张 OCR；关闭时不安装、不运行，预检结果也不得用于分类，并把对应条目标记为 `ocr_status=skipped` 或 `skipped_by_user`。视频视觉模块开启时，每个明确选择的视频分段都跑完整时轴真实帧 + 逐帧 Vision OCR；所有本地分段完成前不得声称已覆盖全部视频。未开启视频视觉模块时只能使用合格文字稿并标记 `transcript_only`。图文 OCR 与视频画面分析是两个独立开关；普通自定义分类中，Vision OCR 不可用时有视觉能力的 analysis provider 仍可直接看真实帧，但必须记录 `ocr_status=unavailable`。这条只适用于不生成深度专辑报告的自定义分类，不能满足深度报告合同；深度报告缺少逐帧画面 OCR 时必须硬停止。
 - `scripts/ocr_note_images.py` 的后端按平台自动选择：macOS 优先 `scripts/ocr_image.swift.txt` + Vision；Windows 优先 Tesseract / EasyOCR。所有后端必须逐图回写同一份 `ocr_results.json`；OCR 成功但未发现文字与图片下载/OCR 失败必须明确区分。
 - 如果用户关闭图文 OCR，分类流程继续走标题、desc、tags、作者等元数据，但必须在 `classification.json` 保留 `ocr_status=skipped` 或 `skipped_by_user`，并说明图片文字未参与分类、准确性可能下降。
 - 复核顺序：标题/desc/tags/作者 -> OCR 文本 -> 人工判断。

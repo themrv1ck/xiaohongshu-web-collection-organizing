@@ -16,6 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 from analyze_video_visuals import (  # noqa: E402
     analysis_input_sha256,
     analyze_with_provider,
+    analyze_visual_batches,
     build_visual_prompt,
     deterministic_sample_timestamps,
     export_arc_cookie_file,
@@ -33,7 +34,7 @@ from video_content_common import transcript_sha256  # noqa: E402
 
 
 def evidence_manifest(frame_hashes=("a" * 64, "b" * 64)):
-    timestamps = [0.0, 20.0]
+    timestamps = [round(20.0 * index / (len(frame_hashes) - 1), 6) for index in range(len(frame_hashes))]
     return {
         "schema_version": 1,
         "video_sha256": "d" * 64,
@@ -41,7 +42,7 @@ def evidence_manifest(frame_hashes=("a" * 64, "b" * 64)):
         "sampling": {
             "method": "uniform_full_timeline_endpoints_v1",
             "requested_max_gap_sec": 20.0,
-            "observed_max_gap_sec": 20.0,
+            "observed_max_gap_sec": round(20.0 / (len(frame_hashes) - 1), 6),
             "includes_start": True,
             "includes_end": True,
             "timestamps_sec": timestamps,
@@ -50,7 +51,7 @@ def evidence_manifest(frame_hashes=("a" * 64, "b" * 64)):
             {
                 "index": index,
                 "timestamp_sec": timestamp,
-                "endpoint": "start" if index == 0 else "end",
+                "endpoint": "start" if index == 0 else "end" if index == len(timestamps) - 1 else "",
                 "filename": f"frame_{index:04d}.jpg",
                 "sha256": frame_hashes[index],
                 "ocr_status": "ok",
@@ -74,15 +75,18 @@ class VisualVideoAnalysisTests(unittest.TestCase):
             "cover": "COVER_SECRET",
         }
         signature = inspect.signature(build_visual_prompt)
-        self.assertEqual(list(signature.parameters), ["evidence_manifest", "transcript", "boards"])
+        self.assertEqual(list(signature.parameters), ["frame_manifest"])
 
-        prompt = build_visual_prompt(evidence_manifest(), None, ["滑雪", "杂项灵感"])
+        prompt = build_visual_prompt(evidence_manifest())
         for secret in metadata_secrets.values():
             self.assertNotIn(secret, prompt)
-        self.assertIn("真实画面文字", prompt)
-        self.assertIn("严禁根据标题、简介、作者、标签、热度、封面", prompt)
-        for field in ("main_topic", "content_summary", "target_board", "confidence", "reason"):
+        self.assertNotIn("真实画面文字", prompt)
+        self.assertIn("不得根据标题、作者、简介、音轨或常识猜测", prompt)
+        for field in ("slot", "observation", "visible_text", "actions", "uncertainty"):
             self.assertIn(field, prompt)
+        for field in ("main_topic", "content_summary", "target_board", "confidence", "reason"):
+            self.assertNotIn(field, prompt)
+        self.assertTrue(prompt.rstrip().endswith('}'))
 
     def test_full_timeline_sampling_includes_both_endpoints_and_respects_gap(self):
         timestamps = deterministic_sample_timestamps(25.0, 10.0)
@@ -249,7 +253,7 @@ class VisualVideoAnalysisTests(unittest.TestCase):
                 export_arc_cookie_file(FailingModule(), cache, profile="Default")
             self.assertFalse((cache / "arc-cookies.txt").exists())
 
-    def test_provider_receives_every_real_frame(self):
+    def test_provider_receives_every_real_frame_and_preserves_text_classification(self):
         manifest = evidence_manifest()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -265,25 +269,99 @@ class VisualVideoAnalysisTests(unittest.TestCase):
                     self.prompt = prompt
                     self.image_paths = list(image_paths)
                     return {
-                    "main_topic": "家居收纳",
-                    "content_summary": "画面展示柜体内部收纳布局",
-                    "target_board": "家居装修与收纳",
-                    "confidence": "high",
-                    "reason": ["多帧持续展示柜体和收纳动作"],
+                        "batch_summary": "多帧展示柜体",
+                        "items": [
+                            {
+                                "slot": index,
+                                "observation": "柜体内部",
+                                "visible_text": [],
+                                "actions": ["整理物品"],
+                                "uncertainty": "",
+                            }
+                            for index, _path in enumerate(image_paths)
+                        ],
+                        "caveats": [],
                     }
 
             provider = FakeProvider()
             result = analyze_with_provider(
                 manifest=manifest,
                 frame_paths=frames,
-                transcript=None,
+                base_analysis={
+                    "main_topic": "家居收纳",
+                    "content_summary": "转写讲解柜体内部收纳布局",
+                    "target_board": "家居装修与收纳",
+                    "confidence": "high",
+                    "reason": ["合格转写持续讲解收纳"],
+                },
                 boards=["家居装修与收纳", "杂项灵感"],
                 provider=provider,
             )
 
         self.assertEqual(result["status"], "success")
+        self.assertEqual(result["main_topic"], "家居收纳")
         self.assertEqual(provider.image_paths, frames)
-        self.assertIn("逐帧 Vision OCR", provider.prompt)
+        self.assertEqual(result["visual_analysis"]["frames"][1]["timestamp_sec"], 20.0)
+
+    def test_visual_batches_never_exceed_six_and_host_binds_coordinates(self):
+        hashes = tuple(f"{index:064x}" for index in range(13))
+        manifest = evidence_manifest(hashes)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            frame_paths = [root / f"frame-{index}.jpg" for index in range(13)]
+            for path in frame_paths:
+                path.write_bytes(b"frame")
+
+            class FakeProvider:
+                def __init__(self):
+                    self.batch_sizes = []
+
+                def analyze(self, prompt, *, image_paths=()):
+                    self.batch_sizes.append(len(image_paths))
+                    return {
+                        "batch_summary": "本批直接可见的画面",
+                        "items": [
+                            {
+                                "slot": index,
+                                "observation": f"附件 {index} 的可见事实",
+                                "visible_text": [],
+                                "actions": [],
+                                "uncertainty": "",
+                            }
+                            for index, _path in enumerate(image_paths)
+                        ],
+                        "caveats": [],
+                    }
+
+            provider = FakeProvider()
+            result = analyze_visual_batches(manifest, frame_paths, provider)
+
+        self.assertEqual(provider.batch_sizes, [6, 6, 1])
+        self.assertEqual(result["inference"], {"batch_count": 3, "max_frames_per_request": 6})
+        self.assertEqual([row["index"] for row in result["frames"]], list(range(13)))
+        self.assertEqual(result["frames"][-1]["sha256"], hashes[-1])
+
+    def test_visual_batch_rejects_slot_mismatch_without_repair(self):
+        manifest = evidence_manifest()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            frame_paths = [Path(temp_dir) / "a.jpg", Path(temp_dir) / "b.jpg"]
+            for path in frame_paths:
+                path.write_bytes(b"frame")
+
+            class BadProvider:
+                @staticmethod
+                def analyze(_prompt, *, image_paths=()):
+                    return {
+                        "batch_summary": "画面",
+                        "items": [
+                            {"slot": 1, "observation": "画面", "visible_text": [], "actions": [], "uncertainty": ""},
+                            {"slot": 0, "observation": "画面", "visible_text": [], "actions": [], "uncertainty": ""},
+                        ],
+                        "caveats": [],
+                    }
+
+            with self.assertRaisesRegex(ValueError, "槽位"):
+                analyze_visual_batches(manifest, frame_paths, BadProvider())
 
 
 if __name__ == "__main__":

@@ -502,6 +502,7 @@ def perform_ocr_for_items(items, output_path: Path, cache_dir: Optional[Path] = 
             and item.get('image_enrichment_status') == 'ok'
             and item.get('image_list_source') in {
                 'mobile_ssr_note_data.imageList',
+                'arc_authenticated_frontend.detail_dom.imageList',
                 'workbuddy_authenticated_frontend.noteData.imageList',
                 'workbuddy_authenticated_frontend.noteData.imageList.local_copy',
             }

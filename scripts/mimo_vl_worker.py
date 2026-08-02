@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import importlib.metadata
 import json
 import re
@@ -183,10 +184,14 @@ def run_worker(model_path: str, max_tokens: int, *, protocol: TextIO = sys.stdou
         try:
             result = parse_model_output(raw_output)
         except ValueError as exc:
+            diagnostic_output = raw_output if isinstance(raw_output, str) else ""
             _write(protocol, _error_payload(
                 "mimo_vl_invalid_json",
                 str(exc),
-                {"output_length": len(raw_output) if isinstance(raw_output, str) else 0},
+                {
+                    "output_length": len(diagnostic_output),
+                    "output_sha256": hashlib.sha256(diagnostic_output.encode("utf-8")).hexdigest(),
+                },
             ))
             continue
         _write(protocol, {"ok": True, "result": result})

@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from analyze_video_transcripts import ANALYSIS_OUTPUT_CONTRACT, validate_analysis
+from analyze_video_transcripts import validate_analysis
 from video_analysis_provider import ProviderError, build_analysis_provider
 from video_content_common import (
     MIMO_VL_MODEL_SUBDIR,
@@ -43,8 +43,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "video_analysis.schema.json"
 OCR_SCRIPT = ROOT / "scripts" / "ocr_image.swift.txt"
 VISUAL_EVIDENCE_SCHEMA_VERSION = 1
-VISUAL_ANALYSIS_PROMPT_CONTRACT_VERSION = 4
+VISUAL_ANALYSIS_PROMPT_CONTRACT_VERSION = 5
 DEFAULT_MAX_FRAME_GAP_SECONDS = 10.0
+DEFAULT_MAX_FRAMES_PER_REQUEST = 6
+DEFAULT_VISUAL_MAX_TOKENS = 4096
 
 
 class VisualPipelineError(RuntimeError):
@@ -233,35 +235,157 @@ def qualified_transcript(row: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def build_visual_prompt(
-    evidence_manifest: dict[str, Any],
-    transcript: dict[str, Any] | None,
-    boards: list[str],
-) -> str:
-    """Build a metadata-free prompt from frames, frame OCR, and optional transcript."""
-    stable = stable_visual_evidence_payload(evidence_manifest)
-    frame_evidence = [{
-        "index": frame["index"],
-        "timestamp_sec": frame["timestamp_sec"],
-        "sha256": frame["sha256"],
-        "ocr_status": frame["ocr_status"],
-        "ocr_text": frame["ocr_text"],
-        "ocr_confidence": frame["ocr_confidence"],
-    } for frame in stable["frames"]]
-    transcript_evidence = transcript if transcript is not None else {"available": False}
-    return (
-        "你只执行一次视频真实画面理解与分类，不运行工具、不读取其他文件。\n"
-        "附件图片就是该视频按完整时轴等间隔抽取的真实单帧，按 frame_evidence 的 index 和时间戳顺序对应。"
-        "必须先判断画面持续展示的主要对象、动作和用途；背景音乐或歌词与画面冲突时，以画面主体为准。\n"
-        "只可使用附件画面、逐帧 Vision OCR 和通过质量门的转写。严禁根据标题、简介、作者、标签、热度、封面或文件外信息猜测。\n"
-        "专辑名代表上位主题；主要内容是某个专辑的明确子主题时就应选择该专辑，不能只因内容更具体而留空。\n"
-        "OCR 为空或错误不代表视频失败，仍须直接观察附件画面。若画面证据不足以确定任何现有专辑，"
-        "target_board 返回空字符串且 confidence 必须为 low；不得创造新专辑。\n"
-        f"允许专辑：{json.dumps(boards, ensure_ascii=False)}\n"
-        f"时轴证据：{json.dumps({'duration_sec': stable['duration_sec'], 'sampling': stable['sampling'], 'frame_evidence': frame_evidence}, ensure_ascii=False)}\n"
-        f"合格转写：{json.dumps(transcript_evidence, ensure_ascii=False)}\n"
-        f"输出极简中文 memo。{ANALYSIS_OUTPUT_CONTRACT}"
+def build_visual_prompt(frame_manifest: dict[str, Any]) -> str:
+    """Build the proven fixed-slot prompt for one bounded image batch."""
+    frames = frame_manifest.get("frames")
+    if not isinstance(frames, list) or not frames:
+        raise ValueError("视觉批次必须至少包含一帧")
+    image_contract = [
+        {
+            "slot": slot,
+            "observation": "该帧明确可见的主体、环境、操作或图表；禁止推断声音",
+            "visible_text": ["画面中实际可读的文字"],
+            "actions": ["画面中实际可见的动作或操作"],
+            "uncertainty": "证据不足或画面歧义；没有则空字符串",
+        }
+        for slot, _frame in enumerate(frames)
+    ]
+    batch = frame_manifest.get("batch") if isinstance(frame_manifest.get("batch"), dict) else {}
+    batch_index = int(batch.get("index") or 1)
+    batch_count = int(batch.get("count") or 1)
+    scope_text = (
+        "覆盖视频完整时轴，并包含首帧和末帧"
+        if batch_count == 1
+        else f"是完整时轴的第 {batch_index}/{batch_count} 批"
     )
+    return (
+        "你是 WatchBefore 的视频画面证据提取器。附件图片按传入顺序组成一个固定图片批次，"
+        f"{scope_text}。\n"
+        "你只能描述附件中直接可见的事实：主体、场景、屏幕操作、图表、字幕和动作。"
+        "不得根据标题、作者、简介、音轨或常识猜测；不得把画面推断写成视频说过的话。\n"
+        f"本批正好有 {len(image_contract)} 张附件图片。items 必须按附件顺序逐项一一对应，"
+        f"slot 必须严格等于 {list(range(len(image_contract)))}，不能删除、合并、新增或改号。\n"
+        "不要把表格行、OCR 行、画面里的列表项或你推测的视频片段拆成 item；"
+        "一个 item 只能对应一张附件图片。\n"
+        "batch_summary 只总结本批附件共同展示的主要视觉内容。"
+        "caveats 记录仅靠这些附件无法确认的事项。\n"
+        "严格输出这个 JSON 结构：\n"
+        + json.dumps(
+            {
+                "batch_summary": "本批附件的主要视觉内容",
+                "items": image_contract,
+                "caveats": ["仅靠这些附件无法确认的事项"],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+
+
+def _string_list(value: Any, path: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{path} 必须是字符串数组")
+    return [item.strip() for item in value if item.strip()]
+
+
+def validate_visual_result(
+    payload: dict[str, Any],
+    frame_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate model slots, then bind trusted frame coordinates on the host."""
+    if not isinstance(payload, dict):
+        raise ValueError("MiMo-VL 视觉结果必须是对象")
+    summary = payload.get("batch_summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("batch_summary 必须是非空字符串")
+    rows = payload.get("items")
+    expected = frame_manifest.get("frames")
+    if not isinstance(expected, list) or not isinstance(rows, list) or len(rows) != len(expected):
+        raise ValueError("MiMo-VL 返回的图片行数与附件数不一致")
+    normalized_rows: list[dict[str, Any]] = []
+    for slot, (expected_row, row) in enumerate(zip(expected, rows)):
+        if not isinstance(row, dict) or row.get("slot") != slot:
+            raise ValueError("MiMo-VL 图片槽位与附件顺序不一致")
+        observation = row.get("observation")
+        uncertainty = row.get("uncertainty")
+        if not isinstance(observation, str) or not observation.strip():
+            raise ValueError(f"items[{slot}].observation 必须是非空字符串")
+        if not isinstance(uncertainty, str):
+            raise ValueError(f"items[{slot}].uncertainty 必须是字符串")
+        normalized_rows.append({
+            "index": int(expected_row["index"]),
+            "timestamp_sec": round(float(expected_row["timestamp_sec"]), 6),
+            "sha256": str(expected_row["sha256"]),
+            "observation": observation.strip(),
+            "visible_text": _string_list(row.get("visible_text"), f"items[{slot}].visible_text"),
+            "actions": _string_list(row.get("actions"), f"items[{slot}].actions"),
+            "uncertainty": uncertainty.strip(),
+        })
+    return {
+        "overall_visual_summary": summary.strip(),
+        "frames": normalized_rows,
+        "visual_caveats": _string_list(payload.get("caveats"), "caveats"),
+    }
+
+
+def analyze_visual_batches(
+    manifest: dict[str, Any],
+    frame_paths: list[Path],
+    provider: Any,
+    *,
+    max_frames_per_request: int = DEFAULT_MAX_FRAMES_PER_REQUEST,
+) -> dict[str, Any]:
+    validate_visual_evidence_manifest(manifest)
+    frames = stable_visual_evidence_payload(manifest)["frames"]
+    if len(frame_paths) != len(frames) or not frame_paths:
+        raise ValueError("真实视频帧与证据清单不一致")
+    if max_frames_per_request <= 0:
+        raise ValueError("每批最大帧数必须是正整数")
+    batches = [
+        (frames[start:start + max_frames_per_request], frame_paths[start:start + max_frames_per_request])
+        for start in range(0, len(frames), max_frames_per_request)
+    ]
+    analyses: list[dict[str, Any]] = []
+    for offset, (batch_rows, batch_paths) in enumerate(batches):
+        batch_manifest = {
+            **manifest,
+            "frames": batch_rows,
+            "batch": {"index": offset + 1, "count": len(batches)},
+        }
+        payload = provider.analyze(build_visual_prompt(batch_manifest), image_paths=batch_paths)
+        analyses.append(validate_visual_result(payload, batch_manifest))
+    if len(analyses) == 1:
+        analysis = analyses[0]
+    else:
+        summaries: list[dict[str, Any]] = []
+        combined_frames: list[dict[str, Any]] = []
+        combined_caveats: list[str] = []
+        for batch_index, batch_analysis in enumerate(analyses, start=1):
+            batch_frames = batch_analysis["frames"]
+            summaries.append({
+                "batch_index": batch_index,
+                "start_timestamp_sec": batch_frames[0]["timestamp_sec"],
+                "end_timestamp_sec": batch_frames[-1]["timestamp_sec"],
+                "summary": batch_analysis["overall_visual_summary"],
+            })
+            combined_frames.extend(batch_frames)
+            combined_caveats.extend(
+                f"第 {batch_index} 批：{caveat}"
+                for caveat in batch_analysis["visual_caveats"]
+            )
+        analysis = {
+            "overall_visual_summary": (
+                f"完整时轴已分 {len(analyses)} 批分析；批次摘要与逐帧事实均按时间顺序保存。"
+            ),
+            "batch_summaries": summaries,
+            "frames": combined_frames,
+            "visual_caveats": combined_caveats,
+        }
+    analysis["inference"] = {
+        "batch_count": len(batches),
+        "max_frames_per_request": max_frames_per_request,
+    }
+    return analysis
 
 
 def run_frame_ocr(
@@ -549,15 +673,15 @@ def analyze_with_provider(
     *,
     manifest: dict[str, Any],
     frame_paths: list[Path],
-    transcript: dict[str, Any] | None,
+    base_analysis: dict[str, Any],
     boards: list[str],
     provider: Any,
 ) -> dict[str, Any]:
     if not frame_paths:
         return failure_row("", "visual_frames_missing", "没有可交给视觉分析器的真实视频帧")
     try:
-        payload = provider.analyze(build_visual_prompt(manifest, transcript, boards), image_paths=frame_paths)
-        normalized = validate_analysis(payload, boards)
+        normalized = validate_analysis(base_analysis, boards)
+        visual_analysis = analyze_visual_batches(manifest, frame_paths, provider)
     except ProviderError as exc:
         row = failure_row(
             "",
@@ -574,7 +698,12 @@ def analyze_with_provider(
         return row
     except Exception as exc:
         return failure_row("", "analysis_provider_invalid_result", safe_error(exc))
-    return {"status": "success", **normalized, "error": ""}
+    return {
+        "status": "success",
+        **normalized,
+        "visual_analysis": visual_analysis,
+        "error": "",
+    }
 
 
 def failure_row(note_id: str, reason_code: str, error: str) -> dict[str, Any]:
@@ -794,7 +923,7 @@ def main() -> int:
     selected_items = select_videos(items, list(args.video_id or []), all_videos=args.all_videos)
     if args.max_videos is not None:
         selected_items = selected_items[:args.max_videos]
-    base_order, _base_map = validate_full_analysis_contract(items, base_rows)
+    base_order, base_map = validate_full_analysis_contract(items, base_rows)
 
     _, transcript_map = index_unique_rows(transcript_rows, "video_transcripts.json")
     visible_video_ids = {
@@ -838,6 +967,7 @@ def main() -> int:
             python_bin=provider_python,
             worker_script=ROOT / "scripts" / "mimo_vl_worker.py",
             startup_timeout=args.provider_startup_timeout,
+            max_tokens=DEFAULT_VISUAL_MAX_TOKENS,
             working_directory=ROOT,
         )
         provider_identity = provider.identity()
@@ -935,7 +1065,7 @@ def main() -> int:
                                 result = analyze_with_provider(
                                     manifest=manifest,
                                     frame_paths=frame_paths,
-                                    transcript=transcript,
+                                    base_analysis=base_map[note_id],
                                     boards=boards,
                                     provider=provider,
                                 )

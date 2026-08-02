@@ -191,6 +191,25 @@ process.stdout.write(eval({json.dumps(ITEMS_JS)}));
         )
         self.assertAlmostEqual(result['ocr_confidence'], 0.92)
 
+    def test_complete_authenticated_arc_detail_image_set_is_valid_for_ocr(self):
+        item = self.complete_image_item(item_id='arc-detail-note')
+        item['image_list_source'] = 'arc_authenticated_frontend.detail_dom.imageList'
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('xhs_ocr_common.download_image', side_effect=self.fake_download), \
+                patch('xhs_ocr_common.run_ocr', return_value={
+                    'text': '骨盆中立位',
+                    'lines': [{'text': '骨盆中立位', 'confidence': 0.95}],
+                    'average_confidence': 0.95,
+                    'provider': 'swift',
+                }):
+            result = perform_ocr_for_items(
+                [item], Path(tmp) / 'ocr_results.json', provider='swift',
+            )[0]
+
+        self.assertEqual(result['status'], 'ok')
+        self.assertTrue(result['image_set_complete'])
+        self.assertEqual(result['image_count_processed'], 2)
+
     def test_textless_visual_images_are_successful_empty_ocr_not_visual_understanding(self):
         empty_ocr = {
             'text': '',
@@ -797,6 +816,43 @@ process.stdout.write(eval({json.dumps(ITEMS_JS)}));
 
         fetch.assert_not_called()
         self.assertEqual(rows[0]['image_enrichment_status'], 'detail_request_not_enabled')
+
+    def test_authorized_enrichment_resolves_unknown_type_from_detail_page(self):
+        note_id = '66d19b54000000001d03a93d'
+        items = [{
+            'id': note_id,
+            'title': '类型待确认',
+            'content_type': 'unknown',
+            'image_urls': [],
+            'image_count': None,
+            'image_urls_complete': False,
+        }]
+        html = self.setup_state_html({
+            'noteId': note_id,
+            'type': 'normal',
+            'imageList': [
+                {'urlDefault': 'https://ci.xiaohongshu.com/verified-image.jpg'},
+            ],
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / 'visible_items.json'
+            out = Path(tmp) / 'image_items.json'
+            src.write_text(json.dumps(items, ensure_ascii=False), encoding='utf-8')
+            argv = [
+                'enrich_note_images.py', str(src), str(out),
+                '--allow-detail-requests', '--max-items', '1',
+                '--request-interval', '0',
+            ]
+            with patch.object(sys, 'argv', argv), \
+                    patch('enrich_note_images.fetch_note_html', return_value=html) as fetch:
+                enrich_note_images_main()
+            rows = json.loads(out.read_text(encoding='utf-8'))
+
+        fetch.assert_called_once()
+        self.assertEqual(rows[0]['content_type'], 'image')
+        self.assertEqual(rows[0]['content_type_source'], 'mobile_ssr_note_data.type')
+        self.assertEqual(rows[0]['image_enrichment_status'], 'ok')
+        self.assertTrue(rows[0]['image_urls_complete'])
 
     def test_workbuddy_rejects_cookie_less_detail_enrichment(self):
         with patch.dict('os.environ', {'XHS_HOST': 'workbuddy'}, clear=False), \

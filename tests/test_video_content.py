@@ -311,18 +311,24 @@ class VideoContentTests(unittest.TestCase):
         self.assertIn('检查结果只说明电脑里有什么，不代表已经开启任何功能', skill)
         self.assertIn('**选择整理深度**', skill)
         self.assertIn('1. **快速整理｜只按标题、正文、标签和作者；不做 OCR 或视频识别**', skill)
-        self.assertIn('2. **轻度整理｜读取图文全部图片文字；不分析视频**', skill)
-        self.assertIn('3. **深度整理｜图文 OCR + 视频语音 + 完整时轴画面**', skill)
+        self.assertIn(
+            '2. **轻度整理｜图文完整 OCR + 平台字幕或轻量音频；不读取视频完整时轴画面**',
+            skill,
+        )
+        self.assertIn(
+            '3. **深度整理｜图文完整 OCR + MiMo 听觉 + MiMo-VL 完整时轴画面 + 画面 OCR**',
+            skill,
+        )
         self.assertIn('三个按钮的 `label` 必须逐字使用上面粗体内的完整文案', skill)
         self.assertIn('不得给任何档位添加“推荐”', skill)
         self.assertNotIn('快速整理（推荐）', skill)
         self.assertIn('回复“快速整理”“轻度整理”或“深度整理”', skill)
         self.assertIn('classify_images_with_ocr=false`、`classify_video_by_content=false`、`visual_analysis=false', skill)
-        self.assertIn('classify_images_with_ocr=true`、`classify_video_by_content=false`、`visual_analysis=false', skill)
+        self.assertIn('classify_images_with_ocr=true`、`classify_video_by_content=true`、`visual_analysis=false', skill)
         self.assertIn('classify_images_with_ocr=true`、`classify_video_by_content=true`、`visual_analysis=true', skill)
         self.assertIn('跳过图文 OCR 和视频卡片', skill)
-        self.assertIn('跳过视频卡片', skill)
-        self.assertIn('跳过两张逐项功能卡', skill)
+        self.assertIn('只有用户回复“自定义”时，再显示图文 OCR 卡片', skill)
+        self.assertIn('只有用户回复“自定义”并得到 OCR 回答后，再显示下面的视频功能卡片', skill)
         self.assertIn('不得默认固定为 Codex CLI', skill)
         self.assertIn('仅授权所选内容识别及其既有缺失组件安装流程', skill)
         self.assertIn('不授权打开外部浏览器，也不授权移动收藏', skill)
