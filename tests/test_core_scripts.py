@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, apply_batch, build_browser_job, build_write_binding_probe, choose_backend, filter_classification_for_resume, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_write_preflight, write_binding_blockers  # noqa: E402
+from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, apply_batch, build_browser_job, build_write_binding_probe, choose_backend, filter_classification_for_resume, is_ready_move, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_write_preflight, write_binding_blockers  # noqa: E402
 from extract_visible_items import arc_js_macos, extract_with_js, read_stable_items_snapshot  # noqa: E402
 from xhs_ocr_common import detect_ocr_provider, infer_board, load_taxonomy, run_tesseract_ocr  # noqa: E402
 
@@ -296,6 +296,7 @@ function createTransactionModel(options) {
             ])
             self.assertEqual(data['processed'][0]['status'], 'preview_only')
             self.assertEqual(data['processed'][0]['membership_state'], 'not_checked')
+            self.assertEqual(data['processed'][0]['archive_lifecycle_state'], 'not_checked')
             self.assertEqual(data['processed'][0]['source_board_id'], 'source-board-1')
             self.assertEqual(data['processed'][1]['status'], 'needs_review')
             self.run_script('build_retry_queue.py', str(report), str(retry))
@@ -345,10 +346,29 @@ function createTransactionModel(options) {
             )
             data = json.loads(classification.read_text(encoding='utf-8'))
             self.assertTrue(data[0]['excluded'])
-            self.assertEqual(data[0]['exclude_reason'], 'user_kept_existing_boards')
+            self.assertEqual(data[0]['exclude_reason'], 'existing_board_member_protected')
             self.assertEqual(data[0]['source_board'], '滑雪')
             self.assertEqual(data[0]['target_board'], '')
+            self.assertEqual(data[0]['archive_lifecycle_state'], 'first_archive_confirmed')
             self.assertNotIn('excluded', data[1])
+            self.assertEqual(data[1]['archive_lifecycle_state'], 'first_archive_pending')
+            override = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'classify_items.py'),
+                    '--skip-ocr',
+                    str(visible),
+                    str(classification),
+                    '--existing-boards-inventory',
+                    str(inventory),
+                    '--include-existing-boards',
+                ],
+                cwd=str(ROOT),
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(override.returncode, 0)
+            self.assertIn('unrecognized arguments: --include-existing-boards', override.stderr)
 
     def test_dry_run_skips_excluded_items(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -362,7 +382,7 @@ function createTransactionModel(options) {
                     'target_board': '滑雪',
                     'confidence': 'high',
                     'excluded': True,
-                    'exclude_reason': 'user_kept_existing_boards',
+                    'exclude_reason': 'existing_board_member_protected',
                     'source_board': '滑雪',
                 }
             ], ensure_ascii=False), encoding='utf-8')
@@ -392,7 +412,7 @@ function createTransactionModel(options) {
                     failed,
                     dict(failed),
                     {'id': 'note-2', 'title': '复核项', 'target_board': '', 'status': 'needs_review', 'error': 'missing target_board'},
-                    {'id': 'note-3', 'title': '跳过项', 'target_board': '', 'status': 'skipped', 'error': 'user_kept_existing_boards'},
+                    {'id': 'note-3', 'title': '跳过项', 'target_board': '', 'status': 'skipped', 'error': 'existing_board_member_protected'},
                     {'id': 'note-4', 'title': '核验失败', 'target_board': '穿搭发型与品味', 'status': 'verification_failed', 'events': ['verify:note_missing'], 'error': ''},
                 ],
                 'errors': [dict(failed)],
@@ -534,12 +554,15 @@ function createTransactionModel(options) {
             self.assertEqual(data['membership_validation_status'], 'verified')
             rows = {row['id']: row for row in data['processed']}
             self.assertEqual(rows[already_id]['status'], 'skipped')
-            self.assertEqual(rows[already_id]['membership_state'], 'already_in_target')
-            self.assertEqual(rows[cross_id]['status'], 'planned')
-            self.assertEqual(rows[cross_id]['membership_state'], 'in_other_board')
+            self.assertEqual(rows[already_id]['membership_state'], 'existing_board_member_protected')
+            self.assertEqual(rows[already_id]['archive_lifecycle_state'], 'first_archive_confirmed')
+            self.assertEqual(rows[cross_id]['status'], 'skipped')
+            self.assertEqual(rows[cross_id]['membership_state'], 'existing_board_member_protected')
+            self.assertEqual(rows[cross_id]['archive_lifecycle_state'], 'first_archive_confirmed')
             self.assertEqual(rows[cross_id]['source_board_id'], target_a)
             self.assertEqual(rows[unassigned_id]['status'], 'planned')
             self.assertEqual(rows[unassigned_id]['membership_state'], 'not_in_any_board')
+            self.assertEqual(rows[unassigned_id]['archive_lifecycle_state'], 'first_archive_pending')
             self.assertEqual(rows[unassigned_id]['source_board_id'], '')
 
     def test_verified_dry_run_blocks_missing_target_board(self):
@@ -596,7 +619,47 @@ function createTransactionModel(options) {
             self.assertEqual(data['missing_boards'], ['不存在的专辑'])
             self.assertIn('missing_target_board:不存在的专辑', data['blockers'])
 
-    def test_preflight_blocks_ambiguous_membership(self):
+    def test_existing_board_member_is_protected_before_target_validation(self):
+        note_id = '1' * 24
+        source_board_id = 'a' * 24
+        result = prepare_write_preflight(
+            [{
+                'id': note_id,
+                'title': '用户已手动整理',
+                'target_board': '模型误判出的不存在专辑',
+                'confidence': 'high',
+            }],
+            {
+                'mode': 'read_only',
+                'source': {'browser': 'safari', 'writes_performed': False},
+                'boards': [{
+                    'id': source_board_id,
+                    'name': '用户手动专辑',
+                    'declared_total': 1,
+                    'page_count': 1,
+                    'note_ids': [note_id],
+                }],
+                'validation': {
+                    'board_names_unique': True,
+                    'pagination_cursor_invariants_passed': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': True,
+                },
+            },
+            {'confirmed': ['用户手动专辑'], 'missing': []},
+            allow_low_confidence=False,
+        )
+        self.assertTrue(result['ready_for_execute'])
+        self.assertEqual(result['missing_boards'], [])
+        self.assertEqual(result['required_target_boards'], [])
+        row = result['resolved_items'][0]
+        self.assertTrue(row['excluded'])
+        self.assertEqual(row['exclude_reason'], 'existing_board_member_protected')
+        self.assertEqual(row['membership_state'], 'existing_board_member_protected')
+        self.assertEqual(row['archive_lifecycle_state'], 'first_archive_confirmed')
+        self.assertEqual(row['source_board_id'], source_board_id)
+
+    def test_preflight_protects_multi_board_membership_without_cross_board_move(self):
         note_id = '1' * 24
         board_a = 'a' * 24
         board_b = 'b' * 24
@@ -635,8 +698,17 @@ function createTransactionModel(options) {
             allow_low_confidence=False,
         )
         self.assertFalse(result['ready_for_execute'])
-        self.assertIn(f'ambiguous_membership:{note_id}', result['blockers'])
-        self.assertEqual(result['resolved_items'][0]['membership_state'], 'ambiguous')
+        self.assertNotIn(f'ambiguous_membership:{note_id}', result['blockers'])
+        self.assertEqual(
+            result['resolved_items'][0]['membership_state'],
+            'existing_board_member_protected',
+        )
+        self.assertEqual(
+            result['resolved_items'][0]['archive_lifecycle_state'],
+            'first_archive_confirmed',
+        )
+        self.assertTrue(result['resolved_items'][0]['excluded'])
+        self.assertEqual(result['resolved_items'][0]['source_board_id'], '')
 
     def test_preflight_blocks_declared_board_count_mismatch(self):
         note_id = '1' * 24
@@ -680,7 +752,11 @@ function createTransactionModel(options) {
         self.assertEqual(result['board_validation_status'], 'blocked')
         self.assertEqual(
             result['resolved_items'][0]['membership_state'],
-            'already_in_target',
+            'existing_board_member_protected',
+        )
+        self.assertEqual(
+            result['resolved_items'][0]['archive_lifecycle_state'],
+            'first_archive_confirmed',
         )
 
     def test_preflight_accepts_empty_inventory_only_for_bound_planned_boards(self):
@@ -730,8 +806,13 @@ function createTransactionModel(options) {
         ])
         self.assertEqual(
             result['resolved_items'][0]['membership_state'],
-            'target_board_planned',
+            'not_in_any_board',
         )
+        self.assertEqual(
+            result['resolved_items'][0]['archive_lifecycle_state'],
+            'first_archive_pending',
+        )
+        self.assertEqual(result['resolved_items'][0]['target_board_state'], 'planned')
 
     def test_execute_without_preflight_evidence_is_blocked_before_browser(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -862,6 +943,8 @@ function createTransactionModel(options) {
     def test_merge_report_chunk_appends_processed_errors_and_missing_boards(self):
         report = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}, 'board_count_checks': {}}
         chunk = {
+            'board_list_count': 181,
+            'board_list_page_count': 2,
             'processed': [{'id': 'note-1', 'status': 'failed', 'target_board': '滑雪'}],
             'errors': [{'id': 'note-1', 'status': 'failed', 'target_board': '滑雪'}],
             'missing_boards': ['滑雪', '滑雪'],
@@ -875,12 +958,16 @@ function createTransactionModel(options) {
         merge_report_chunk(report, chunk)
         self.assertEqual(len(report['processed']), 2)
         self.assertEqual(len(report['errors']), 2)
+        self.assertEqual(report['board_list_count'], 181)
+        self.assertEqual(report['board_list_page_count'], 2)
         self.assertEqual(report['missing_boards'], ['滑雪'])
         self.assertEqual(report['board_counts_before'], {'滑雪': 1})
         self.assertEqual(report['board_counts_after'], {'滑雪': 1})
         self.assertEqual(report['board_count_checks'], {
             '滑雪': {'declared_total': 2, 'accessible_total': 1, 'count_mismatch': True, 'page_count': 1},
         })
+        with self.assertRaisesRegex(RuntimeError, 'board_list_count changed'):
+            merge_report_chunk(report, {**chunk, 'board_list_count': 180})
 
     def test_execute_requires_explicit_browser_and_arc_transport_is_supported(self):
         with self.assertRaises(RuntimeError):
@@ -912,13 +999,11 @@ function createTransactionModel(options) {
     def test_arc_transport_counts_strict_id_and_url_matches_then_wraps_runtime_marker(self):
         captured = {}
 
-        def fake_osascript(script):
+        def fake_jxa_osascript(script):
             captured['script'] = script
-            js_path = script.split('POSIX file "', 1)[1].split('"', 1)[0]
-            captured['js_source'] = Path(js_path).read_text(encoding='utf-8')
             return 'ok'
 
-        with patch('extract_visible_items.require_macos_app_running'), patch('extract_visible_items.osascript', fake_osascript):
+        with patch('extract_visible_items.require_macos_app_running'), patch('extract_visible_items.jxa_osascript', fake_jxa_osascript):
             self.assertEqual(arc_js_macos(
                 'document.title',
                 'xhs-skill-worker-test',
@@ -928,19 +1013,17 @@ function createTransactionModel(options) {
             ), 'ok')
 
         script = captured['script']
-        self.assertIn('set matchCount to 0', script)
-        self.assertIn('set matchCount to matchCount + 1', script)
-        self.assertIn('currentWindowId is equal to expectedWindowId', script)
-        self.assertIn('currentTabId is equal to expectedTabId', script)
-        self.assertIn('(targetURL contains "xiaohongshu.com")', script)
-        self.assertIn('(targetURL contains expectedURLPart)', script)
-        self.assertNotIn('targetMarker', script)
-        self.assertIn('if matchCount is 0 then error', script)
-        self.assertIn('if matchCount is greater than 1 then error', script)
-        self.assertNotIn('if targetTab is not missing value then exit repeat', script)
-        js_source = captured['js_source']
-        self.assertIn('window.name !== "xhs-skill-worker-test"', js_source)
-        self.assertLess(js_source.index('window.name !=='), js_source.index('document.title'))
+        self.assertIn('const expectedWindowId = "window-test"', script)
+        self.assertIn('const expectedTabId = "tab-test"', script)
+        self.assertIn('candidate.id() === expectedWindowId', script)
+        self.assertIn('candidate.id() === expectedTabId', script)
+        self.assertIn('targetTab.url()', script)
+        self.assertIn('targetURL.includes("xiaohongshu.com")', script)
+        self.assertIn('app.execute(targetTab, {javascript: jsSource})', script)
+        self.assertNotIn('repeat with w in windows', script)
+        self.assertIn('window.name !== \\"xhs-skill-worker-test\\"', script)
+        self.assertIn('return eval(\\"document.title\\");', script)
+        self.assertLess(script.index('window.name !=='), script.index('document.title'))
 
     def test_arc_execute_requires_unique_tab_marker_before_opening_browser(self):
         args = type('Args', (), {
@@ -973,8 +1056,8 @@ function createTransactionModel(options) {
         })()
         report = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}}
         classification = [
-            {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high'},
-            {'id': 'note-2', 'title': '二', 'target_board': '滑雪', 'confidence': 'high'},
+            {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
+            {'id': 'note-2', 'title': '二', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
         ]
         result = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}}
         with tempfile.TemporaryDirectory() as tmp, \
@@ -1012,6 +1095,9 @@ function createTransactionModel(options) {
         classification = [{
             'id': 'note-1', 'title': '一', 'target_board': '阅读',
             'confidence': 'high',
+            'membership_state': 'not_in_any_board',
+            'archive_lifecycle_state': 'first_archive_pending',
+            'source_board_id': '',
         }]
         result = {
             'processed': [], 'errors': [], 'missing_boards': [],
@@ -1066,8 +1152,8 @@ function createTransactionModel(options) {
             'board_counts_before': {}, 'board_counts_after': {},
         }
         classification = [
-            {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high'},
-            {'id': 'note-2', 'title': '二', 'target_board': '滑雪', 'confidence': 'high'},
+            {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
+            {'id': 'note-2', 'title': '二', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
         ]
         with tempfile.TemporaryDirectory() as tmp, \
                 patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
@@ -1094,15 +1180,37 @@ function createTransactionModel(options) {
         self.assertIn('class SecurityChallengeError extends Error', job)
         self.assertIn('class ExecutePageBindingError extends Error', job)
         self.assertIn(
-            "assertNoSecurityChallenge();\n          assertExpectedExecutePage();\n          await api.d0",
+            "assertNoSecurityChallenge();\n        assertExpectedExecutePage();\n        await api.d0",
             job,
         )
-        self.assertIn("Boolean(item.source_board_id) &&\n          item.source_board_id !== board.id", job)
-        self.assertIn("assertTransactionSafe, null, events, 'initial recollect could not start safely'", job)
-        self.assertIn("assertTransactionSafe, null, events, 'target move could not start safely'", job)
-        self.assertIn("error.name === 'HighRiskStateUncertainError'", job)
+        self.assertIn("item.membership_state !== 'not_in_any_board'", job)
+        self.assertIn("item.archive_lifecycle_state !== 'first_archive_pending'", job)
+        self.assertIn("row.archive_lifecycle_state = 'first_archive_confirmed'", job)
+        self.assertIn("events.push('archive:first_confirmed')", job)
+        self.assertNotIn('moveAcrossBoardsTransaction', job)
+        self.assertNotIn('/api/sns/web/v1/note/uncollect', job)
+        self.assertNotIn('/api/sns/web/v1/note/collect', job)
         self.assertIn("error.name === 'SecurityChallengeError' || error.name === 'ExecutePageBindingError'", job)
         self.assertIn('SAFETY_BREAKER:', job)
+
+    def test_first_archive_requires_pending_state_and_confirmed_state_is_locked(self):
+        item = {
+            'id': 'note-1',
+            'target_board': '阅读',
+            'confidence': 'high',
+            'membership_state': 'not_in_any_board',
+            'archive_lifecycle_state': 'first_archive_pending',
+            'source_board_id': '',
+        }
+        self.assertTrue(is_ready_move(item, allow_low_confidence=False))
+        self.assertFalse(is_ready_move(
+            {**item, 'archive_lifecycle_state': 'first_archive_confirmed'},
+            allow_low_confidence=False,
+        ))
+        self.assertFalse(is_ready_move(
+            {key: value for key, value in item.items() if key != 'archive_lifecycle_state'},
+            allow_low_confidence=False,
+        ))
 
     def test_live_api_resolver_accepts_one_exact_factory_and_renamed_exports(self):
         result = self.run_live_api_resolver_js(r'''
@@ -1129,11 +1237,11 @@ function req(id) {
 req.m = factories;
 req.c = {};
 const api = findApi(req);
-console.log(JSON.stringify({LN: api.LN.name, B1: api.B1.name, d0: api.d0.name, Ks: api.Ks.name, yC: api.yC.name, U_: api.U_.name}));
+console.log(JSON.stringify({d0: api.d0.name, Ks: api.Ks.name, yC: api.yC.name, U_: api.U_.name}));
 ''')
         self.assertEqual(result, {
-            'LN': 'uncollect', 'B1': 'collect', 'd0': 'move',
-            'Ks': 'boardNotes', 'yC': 'userBoards', 'U_': 'boardDetail',
+            'd0': 'move', 'Ks': 'boardNotes',
+            'yC': 'userBoards', 'U_': 'boardDetail',
         })
 
     def test_live_api_resolver_rejects_zero_factory_matches_without_legacy_cache_fallback(self):

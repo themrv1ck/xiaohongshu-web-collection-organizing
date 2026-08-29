@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from browser_page_runtime import run_page_javascript
+from collection_scope import validate_scope_input, validate_scope_snapshot
 from extract_visible_items import arc_js_macos, osascript, require_macos_app_running
 from xhs_safety import (
     SafetyHaltedError,
@@ -39,8 +40,6 @@ class ExecutionPreflightError(RuntimeError):
 
 LIVE_API_RESOLVER_JS = r'''
 const XHS_LIVE_API_ENDPOINTS = Object.freeze({
-  LN: '/api/sns/web/v1/note/uncollect',
-  B1: '/api/sns/web/v1/note/collect',
   d0: '/api/sns/web/v1/note/move',
   Ks: '/api/sns/web/v1/board/note',
   yC: '/api/sns/web/v1/board/user',
@@ -102,13 +101,107 @@ function findApi(req) {
   }
   const functions = collectExportedFunctions(req(moduleMatches[0]));
   return Object.freeze({
-    LN: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.LN, 'LN'),
-    B1: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.B1, 'B1'),
     d0: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.d0, 'd0'),
     Ks: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.Ks, 'Ks'),
     yC: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.yC, 'yC'),
     U_: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.U_, 'U_')
   });
+}
+'''.strip()
+
+
+BOARD_LIST_PAGINATION_JS = r'''
+const XHS_BOARD_LIST_PAGE_SIZE = 100;
+
+function normalizeUserBoard(board, absoluteIndex) {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) {
+    throw new Error('Xiaohongshu board/user board must be an object at index ' + absoluteIndex);
+  }
+  const id = typeof board.id === 'string' ? board.id.trim() : '';
+  const name = typeof board.name === 'string' ? board.name.trim() : '';
+  if (!/^[0-9a-f]{24}$/i.test(id) || !name) {
+    throw new Error('Xiaohongshu board/user board id/name contract failed at index ' + absoluteIndex);
+  }
+  const totalRaw = board.total ?? board.noteCount ?? board.note_count ?? board.notesCount;
+  const total = Number.isFinite(Number(totalRaw)) ? Number(totalRaw) : null;
+  return { id, name, privacy: board.privacy, total };
+}
+
+async function loadAllBoardsStrict(api, userId, assertContext) {
+  if (!api || typeof api.yC !== 'function') {
+    throw new Error('Xiaohongshu board/user API is unavailable');
+  }
+  if (typeof userId !== 'string' || !/^[0-9a-f]{24}$/i.test(userId.trim())) {
+    throw new Error('Xiaohongshu board/user requires a 24-character user id');
+  }
+  const boards = [];
+  const ids = new Set();
+  const names = new Set();
+  let declaredTotal = null;
+  let pageCount = null;
+
+  for (let page = 1; ; page += 1) {
+    if (typeof assertContext === 'function') assertContext();
+    const response = await api.yC({
+      params: { userId: userId.trim(), num: XHS_BOARD_LIST_PAGE_SIZE, page }
+    });
+    if (typeof assertContext === 'function') assertContext();
+    if (!response || typeof response !== 'object' || Array.isArray(response)) {
+      throw new Error('Xiaohongshu board/user page ' + page + ' response must be an object');
+    }
+    if (!Array.isArray(response.boards)) {
+      throw new Error('Xiaohongshu board/user page ' + page + ' response.boards must be an array');
+    }
+    if (!Number.isSafeInteger(response.boardCount) || response.boardCount < 0) {
+      throw new Error('Xiaohongshu board/user page ' + page + ' boardCount must be a non-negative integer');
+    }
+    if (declaredTotal === null) {
+      declaredTotal = response.boardCount;
+      pageCount = Math.max(1, Math.ceil(declaredTotal / XHS_BOARD_LIST_PAGE_SIZE));
+    } else if (response.boardCount !== declaredTotal) {
+      throw new Error(
+        'Xiaohongshu board/user boardCount changed during pagination: expected ' +
+        declaredTotal + ', got ' + response.boardCount + ' on page ' + page
+      );
+    }
+    if (page > pageCount) {
+      throw new Error('Xiaohongshu board/user returned an unexpected extra page ' + page);
+    }
+    const expectedLength = declaredTotal === 0
+      ? 0
+      : (page < pageCount
+        ? XHS_BOARD_LIST_PAGE_SIZE
+        : declaredTotal - XHS_BOARD_LIST_PAGE_SIZE * (page - 1));
+    if (response.boards.length !== expectedLength) {
+      throw new Error(
+        'Xiaohongshu board/user page ' + page + ' length mismatch: expected ' +
+        expectedLength + ', got ' + response.boards.length
+      );
+    }
+    for (let index = 0; index < response.boards.length; index += 1) {
+      const board = normalizeUserBoard(
+        response.boards[index],
+        XHS_BOARD_LIST_PAGE_SIZE * (page - 1) + index
+      );
+      if (ids.has(board.id) || names.has(board.name)) {
+        throw new Error(
+          'Xiaohongshu board/user returned duplicate board id or name on page ' + page
+        );
+      }
+      ids.add(board.id);
+      names.add(board.name);
+      boards.push(board);
+    }
+    if (page === pageCount) break;
+  }
+
+  if (boards.length !== declaredTotal) {
+    throw new Error(
+      'Xiaohongshu board/user complete count mismatch: expected ' +
+      declaredTotal + ', got ' + boards.length
+    );
+  }
+  return { boardCount: declaredTotal, pageCount, boards };
 }
 '''.strip()
 
@@ -644,6 +737,16 @@ def filter_classification_for_resume(classification: List[Dict[str, Any]], previ
 
 
 def merge_report_chunk(report: Dict[str, Any], chunk: Dict[str, Any]) -> None:
+    for key in ('board_list_count', 'board_list_page_count'):
+        if key not in chunk:
+            continue
+        previous = report.get(key)
+        current = chunk[key]
+        if previous is not None and previous != current:
+            raise RuntimeError(
+                f'{key} changed between move batches: expected {previous}, got {current}'
+            )
+        report[key] = current
     report.setdefault('processed', []).extend(chunk.get('processed', []))
     report.setdefault('errors', []).extend(chunk.get('errors', []))
     missing = report.get('missing_boards')
@@ -669,7 +772,7 @@ def append_classification_preview(
     if item.get('excluded') or item.get('exclude_reason'):
         status = 'skipped'
         events = ['skip:existing_board_excluded', 'preview:no_account_changes', 'preflight:not_run']
-        error = item.get('exclude_reason') or 'user_kept_existing_boards'
+        error = item.get('exclude_reason') or 'existing_board_member_protected'
     elif not item['id']:
         status = 'failed'
         error = 'missing note id'
@@ -690,6 +793,7 @@ def append_classification_preview(
         'source_board': item.get('source_board', ''),
         'source_board_id': item.get('source_board_id', ''),
         'membership_state': 'not_checked',
+        'archive_lifecycle_state': 'not_checked',
         'source_lists': item.get('source_lists', []),
         'source_primary': item.get('source_primary', ''),
         'exclude_reason': item.get('exclude_reason', ''),
@@ -827,8 +931,7 @@ def prepare_write_preflight(
     required_targets = set()
     missing_targets = set()
     membership_counts = {
-        'already_in_target': 0,
-        'in_other_board': 0,
+        'existing_board_member_protected': 0,
         'not_in_any_board': 0,
         'needs_review': 0,
         'excluded': 0,
@@ -836,6 +939,32 @@ def prepare_write_preflight(
     for index, item in enumerate(classification):
         resolved = dict(item)
         resolved['membership_state'] = 'not_required'
+        resolved['archive_lifecycle_state'] = 'not_required'
+        note_id = str(item.get('id') or '').strip()
+        if NOTE_ID_RE.fullmatch(note_id):
+            unique_refs = {
+                (ref['board_id'], ref['board_name'])
+                for ref in membership.get(note_id, [])
+            }
+            if unique_refs:
+                sorted_refs = sorted(unique_refs)
+                resolved['membership_state'] = 'existing_board_member_protected'
+                resolved['archive_lifecycle_state'] = 'first_archive_confirmed'
+                resolved['excluded'] = True
+                resolved['exclude_reason'] = 'existing_board_member_protected'
+                resolved['source_board'] = ' | '.join(ref[1] for ref in sorted_refs)
+                resolved['source_board_id'] = (
+                    sorted_refs[0][0] if len(sorted_refs) == 1 else ''
+                )
+                membership_counts['existing_board_member_protected'] += 1
+                resolved_items.append(resolved)
+                continue
+            resolved['membership_state'] = 'not_in_any_board'
+            resolved['archive_lifecycle_state'] = 'first_archive_pending'
+            resolved['source_board'] = ''
+            resolved['source_board_id'] = ''
+            membership_counts['not_in_any_board'] += 1
+
         actionable = all([
             not item.get('excluded'),
             not item.get('exclude_reason'),
@@ -848,9 +977,7 @@ def prepare_write_preflight(
             resolved_items.append(resolved)
             continue
 
-        note_id = str(item.get('id') or '').strip()
         target_board = str(item.get('target_board') or '').strip()
-        required_targets.add(target_board)
         if not NOTE_ID_RE.fullmatch(note_id):
             blockers.append(f'invalid_note_id:{index}')
             resolved_items.append(resolved)
@@ -860,46 +987,15 @@ def prepare_write_preflight(
             allow_planned_board_creation and target_board in planned_board_names
         )
         if target_is_planned:
-            resolved['membership_state'] = 'target_board_planned'
-            resolved['source_board'] = ''
-            resolved['source_board_id'] = ''
-            membership_counts['not_in_any_board'] += 1
+            resolved['target_board_state'] = 'planned'
+            required_targets.add(target_board)
             resolved_items.append(resolved)
             continue
         if not target or target_board not in confirmed_boards or target_board in declared_missing:
             missing_targets.add(target_board)
             resolved_items.append(resolved)
             continue
-
-        refs = membership.get(note_id, [])
-        unique_refs = {
-            (ref['board_id'], ref['board_name'])
-            for ref in refs
-        }
-        if len(unique_refs) > 1:
-            blockers.append(f'ambiguous_membership:{note_id}')
-            resolved['membership_state'] = 'ambiguous'
-            resolved_items.append(resolved)
-            continue
-        if not unique_refs:
-            resolved['membership_state'] = 'not_in_any_board'
-            resolved['source_board'] = ''
-            resolved['source_board_id'] = ''
-            membership_counts['not_in_any_board'] += 1
-        else:
-            source_board_id, source_board_name = next(iter(unique_refs))
-            if source_board_id == target['id']:
-                resolved['membership_state'] = 'already_in_target'
-                resolved['excluded'] = True
-                resolved['exclude_reason'] = 'already_in_target'
-                resolved['source_board'] = source_board_name
-                resolved['source_board_id'] = source_board_id
-                membership_counts['already_in_target'] += 1
-            else:
-                resolved['membership_state'] = 'in_other_board'
-                resolved['source_board'] = source_board_name
-                resolved['source_board_id'] = source_board_id
-                membership_counts['in_other_board'] += 1
+        required_targets.add(target_board)
         resolved_items.append(resolved)
 
     for target in sorted(required_targets):
@@ -1092,7 +1188,7 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
     if item.get('excluded') or item.get('exclude_reason'):
         status = 'skipped'
         events = ['skip:existing_board_excluded', 'dry_run:no_account_changes']
-        error = item.get('exclude_reason') or 'user_kept_existing_boards'
+        error = item.get('exclude_reason') or 'existing_board_member_protected'
     elif not item['id']:
         status = 'failed'
         error = 'missing note id'
@@ -1113,6 +1209,7 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
         'source_board': item.get('source_board', ''),
         'source_board_id': item.get('source_board_id', ''),
         'membership_state': item.get('membership_state', ''),
+        'archive_lifecycle_state': item.get('archive_lifecycle_state', ''),
         'source_lists': item.get('source_lists', []),
         'source_primary': item.get('source_primary', ''),
         'exclude_reason': item.get('exclude_reason', ''),
@@ -1219,52 +1316,6 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
     }
   }
 
-  function normalizeBoard(board) {
-    const id = textOf(board.id || board.boardId || board.board_id);
-    const name = textOf(board.name || board.title);
-    const totalRaw = board.total ?? board.noteCount ?? board.note_count ?? board.notesCount;
-    const total = Number.isFinite(Number(totalRaw)) ? Number(totalRaw) : null;
-    return { id, name, total };
-  }
-
-  function flattenBoards(value, out) {
-    if (!value) return;
-    if (Array.isArray(value)) {
-      value.forEach((entry) => flattenBoards(entry, out));
-      return;
-    }
-    if (typeof value !== 'object') return;
-    const maybe = normalizeBoard(value);
-    if (maybe.id && maybe.name) out.push(maybe);
-    for (const key of ['boards', 'list', 'items']) {
-      if (Array.isArray(value[key])) flattenBoards(value[key], out);
-    }
-    if (value.data && typeof value.data === 'object') flattenBoards(value.data, out);
-  }
-
-  function uniqueBoards(boards) {
-    const seen = new Set();
-    const result = [];
-    for (const board of boards) {
-      const key = board.id + '|' + board.name;
-      if (!seen.has(key)) {
-        seen.add(key);
-        result.push(board);
-      }
-    }
-    return result;
-  }
-
-  function boardsFromInitialState() {
-    const out = [];
-    const state = window.__INITIAL_STATE__;
-    const data = state && state.board && state.board.boardListData;
-    if (data && typeof data === 'object') {
-      Object.keys(data).forEach((key) => flattenBoards(data[key], out));
-    }
-    return uniqueBoards(out);
-  }
-
   function exposeRspackRequire() {
     const chunk = window.webpackChunkxhs_pc_web;
     if (!chunk || typeof chunk.push !== 'function') {
@@ -1280,17 +1331,9 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
 
   LIVE_API_RESOLVER_JS
 
-  async function boardsFromApi(api) {
-    if (!payload.userId || typeof api.yC !== 'function') return [];
-    const response = await api.yC({ params: { userId: payload.userId, num: 100, page: 1 } });
-    const out = [];
-    flattenBoards(response, out);
-    return uniqueBoards(out);
-  }
+  BOARD_LIST_PAGINATION_JS
 
   BOARD_VERIFICATION_JS
-
-  BOARD_TRANSACTION_JS
 
   async function run() {
     const location = String(window.location.href || '');
@@ -1302,8 +1345,11 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
     }
     const req = exposeRspackRequire();
     const api = findApi(req);
-    let boards = boardsFromInitialState();
-    if (!boards.length) boards = await boardsFromApi(api);
+    const boardInventory = await loadAllBoardsStrict(api, payload.userId, () => {
+      assertNoSecurityChallenge();
+      assertExpectedExecutePage();
+    });
+    const boards = boardInventory.boards;
     if (!boards.length) throw new Error('no boards found; open your Xiaohongshu profile/favorites page first');
     const boardByName = {};
     for (const board of boards) boardByName[board.name] = board;
@@ -1327,13 +1373,26 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
         verified: false,
         source_board: item.source_board || '',
         source_board_id: item.source_board_id || '',
+        membership_state: item.membership_state || '',
+        archive_lifecycle_state: item.archive_lifecycle_state || '',
         exclude_reason: item.exclude_reason || ''
       };
       try {
         if (item.excluded || item.exclude_reason) {
           row.status = 'skipped';
-          row.error = item.exclude_reason || 'user_kept_existing_boards';
+          row.error = item.exclude_reason || 'existing_board_member_protected';
           events.push('skip:existing_board_excluded');
+          processed.push(row);
+          continue;
+        }
+        if (
+          item.membership_state !== 'not_in_any_board'
+          || item.source_board_id
+          || item.archive_lifecycle_state !== 'first_archive_pending'
+        ) {
+          row.status = 'skipped';
+          row.error = 'first_archive_not_eligible';
+          events.push('skip:first_archive_not_eligible');
           processed.push(row);
           continue;
         }
@@ -1364,33 +1423,13 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
         }
         if (board.total !== null) boardCountsBefore[board.name] = board.total;
         events.push('board:FOUND:' + board.name);
-        const useCrossBoardTransaction = Boolean(item.source_board_id) &&
-          item.source_board_id !== board.id;
-        let snapshot;
-        if (useCrossBoardTransaction) {
-          const assertTransactionSafe = function(error) {
-            assertNoSecurityChallenge(error);
-            assertExpectedExecutePage();
-          };
-          const transaction = await moveAcrossBoardsTransaction(
-            api,
-            item.id,
-            item.source_board_id,
-            board.id,
-            payload.verifyPages,
-            events,
-            assertTransactionSafe
-          );
-          snapshot = transaction.targetSnapshot;
-        } else {
-          assertNoSecurityChallenge();
-          assertExpectedExecutePage();
-          await api.d0({ targetBoardId: board.id, notesId: item.id });
-          assertNoSecurityChallenge();
-          assertExpectedExecutePage();
-          events.push('note_move:CALLED');
-          snapshot = await boardSnapshot(api, board.id, payload.verifyPages, assertNoSecurityChallenge);
-        }
+        assertNoSecurityChallenge();
+        assertExpectedExecutePage();
+        await api.d0({ targetBoardId: board.id, notesId: item.id });
+        assertNoSecurityChallenge();
+        assertExpectedExecutePage();
+        events.push('note_move:CALLED');
+        const snapshot = await boardSnapshot(api, board.id, payload.verifyPages, assertNoSecurityChallenge);
         boardCountsAfter[board.name] = snapshot.accessibleTotal;
         boardCountChecks[board.name] = {
           declared_total: snapshot.declaredTotal,
@@ -1402,7 +1441,9 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
         if (snapshot.noteIds.includes(item.id)) {
           row.status = 'success';
           row.verified = true;
+          row.archive_lifecycle_state = 'first_archive_confirmed';
           events.push('verify:note_present');
+          events.push('archive:first_confirmed');
         } else {
           row.status = 'verification_failed';
           row.error = 'note not found in target board after move';
@@ -1411,14 +1452,6 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
         }
         processed.push(row);
       } catch (error) {
-        if (error && error.name === 'HighRiskStateUncertainError') {
-          row.status = 'failed';
-          row.error = error.message;
-          events.push('error:' + row.error);
-          processed.push(row);
-          errors.push(row);
-          break;
-        }
         if (error && (error.name === 'SecurityChallengeError' || error.name === 'ExecutePageBindingError')) throw error;
         assertNoSecurityChallenge(error);
         row.status = 'failed';
@@ -1432,6 +1465,8 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
       processed,
       errors,
       missing_boards: missingBoards,
+      board_list_count: boardInventory.boardCount,
+      board_list_page_count: boardInventory.pageCount,
       board_counts_before: boardCountsBefore,
       board_counts_after: boardCountsAfter,
       board_count_checks: boardCountChecks
@@ -1456,8 +1491,8 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
     return (
         browser_job
         .replace('LIVE_API_RESOLVER_JS', LIVE_API_RESOLVER_JS)
+        .replace('BOARD_LIST_PAGINATION_JS', BOARD_LIST_PAGINATION_JS)
         .replace('BOARD_VERIFICATION_JS', BOARD_VERIFICATION_JS)
-        .replace('BOARD_TRANSACTION_JS', BOARD_TRANSACTION_JS)
         .replace('PAYLOAD_JSON', json.dumps(payload, ensure_ascii=False))
     )
 
@@ -1518,6 +1553,8 @@ def record_security_halt(
             'verified': False,
             'source_board': (item or {}).get('source_board') or '',
             'source_board_id': (item or {}).get('source_board_id') or '',
+            'membership_state': (item or {}).get('membership_state') or '',
+            'archive_lifecycle_state': (item or {}).get('archive_lifecycle_state') or '',
         }
         report.setdefault('processed', []).append(row)
     else:
@@ -1553,7 +1590,9 @@ def is_ready_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
     return all((
         not item.get('excluded'),
         not item.get('exclude_reason'),
-        item.get('membership_state') != 'already_in_target',
+        item.get('membership_state') == 'not_in_any_board',
+        item.get('archive_lifecycle_state') == 'first_archive_pending',
+        not bool(str(item.get('source_board_id') or '').strip()),
         bool(str(item.get('id') or '').strip()),
         bool(str(item.get('target_board') or '').strip()),
         item.get('confidence') != 'low' or allow_low_confidence,
@@ -1670,6 +1709,8 @@ def apply_batch(
                     'verified': False,
                     'source_board': item.get('source_board') or '',
                     'source_board_id': item.get('source_board_id') or '',
+                    'membership_state': item.get('membership_state') or '',
+                    'archive_lifecycle_state': item.get('archive_lifecycle_state') or '',
                     'source_lists': item.get('source_lists', []),
                     'source_primary': item.get('source_primary', ''),
                     'exclude_reason': item.get('exclude_reason', ''),
@@ -1714,7 +1755,7 @@ def apply_batch(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='在专辑与成员关系硬闸门通过后，批量移动小红书收藏。无闸门证据时只输出分类预览。')
+    parser = argparse.ArgumentParser(description='只把当前不属于任何专辑的小红书笔记完成首次归档；回读确认后才锁定保护。无闸门证据时只输出分类预览。')
     parser.add_argument('classification', help='classification.json 路径')
     parser.add_argument('report', nargs='?', default='run_report.json', help='run_report.json 输出路径')
     parser.add_argument('--execute', action='store_true', help='真实移动收藏；不传则只生成计划')
@@ -1740,6 +1781,7 @@ def main() -> None:
     parser.add_argument('--board-snapshot', default='', help='capture_board_snapshot.py 生成的只读全专辑快照；与 --created-boards 同时提供后才生成可执行 dry-run')
     parser.add_argument('--created-boards', default='', help='build_created_boards.py 生成的目标专辑核验结果；与 --board-snapshot 同时提供')
     parser.add_argument('--allow-planned-board-creation', action='store_true', help='仅供受信 WorkBuddy dry-run：允许审批证据中声明待创建专辑')
+    parser.add_argument('--collection-scope', default='', help='可选 collection_scope.json；提供时强制校验完整分类范围及专辑快照页面绑定')
     args = parser.parse_args()
 
     if args.execute and is_workbuddy_host():
@@ -1753,6 +1795,9 @@ def main() -> None:
         )
 
     classification = normalize_classification(load_json(args.classification))
+    scope_path = str(args.collection_scope or '').strip()
+    if scope_path:
+        validate_scope_input(scope_path, classification, stage='归档分类输入')
     has_snapshot = bool(str(args.board_snapshot or '').strip())
     has_created_boards = bool(str(args.created_boards or '').strip())
     has_preflight_inputs = has_snapshot and has_created_boards
@@ -1772,9 +1817,12 @@ def main() -> None:
     if has_preflight_inputs:
         snapshot_path = Path(args.board_snapshot)
         created_boards_path = Path(args.created_boards)
+        snapshot_data = load_json(str(snapshot_path))
+        if scope_path:
+            validate_scope_snapshot(scope_path, snapshot_data)
         preflight = prepare_write_preflight(
             classification,
-            load_json(str(snapshot_path)),
+            snapshot_data,
             load_json(str(created_boards_path)),
             allow_low_confidence=args.allow_low_confidence,
             allow_planned_board_creation=args.allow_planned_board_creation,
@@ -1786,6 +1834,9 @@ def main() -> None:
         report['created_boards'] = str(created_boards_path)
         report['created_boards_sha256'] = sha256_file(created_boards_path)
         report['classification_sha256'] = sha256_file(Path(args.classification))
+        if scope_path:
+            report['collection_scope'] = scope_path
+            report['collection_scope_sha256'] = sha256_file(Path(scope_path))
         if report['blockers']:
             report['mode'] = 'execute_blocked' if args.execute else 'dry_run_blocked'
             report['finished_at'] = utc_now()

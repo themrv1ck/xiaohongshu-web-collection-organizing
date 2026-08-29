@@ -2654,14 +2654,18 @@ def capture_evidence_summary(evidence: Dict[str, Any]) -> Dict[str, Any]:
 
 def workbuddy_classification_inputs(
     evidence: Dict[str, Any],
+    protected_note_ids: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Return the complete model input without URLs, paths, or credentials."""
+    """Return only unassigned model inputs, without URLs, paths, or credentials."""
+    protected = protected_note_ids or set()
     safe_keys = (
         'id', 'title', 'user', 'desc', 'tags', 'card_text',
         'source_lists', 'source_primary', 'first_seen', 'page_index',
     )
     result: List[Dict[str, Any]] = []
     for note_id in evidence['visible_ids']:
+        if note_id in protected:
+            continue
         source = evidence.get('image_by_id', {}).get(
             note_id,
             evidence['visible_by_id'][note_id],
@@ -2788,6 +2792,7 @@ def approval_basis(
             'target_board': str(row.get('target_board') or ''),
             'source_board_id': str(row.get('source_board_id') or ''),
             'membership_state': str(row.get('membership_state') or ''),
+            'archive_lifecycle_state': str(row.get('archive_lifecycle_state') or ''),
             'status': str(row.get('status') or ''),
         }
         for row in report.get('processed', [])
@@ -2846,6 +2851,15 @@ def validate_workbuddy_snapshot_binding(
         raise RuntimeError(
             'board_snapshot.json 与本次 WorkBuddy 账号、页面或 verify_pages 绑定不一致。'
         )
+    validation = snapshot.get('validation')
+    if (
+        not isinstance(validation, dict)
+        or validation.get('pagination_cursor_invariants_passed') is not True
+        or validation.get('board_names_unique') is not True
+        or bool(validation.get('within_board_duplicates'))
+        or validation.get('full_membership_complete') is not True
+    ):
+        raise RuntimeError('board_snapshot.json 未证明全部专辑成员完整可读。')
     boards = snapshot.get('boards')
     if not isinstance(boards, list):
         raise RuntimeError('board_snapshot.json 的 boards 必须是数组。')
@@ -2862,11 +2876,36 @@ def validate_workbuddy_snapshot_binding(
     return names
 
 
+def snapshot_existing_note_to_board(snapshot: Any) -> Dict[str, str]:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get('boards'), list):
+        raise RuntimeError('board_snapshot.json 缺少完整专辑成员。')
+    note_to_boards: Dict[str, List[str]] = {}
+    for index, board in enumerate(snapshot['boards']):
+        if not isinstance(board, dict):
+            raise RuntimeError(f'board_snapshot.json 的 boards[{index}] 必须是对象。')
+        board_name = str(board.get('name') or '').strip()
+        note_ids = board.get('note_ids')
+        if not board_name or not isinstance(note_ids, list):
+            raise RuntimeError(f'board_snapshot.json 的 boards[{index}] 缺少名称或成员。')
+        for value in note_ids:
+            note_id = str(value or '').strip()
+            if not note_id:
+                raise RuntimeError(f'board_snapshot.json 的 boards[{index}] 包含空笔记 ID。')
+            board_names = note_to_boards.setdefault(note_id, [])
+            if board_name not in board_names:
+                board_names.append(board_name)
+    return {
+        note_id: ' | '.join(sorted(board_names))
+        for note_id, board_names in note_to_boards.items()
+    }
+
+
 def write_workbuddy_classification(
     directory: Path,
     classification_rows: Any,
     allowed_boards: List[str],
     content_evidence: Optional[Dict[str, Any]] = None,
+    protected_note_to_board: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Validate model classifications against the real capture and persist them."""
     directory = Path(directory)
@@ -2887,6 +2926,7 @@ def write_workbuddy_classification(
         visible_by_id[note_id] = item
         visible_order.append(note_id)
 
+    protected_note_to_board = protected_note_to_board or {}
     if not isinstance(classification_rows, list):
         raise RuntimeError('classification 必须是数组。')
     allowed_board_set = set(allowed_boards)
@@ -2897,10 +2937,15 @@ def write_workbuddy_classification(
         note_id = str(row.get('id') or '').strip()
         if note_id not in visible_by_id:
             raise RuntimeError(f'分类 ID 不属于本次抓取：{note_id or "<empty>"}')
+        if note_id in protected_note_to_board:
+            raise RuntimeError(f'分类包含已归档保护笔记：{note_id}')
         if note_id in supplied:
             raise RuntimeError(f'classification 包含重复 ID：{note_id}')
         supplied[note_id] = row
-    missing_ids = [note_id for note_id in visible_order if note_id not in supplied]
+    missing_ids = [
+        note_id for note_id in visible_order
+        if note_id not in protected_note_to_board and note_id not in supplied
+    ]
     if missing_ids:
         raise RuntimeError(
             f'classification 未覆盖本次抓取的 {len(missing_ids)} 条笔记。'
@@ -2910,7 +2955,8 @@ def write_workbuddy_classification(
     normalized: List[Dict[str, Any]] = []
     for note_id in visible_order:
         source = visible_by_id[note_id]
-        proposal = supplied[note_id]
+        protected_source_board = protected_note_to_board.get(note_id, '')
+        proposal = supplied.get(note_id) or {}
         target = str(proposal.get('target_board') or '').strip()
         if target and target not in allowed_board_set:
             raise RuntimeError(
@@ -2947,7 +2993,17 @@ def write_workbuddy_classification(
             if key in evidence_source
         }
         ocr_entry = evidence.get('ocr_by_id', {}).get(note_id)
-        if evidence.get('image_ocr_enabled') and content_type == 'image':
+        if protected_source_board:
+            ocr_fields = {
+                'ocr_status': 'skipped_archived',
+                'ocr_text': '',
+                'ocr_confidence': None,
+                'ocr_run_fingerprint': '',
+                'ocr_image_count': 0,
+                'ocr_image_set_complete': False,
+                'ocr_image_evidence': [],
+            }
+        elif evidence.get('image_ocr_enabled') and content_type == 'image':
             ocr_images = [
                 {
                     'image_index': image.get('image_index'),
@@ -2992,14 +3048,31 @@ def write_workbuddy_classification(
             'reason': _redact_model_value(reason),
             'review_state': redact_sensitive_text(review_state),
             'classification_basis': (
-                'workbuddy_authenticated_frontend_ocr'
+                'existing_board_membership_snapshot'
+                if protected_source_board
+                else 'workbuddy_authenticated_frontend_ocr'
                 if evidence.get('image_ocr_enabled') and content_type == 'image'
                 else 'workbuddy_metadata'
             ),
             'main_topic': redact_sensitive_text(proposal.get('main_topic')),
             'content_summary': redact_sensitive_text(proposal.get('content_summary')),
+            'archive_lifecycle_state': (
+                'first_archive_confirmed'
+                if protected_source_board
+                else 'first_archive_pending'
+            ),
         })
         row.update(ocr_fields)
+        if protected_source_board:
+            row.update({
+                'target_board': '',
+                'confidence': 'low',
+                'reason': ['existing_board_member_protected'],
+                'review_state': 'existing_board_member_protected',
+                'excluded': True,
+                'exclude_reason': 'existing_board_member_protected',
+                'source_board': protected_source_board,
+            })
         normalized.append(row)
 
     taxonomy_path = directory / 'board_taxonomy.json'
@@ -3088,13 +3161,18 @@ def prepare_action(
             '--safety-state', str(safety),
             '--url', checked_url,
         ])
+        snapshot_payload = load_json(snapshot)
         existing_board_names = validate_workbuddy_snapshot_binding(
-            load_json(snapshot),
+            snapshot_payload,
             user_id,
             expected,
             verify_pages,
         )
-        classification_inputs = workbuddy_classification_inputs(content_evidence)
+        protected_note_to_board = snapshot_existing_note_to_board(snapshot_payload)
+        classification_inputs = workbuddy_classification_inputs(
+            content_evidence,
+            set(protected_note_to_board),
+        )
         return {
             'ok': True,
             'phase': 'board_inventory',
@@ -3108,6 +3186,9 @@ def prepare_action(
             'board_creation_available': True,
             'classification_input_count': len(classification_inputs),
             'classification_inputs': classification_inputs,
+            'protected_existing_board_member_count': len(
+                set(content_evidence['visible_ids']) & set(protected_note_to_board)
+            ),
             'verify_pages': verify_pages,
             'ready_for_execute': False,
             'blockers': [],
@@ -3125,8 +3206,9 @@ def prepare_action(
         raise RuntimeError(
             '缺少本次只读专辑清单；必须先调用不带 classification 的 prepare。'
         )
+    snapshot_payload = load_json(snapshot)
     existing_board_names = validate_workbuddy_snapshot_binding(
-        load_json(snapshot),
+        snapshot_payload,
         user_id,
         expected,
         verify_pages,
@@ -3148,6 +3230,7 @@ def prepare_action(
         classification_rows,
         allowed_board_names,
         content_evidence,
+        snapshot_existing_note_to_board(snapshot_payload),
     )
     used_targets = set(classification_context['taxonomy'])
     unused_plans = [
@@ -3411,6 +3494,7 @@ def execute_action(
             'target_board': str(row.get('target_board') or ''),
             'source_board_id': str(row.get('source_board_id') or ''),
             'membership_state': str(row.get('membership_state') or ''),
+            'archive_lifecycle_state': str(row.get('archive_lifecycle_state') or ''),
             'status': str(row.get('status') or ''),
         }
         for row in report.get('processed', [])

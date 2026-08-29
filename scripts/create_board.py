@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from run_reassign_batch import (
+    BOARD_LIST_PAGINATION_JS,
     BOARD_VERIFICATION_JS,
     LIVE_API_RESOLVER_JS,
     BrowserRunner,
@@ -94,6 +95,8 @@ def build_create_board_job(args: argparse.Namespace) -> str:
 
   LIVE_API_RESOLVER_JS
 
+  BOARD_LIST_PAGINATION_JS
+
   BOARD_VERIFICATION_JS
 
   function hasExactStringLiteral(source, value) {
@@ -127,39 +130,6 @@ def build_create_board_job(args: argparse.Namespace) -> str:
     return matches[0];
   }
 
-  function parseUserBoards(response) {
-    if (!response || typeof response !== 'object' || Array.isArray(response)) {
-      throw new Error('Xiaohongshu board/user response must be an object');
-    }
-    const rawBoards = response.boards == null ? [] : response.boards;
-    if (!Array.isArray(rawBoards)) {
-      throw new Error('Xiaohongshu board/user response.boards must be an array');
-    }
-    const boardCount = response.boardCount == null ? rawBoards.length : response.boardCount;
-    if (!Number.isSafeInteger(boardCount) || boardCount < 0) {
-      throw new Error('Xiaohongshu board/user response.boardCount must be a non-negative integer');
-    }
-    if (rawBoards.length !== boardCount) {
-      throw new Error('Xiaohongshu board/user response.boards must match boardCount');
-    }
-    const ids = new Set();
-    const names = new Set();
-    const boards = rawBoards.map((board, index) => {
-      const id = board && typeof board.id === 'string' ? board.id.trim() : '';
-      const name = board && typeof board.name === 'string' ? board.name.trim() : '';
-      if (!/^[0-9a-f]{24}$/i.test(id) || !name) {
-        throw new Error('Xiaohongshu board/user board id/name contract failed at index ' + index);
-      }
-      if (ids.has(id) || names.has(name)) {
-        throw new Error('Xiaohongshu board/user returned duplicate board id or name');
-      }
-      ids.add(id);
-      names.add(name);
-      return { id, name, privacy: board.privacy };
-    });
-    return { boardCount, boards };
-  }
-
   function assertOldBoardsUnchanged(before, after) {
     const afterById = new Map(after.boards.map((board) => [board.id, board]));
     for (const board of before.boards) {
@@ -171,10 +141,7 @@ def build_create_board_job(args: argparse.Namespace) -> str:
   }
 
   async function loadBoards(api) {
-    const response = await api.yC({
-      params: { userId: payload.userId, num: 100, page: 1 }
-    });
-    return parseUserBoards(response);
+    return loadAllBoardsStrict(api, payload.userId, assertContext);
   }
 
   async function run() {
@@ -305,6 +272,7 @@ def build_create_board_job(args: argparse.Namespace) -> str:
     return (
         job
         .replace('LIVE_API_RESOLVER_JS', LIVE_API_RESOLVER_JS)
+        .replace('BOARD_LIST_PAGINATION_JS', BOARD_LIST_PAGINATION_JS)
         .replace('BOARD_VERIFICATION_JS', BOARD_VERIFICATION_JS)
         .replace('PAYLOAD_JSON', json.dumps(payload, ensure_ascii=False))
     )

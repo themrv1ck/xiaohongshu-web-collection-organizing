@@ -32,7 +32,7 @@ let evidenceLedger;
 
 const RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
 const APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-const PLUGIN_VERSION = '2.0.7';
+const PLUGIN_VERSION = '2.1.0';
 const MCP_LAUNCH_KEY_FD = 3;
 const MCP_EXECUTE_READY_FD = 4;
 const MCP_EXECUTE_COMMIT_FD = 5;
@@ -515,7 +515,7 @@ server.registerTool(
   {
     title: '生成真实专辑证据与硬闸门 dry-run',
     description:
-      '两阶段固定入口：第一次只读返回真实已有专辑和完整 classification_inputs；第二次提交覆盖全部真实 ID 的 classification。若需新专辑，同时提交仅依据本次内容生成的 proposed_board_names 与明确的公开或私密设置；专辑创建和逐条移动合并为一次用户确认并写入 approval_digest。两阶段 receipt 均由 WorkBuddy 自动传递，用户无需处理。',
+      '两阶段固定入口：第一次只读返回真实已有专辑，并只把当前不属于任何专辑的笔记放入 classification_inputs；这些笔记完成首次归档并回读确认后才进入永久保护，当前已有专辑成员视为已完成首次归档。第二次提交必须精确覆盖 classification_inputs，禁止补回受保护 ID。若需新专辑，同时提交仅依据本次内容生成的 proposed_board_names 与明确的公开或私密设置；专辑创建和逐条移动合并为一次用户确认并写入 approval_digest。两阶段 receipt 均由 WorkBuddy 自动传递，用户无需处理。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合授权只读核验此页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
@@ -536,7 +536,9 @@ server.registerTool(
         review_state: z.string().default(''),
         main_topic: z.string().default(''),
         content_summary: z.string().default(''),
-      })).optional(),
+      })).optional().describe(
+        '第二阶段必须精确覆盖第一次返回的 classification_inputs；不得包含任何已有专辑成员',
+      ),
       proposed_board_names: z.array(z.string().min(1)).max(20).optional().describe(
         '仅依据本次 classification_inputs 提议的新专辑名称；不得使用插件预设类别',
       ),

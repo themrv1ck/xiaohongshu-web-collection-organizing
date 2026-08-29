@@ -209,6 +209,22 @@ def osascript(script: str, timeout: int = 10) -> str:
     return res.stdout.strip()
 
 
+def jxa_osascript(script: str, timeout: int = 10) -> str:
+    """Run a JXA script without asking macOS to launch Arc implicitly."""
+    try:
+        res = subprocess.run(
+            ['osascript', '-l', 'JavaScript', '-e', script],
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f'Arc JXA 脚本在 {timeout} 秒内没有返回') from exc
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or res.stdout.strip())
+    return res.stdout.strip()
+
+
 def require_macos_app_running(process_name: str) -> None:
     result = subprocess.run(['pgrep', '-x', process_name], text=True, capture_output=True)
     if result.returncode != 0:
@@ -289,64 +305,62 @@ def arc_js_macos(
             '(function() {\n'
             f'  if (window.name !== {json.dumps(marker, ensure_ascii=False)}) '
             'throw new Error("Arc tab runtime marker mismatch");\n'
-            '  return (\n'
-            f'{js}\n'
-            '  );\n'
+            f'  return eval({json.dumps(js, ensure_ascii=False)});\n'
             '})()'
         )
+        # Arc's live AppleScript `windows` collection can become an invalid
+        # specifier while a virtualized page is materializing.  JXA indexes
+        # the already-open window and tab by their immutable ids instead.
+        script = (
+            'const app = Application("Arc");\n'
+            f'const expectedWindowId = {json.dumps(target_window_id, ensure_ascii=False)};\n'
+            f'const expectedTabId = {json.dumps(target_tab_id, ensure_ascii=False)};\n'
+            f'const expectedURLPart = {json.dumps(expected_url, ensure_ascii=False)};\n'
+            'let targetWindow = null;\n'
+            'for (let index = 0; index < app.windows.length; index += 1) {\n'
+            '  const candidate = app.windows[index];\n'
+            '  if (candidate.id() === expectedWindowId) { targetWindow = candidate; break; }\n'
+            '}\n'
+            'if (!targetWindow) throw new Error("Arc 中未找到符合 window id 定位器的窗口");\n'
+            'let targetTab = null;\n'
+            'for (let index = 0; index < targetWindow.tabs.length; index += 1) {\n'
+            '  const candidate = targetWindow.tabs[index];\n'
+            '  if (candidate.id() === expectedTabId) { targetTab = candidate; break; }\n'
+            '}\n'
+            'if (!targetTab) throw new Error("Arc 中未找到符合 tab id 定位器的标签页");\n'
+            'const targetURL = targetTab.url();\n'
+            'if (!targetURL.includes("xiaohongshu.com") || !targetURL.includes(expectedURLPart)) {\n'
+            '  throw new Error("Arc 工作标签页 URL 不再匹配");\n'
+            '}\n'
+            f'const jsSource = {json.dumps(js_source, ensure_ascii=False)};\n'
+            'app.execute(targetTab, {javascript: jsSource});\n'
+        )
+        return jxa_osascript(script)
     with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8', delete=False) as fh:
         fh.write(js_source)
         js_path = fh.name
     try:
-        if marker:
-            script = (
-                f'set jsSource to read POSIX file {json.dumps(js_path)} as «class utf8»\n'
-                f'set expectedWindowId to {json.dumps(target_window_id)}\n'
-                f'set expectedTabId to {json.dumps(target_tab_id)}\n'
-                f'set expectedURLPart to {json.dumps(expected_url)}\n'
-                'tell application "Arc"\n'
-                'set targetTab to missing value\n'
-                'set matchCount to 0\n'
-                'repeat with w in windows\n'
-                'repeat with t in tabs of w\n'
-                'try\n'
-                'set targetURL to URL of t as text\n'
-                'set currentWindowId to id of w as text\n'
-                'set currentTabId to id of t as text\n'
-                'if (currentWindowId is equal to expectedWindowId) and (currentTabId is equal to expectedTabId) and (targetURL contains "xiaohongshu.com") and (targetURL contains expectedURLPart) then\n'
-                'set matchCount to matchCount + 1\n'
-                'if matchCount is 1 then set targetTab to t\n'
-                'end if\n'
-                'end try\n'
-                'end repeat\n'
-                'end repeat\n'
-                'if matchCount is 0 then error "Arc 中未找到符合 window/tab/URL 定位器的小红书标签页"\n'
-                'if matchCount is greater than 1 then error "Arc 中找到多个符合 window/tab/URL 定位器的标签页"\n'
-                'return execute targetTab javascript jsSource\n'
-                'end tell\n'
-            )
-        else:
-            # Read-only collection extraction keeps its established behavior.
-            # Account-changing callers must supply a unique marker explicitly.
-            script = (
-                f'set jsSource to read POSIX file {json.dumps(js_path)} as «class utf8»\n'
-                'tell application "Arc"\n'
-                'set targetTab to missing value\n'
-                'repeat with w in windows\n'
-                'repeat with t in tabs of w\n'
-                'try\n'
-                'if (URL of t as text) contains "xiaohongshu.com" then\n'
-                'set targetTab to t\n'
-                'exit repeat\n'
-                'end if\n'
-                'end try\n'
-                'end repeat\n'
-                'if targetTab is not missing value then exit repeat\n'
-                'end repeat\n'
-                'if targetTab is missing value then error "未找到 Arc 小红书标签页"\n'
-                'return execute targetTab javascript jsSource\n'
-                'end tell\n'
-            )
+        # Read-only collection extraction keeps its established behavior.
+        # Account-changing callers must supply a unique marker explicitly.
+        script = (
+            f'set jsSource to read POSIX file {json.dumps(js_path)} as «class utf8»\n'
+            'tell application "Arc"\n'
+            'set targetTab to missing value\n'
+            'repeat with w in windows\n'
+            'repeat with t in tabs of w\n'
+            'try\n'
+            'if (URL of t as text) contains "xiaohongshu.com" then\n'
+            'set targetTab to t\n'
+            'exit repeat\n'
+            'end if\n'
+            'end try\n'
+            'end repeat\n'
+            'if targetTab is not missing value then exit repeat\n'
+            'end repeat\n'
+            'if targetTab is missing value then error "未找到 Arc 小红书标签页"\n'
+            'return execute targetTab javascript jsSource\n'
+            'end tell\n'
+        )
         return osascript(script)
     finally:
         Path(js_path).unlink(missing_ok=True)

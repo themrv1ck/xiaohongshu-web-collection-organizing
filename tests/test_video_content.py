@@ -27,12 +27,14 @@ from transcribe_video_items import (  # noqa: E402
     BatchInfrastructureError,
     build_transcript_rows,
     ensure_mimo_audio_input,
+    expected_transcript_count,
     transcribe_audio_files_with_worker,
 )
 from video_content_common import (  # noqa: E402
     EXPECTED_SHARD_SIZES,
     MIMO_ASR_REQUIRED_FILES,
     MIMO_VL_MODEL_FILES,
+    arc_xiaohongshu_page_status,
     check_mimo_asr_environment,
     check_mimo_vl_environment,
     combine_arc_login_status,
@@ -505,7 +507,7 @@ class VideoContentTests(unittest.TestCase):
                 'card_text': '滑雪', 'content_type': 'video',
             }], ensure_ascii=False), encoding='utf-8')
             analysis.write_text(json.dumps([{
-                'id': 'note-video', 'status': 'success', 'main_topic': '摄影布光',
+                'id': 'note-video', 'status': 'success', 'main_topic': '摄影审美与创作',
                 'content_summary': '讲解狭小空间的灯光布置', 'target_board': '摄影审美与创作',
                 'confidence': 'high', 'reason': ['实际讲话内容是摄影布光'],
                 'analysis_basis': 'transcript_only', 'visual_status': 'not_enabled',
@@ -540,8 +542,8 @@ class VideoContentTests(unittest.TestCase):
                 'id': 'note-video', 'title': '标题', 'content_type': 'video',
             }], ensure_ascii=False), encoding='utf-8')
             analysis.write_text(json.dumps([{
-                'id': 'note-video', 'status': 'success', 'main_topic': '主题',
-                'content_summary': '摘要', 'target_board': '其他', 'confidence': 'high',
+                'id': 'note-video', 'status': 'success', 'main_topic': '待复核',
+                'content_summary': '摘要', 'target_board': '', 'confidence': 'low',
                 'reason': ['合格文字稿'], 'analysis_basis': 'transcript_only',
                 'visual_status': 'not_enabled',
             }], ensure_ascii=False), encoding='utf-8')
@@ -556,6 +558,63 @@ class VideoContentTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn('尚未完成完整时轴画面分析', result.stderr)
+
+    def test_visual_requirement_accepts_full_timeline_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            visible = tmp_path / 'visible.json'
+            analysis = tmp_path / 'analysis.json'
+            taxonomy = tmp_path / 'taxonomy.json'
+            out = tmp_path / 'classification.json'
+            visible.write_text(json.dumps([{
+                'id': 'note-video', 'title': '标题', 'content_type': 'video',
+            }], ensure_ascii=False), encoding='utf-8')
+            analysis.write_text(json.dumps([{
+                'id': 'note-video', 'status': 'success', 'main_topic': '其他',
+                'content_summary': '摘要', 'target_board': '其他', 'confidence': 'high',
+                'reason': ['完整时轴画面证据'],
+                'analysis_basis': 'full_timeline_visual_with_transcript',
+                'visual_status': 'analyzed',
+            }], ensure_ascii=False), encoding='utf-8')
+            taxonomy.write_text(json.dumps({'boards': ['其他']}, ensure_ascii=False), encoding='utf-8')
+            self.run_script(
+                'classify_items.py', '--skip-ocr', str(visible), str(out),
+                '--taxonomy', str(taxonomy),
+                '--classify-video-by-content', '--require-visual-analysis',
+                '--video-analysis', str(analysis),
+            )
+            row = json.loads(out.read_text(encoding='utf-8'))[0]
+
+        self.assertEqual(row['target_board'], '其他')
+        self.assertEqual(row['video_analysis_basis'], 'full_timeline_visual_with_transcript')
+        self.assertEqual(row['visual_status'], 'analyzed')
+
+    def test_video_classification_rejects_invalid_success_memo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            visible = tmp_path / 'visible.json'
+            analysis = tmp_path / 'analysis.json'
+            out = tmp_path / 'classification.json'
+            visible.write_text(json.dumps([{
+                'id': 'note-video', 'title': '标题', 'content_type': 'video',
+            }], ensure_ascii=False), encoding='utf-8')
+            analysis.write_text(json.dumps([{
+                'id': 'note-video', 'status': 'success', 'main_topic': ',',
+                'content_summary': ',', 'target_board': '', 'confidence': 'low',
+                'reason': [','], 'analysis_basis': 'full_timeline_visual',
+                'visual_status': 'analyzed',
+            }], ensure_ascii=False), encoding='utf-8')
+            result = subprocess.run(
+                [
+                    sys.executable, str(SCRIPTS / 'classify_items.py'), '--skip-ocr',
+                    str(visible), str(out), '--classify-video-by-content',
+                    '--require-visual-analysis', '--video-analysis', str(analysis),
+                ],
+                cwd=str(ROOT), text=True, capture_output=True, check=False,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('不满足严格输出合同', result.stderr)
 
     def test_missing_video_analysis_never_falls_back_to_description(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -675,7 +734,48 @@ class VideoContentTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in rows], ['video-1', 'video-2'])
         self.assertEqual(rows[0]['segments'][0]['text'], '已有文字稿')
 
-    def test_suspicious_yt_dlp_failure_is_single_item_failure_when_control_probe_succeeds(self):
+    def test_transcriber_resume_keeps_failed_rows_and_counts_retained_batch(self):
+        items = [
+            {'id': 'video-1', 'content_type': 'video'},
+            {'id': 'video-2', 'content_type': 'video'},
+            {'id': 'video-3', 'content_type': 'video'},
+            {'id': 'video-4', 'content_type': 'video'},
+        ]
+        segments = [{'start': 0, 'end': 10, 'text': '已有文字稿'}]
+        existing = [
+            {
+                'id': 'video-1', 'status': 'failed',
+                'stage': 'transcript_acquisition',
+                'reason_code': 'video_content_unavailable',
+                'error': 'previous failure',
+            },
+            {
+                'id': 'video-2', 'status': 'success', 'segments': segments,
+                'transcript_sha256': transcript_sha256(segments),
+                'coverage': {'transcript_quality_passed': True},
+            },
+        ]
+        calls = []
+        rows = build_transcript_rows(
+            items,
+            lambda item: calls.append(item['id']) or {
+                'id': item['id'], 'status': 'failed',
+                'reason_code': 'video_content_unavailable',
+                'error': 'UserVisibleError: ERROR: No video formats found',
+            },
+            max_videos=1,
+            initial_rows=existing,
+        )
+
+        self.assertEqual(calls, ['video-3'])
+        self.assertEqual([row['id'] for row in rows], ['video-1', 'video-2', 'video-3'])
+        self.assertEqual(rows[0]['status'], 'failed')
+        self.assertEqual(
+            expected_transcript_count(items, max_videos=1, initial_rows=existing),
+            len(rows),
+        )
+
+    def test_suspicious_yt_dlp_failure_is_checkpointed_without_metadata_control_probe(self):
         items = [
             {'id': 'video-control', 'content_type': 'video'},
             {'id': 'video-current', 'content_type': 'video'},
@@ -686,7 +786,7 @@ class VideoContentTests(unittest.TestCase):
             'transcript_sha256': transcript_sha256(segments),
             'coverage': {'transcript_quality_passed': True},
         }]
-        probe_calls = []
+        checkpoints = []
 
         rows = build_transcript_rows(
             items,
@@ -696,13 +796,14 @@ class VideoContentTests(unittest.TestCase):
                 'error': 'UserVisibleError: ERROR: No video formats found',
             },
             initial_rows=existing,
-            control_probe=lambda item: probe_calls.append(item['id']) or True,
+            on_row=lambda current: checkpoints.append(current),
         )
 
-        self.assertEqual(probe_calls, ['video-control'])
         self.assertEqual([row['status'] for row in rows], ['success', 'failed'])
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(checkpoints[0][-1]['id'], 'video-current')
 
-    def test_suspicious_yt_dlp_failure_aborts_before_checkpoint_when_control_probe_fails(self):
+    def test_suspicious_yt_dlp_failure_does_not_treat_non_equivalent_control_as_global_outage(self):
         items = [
             {'id': 'video-control', 'content_type': 'video'},
             {'id': 'video-current', 'content_type': 'video'},
@@ -715,38 +816,36 @@ class VideoContentTests(unittest.TestCase):
         }]
         checkpoints = []
 
-        with self.assertRaisesRegex(BatchInfrastructureError, '对照视频'):
-            build_transcript_rows(
-                items,
-                lambda item: {
-                    'id': item['id'], 'status': 'failed',
-                    'reason_code': 'video_content_unavailable',
-                    'error': 'UserVisibleError: ERROR: Unable to extract initial state',
-                },
-                initial_rows=existing,
-                control_probe=lambda item: False,
-                on_row=lambda rows: checkpoints.append(rows),
-            )
+        rows = build_transcript_rows(
+            items,
+            lambda item: {
+                'id': item['id'], 'status': 'failed',
+                'reason_code': 'video_content_unavailable',
+                'error': 'UserVisibleError: ERROR: Unable to extract initial state',
+            },
+            initial_rows=existing,
+            on_row=lambda current: checkpoints.append(current),
+        )
 
-        self.assertEqual(checkpoints, [])
+        self.assertEqual([row['status'] for row in rows], ['success', 'failed'])
+        self.assertEqual(len(checkpoints), 1)
 
-    def test_suspicious_yt_dlp_failure_without_valid_control_aborts_before_checkpoint(self):
+    def test_suspicious_yt_dlp_failure_without_prior_success_is_single_item_failure(self):
         items = [{'id': 'video-current', 'content_type': 'video'}]
         checkpoints = []
 
-        with self.assertRaisesRegex(BatchInfrastructureError, '没有有效的成功文字稿'):
-            build_transcript_rows(
-                items,
-                lambda item: {
-                    'id': item['id'], 'status': 'failed',
-                    'reason_code': 'video_content_unavailable',
-                    'error': 'UserVisibleError: ERROR: No video formats found',
-                },
-                control_probe=lambda item: True,
-                on_row=lambda rows: checkpoints.append(rows),
-            )
+        rows = build_transcript_rows(
+            items,
+            lambda item: {
+                'id': item['id'], 'status': 'failed',
+                'reason_code': 'video_content_unavailable',
+                'error': 'UserVisibleError: ERROR: No video formats found',
+            },
+            on_row=lambda current: checkpoints.append(current),
+        )
 
-        self.assertEqual(checkpoints, [])
+        self.assertEqual([row['status'] for row in rows], ['failed'])
+        self.assertEqual(len(checkpoints), 1)
 
     def test_transcriber_resume_rejects_stale_or_duplicate_rows(self):
         items = [{'id': 'video-1', 'content_type': 'video'}]
@@ -791,6 +890,35 @@ class VideoContentTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn('--browser', result.stderr)
+
+    def test_visual_analyzer_requires_verified_arc_locator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            empty = tmp_path / 'empty.json'
+            empty.write_text('[]', encoding='utf-8')
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / 'analyze_video_visuals.py'),
+                    str(empty),
+                    str(empty),
+                    str(empty),
+                    str(tmp_path / 'out.json'),
+                    '--all-videos',
+                    '--max-videos',
+                    '1',
+                    '--analysis-provider',
+                    'mimo-vl-mlx',
+                    '--allow-video-access',
+                ],
+                cwd=str(ROOT),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--arc-window-id', result.stderr)
 
     def test_persistent_worker_treats_explicit_empty_chunk_as_uncovered_not_corrupt(self):
         class UserVisibleError(RuntimeError):
@@ -955,9 +1083,37 @@ class VideoContentTests(unittest.TestCase):
                 'main_topic': '', 'content_summary': '摘要', 'target_board': '滑雪',
                 'confidence': 'high', 'reason': ['原因'],
             }, ['滑雪'])
+
+    def test_provider_analysis_rejects_punctuation_or_number_only_memos(self):
+        invalid_payloads = [
+            {
+                'main_topic': ',', 'content_summary': '这是有效的中文内容摘要', 'target_board': '',
+                'confidence': 'low', 'reason': ['证据不足'],
+            },
+            {
+                'main_topic': '健身', 'content_summary': ',', 'target_board': '',
+                'confidence': 'low', 'reason': ['证据不足'],
+            },
+            {
+                'main_topic': '健身', 'content_summary': '1000, 00, 203.00', 'target_board': '',
+                'confidence': 'low', 'reason': ['证据不足'],
+            },
+            {
+                'main_topic': ',content_summary', 'content_summary': '视频展示完整训练动作', 'target_board': '',
+                'confidence': 'low', 'reason': ['证据不足'],
+            },
+            {
+                'main_topic': '健身', 'content_summary': '视频展示完整训练动作', 'target_board': '',
+                'confidence': 'low', 'reason': [','],
+            },
+        ]
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    validate_analysis(payload, ['滑雪'])
         with self.assertRaisesRegex(ValueError, 'confidence'):
             validate_analysis({
-                'main_topic': '主题', 'content_summary': '摘要', 'target_board': '',
+                'main_topic': '待复核', 'content_summary': '摘要', 'target_board': '',
                 'confidence': 'high', 'reason': ['原因'],
             }, ['滑雪'])
 
@@ -987,7 +1143,7 @@ class VideoContentTests(unittest.TestCase):
         identity = {'provider': 'command', 'model': 'test-agent', 'version': '1'}
         existing = [
             {'id': 'v1', 'status': 'success', 'transcript_sha256': hash_1, 'target_board': '滑雪',
-             'main_topic': '滑雪主题', 'content_summary': '滑雪摘要', 'confidence': 'high', 'reason': ['原因'],
+             'main_topic': '滑雪', 'content_summary': '滑雪摘要', 'confidence': 'high', 'reason': ['原因'],
              'analysis_input_sha256': analysis_input_sha256(
                  transcript_hash=hash_1, boards=boards, provider_identity=identity,
              )},
@@ -999,7 +1155,7 @@ class VideoContentTests(unittest.TestCase):
         rows = build_analysis_rows(
             transcripts,
             lambda row: calls.append(row['id']) or {
-                'status': 'success', 'target_board': '思考与成长', 'main_topic': '主题',
+                'status': 'success', 'target_board': '思考与成长', 'main_topic': '思考与成长',
                 'content_summary': '摘要', 'confidence': 'high', 'reason': ['原因'], 'error': '',
             },
             initial_rows=existing,
@@ -1069,6 +1225,38 @@ class VideoContentTests(unittest.TestCase):
 
         self.assertFalse(combine_arc_login_status(cookie, login_page)['ok'])
         self.assertTrue(combine_arc_login_status(cookie, account_page)['ok'])
+
+    def test_arc_live_page_probe_uses_verified_jxa_tab_locator(self):
+        response = {
+            'ok': True,
+            'returncode': 0,
+            'stdout': json.dumps(json.dumps({
+                'tab_found': True,
+                'path': '/user/profile/' + ('a' * 24),
+                'marker_matches': True,
+                'login_required': False,
+            })),
+            'stderr': '',
+        }
+        with patch('video_content_common.platform.system', return_value='Darwin'), \
+                patch('video_content_common.arc_running', return_value=True), \
+                patch('video_content_common.run_status', return_value=response) as run:
+            status = arc_xiaohongshu_page_status(
+                window_id='window-immutable-id',
+                tab_id='tab-immutable-id',
+                tab_marker='xhs-session-marker',
+                expected_url_substring='/user/profile/',
+            )
+
+        self.assertTrue(status['ok'])
+        self.assertTrue(status['tab_found'])
+        self.assertFalse(status['login_required'])
+        args = run.call_args.args[0]
+        self.assertEqual(args[:3], ['osascript', '-l', 'JavaScript'])
+        self.assertIn('app.windows.byId', args[-1])
+        self.assertIn('tabs.byId', args[-1])
+        self.assertIn('xhs-session-marker', args[-1])
+        self.assertNotIn('repeat with browserWindow', args[-1])
 
     def test_arc_api_type_overrides_dom_marker_without_copying_token(self):
         items = [{'id': 'a' * 24, 'content_type': 'image', 'content_type_source': 'xhs_dom_play_marker_absent'}]

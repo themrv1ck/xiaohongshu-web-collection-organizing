@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
 
 from run_reassign_batch import (
+    BOARD_LIST_PAGINATION_JS,
     BOARD_VERIFICATION_JS,
     LIVE_API_RESOLVER_JS,
     BrowserRunner,
@@ -318,53 +319,19 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
 
   LIVE_API_RESOLVER_JS
 
-  BOARD_VERIFICATION_JS
+  BOARD_LIST_PAGINATION_JS
 
-  function parseUserBoards(response) {
-    if (!response || typeof response !== 'object' || Array.isArray(response)) {
-      throw new Error('Xiaohongshu board/user response must be an object');
-    }
-    const rawBoards = response.boards == null ? [] : response.boards;
-    if (!Array.isArray(rawBoards)) {
-      throw new Error('Xiaohongshu board/user response.boards must be an array');
-    }
-    const boardCount = response.boardCount == null ? rawBoards.length : response.boardCount;
-    if (!Number.isSafeInteger(boardCount) || boardCount < 0) {
-      throw new Error('Xiaohongshu board/user response.boardCount must be a non-negative integer');
-    }
-    if (rawBoards.length !== boardCount) {
-      throw new Error('Xiaohongshu board/user response.boards must match boardCount');
-    }
-    const ids = new Set();
-    const names = new Set();
-    return rawBoards.map((board, index) => {
-      if (!board || typeof board !== 'object' || Array.isArray(board)) {
-        throw new Error('Xiaohongshu board/user boards[' + index + '] must be an object');
-      }
-      const id = typeof board.id === 'string' ? board.id.trim() : '';
-      const name = typeof board.name === 'string' ? board.name.trim() : '';
-      if (!/^[0-9a-f]{24}$/i.test(id) || !name) {
-        throw new Error('Xiaohongshu board/user board id/name contract failed at index ' + index);
-      }
-      if (ids.has(id) || names.has(name)) {
-        throw new Error('Xiaohongshu board/user returned duplicate board id or name');
-      }
-      ids.add(id);
-      names.add(name);
-      return { id, name, privacy: board.privacy };
-    });
-  }
+  BOARD_VERIFICATION_JS
 
   async function run() {
     assertReadContext();
     const fullApi = findApi(exposeRspackRequire());
     const readApi = Object.freeze({ yC: fullApi.yC, U_: fullApi.U_, Ks: fullApi.Ks });
     assertReadContext();
-    const boardResponse = await readApi.yC({
-      params: { userId: payload.userId, num: 100, page: 1 }
-    });
-    assertReadContext();
-    const boards = parseUserBoards(boardResponse);
+    const boardInventory = await loadAllBoardsStrict(
+      readApi, payload.userId, assertReadContext
+    );
+    const boards = boardInventory.boards;
     const rows = [];
     for (const board of boards) {
       assertReadContext();
@@ -388,7 +355,8 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
     const ownUrl = own ? new URL(own.getAttribute('href') || '', window.location.origin) : null;
     const ownMatch = ownUrl && ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
     return {
-      board_count: boards.length,
+      board_count: boardInventory.boardCount,
+      board_list_page_count: boardInventory.pageCount,
       boards: rows,
       live_page_binding: `${current.origin}${current.pathname}?tab=${currentTab}`,
       live_account_user_id: ownMatch ? ownMatch[1].toLowerCase() : ''
@@ -413,6 +381,7 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
     return (
         job
         .replace('LIVE_API_RESOLVER_JS', LIVE_API_RESOLVER_JS)
+        .replace('BOARD_LIST_PAGINATION_JS', BOARD_LIST_PAGINATION_JS)
         .replace('BOARD_VERIFICATION_JS', BOARD_VERIFICATION_JS)
         .replace('PAYLOAD_JSON', json.dumps(payload, ensure_ascii=False))
     )
@@ -424,6 +393,12 @@ def normalize_live_snapshot(result: Any, args: argparse.Namespace) -> Dict[str, 
     boards = result.get('boards')
     if not isinstance(boards, list) or result.get('board_count') != len(boards):
         raise MembershipContractError('browser snapshot boards must match board_count')
+    board_list_page_count = result.get('board_list_page_count')
+    expected_board_list_pages = max(1, (len(boards) + 99) // 100)
+    if board_list_page_count != expected_board_list_pages:
+        raise MembershipContractError(
+            'browser snapshot board_list_page_count does not match board_count'
+        )
     live_page_binding = str(result.get('live_page_binding') or '').strip()
     live_account_user_id = str(result.get('live_account_user_id') or '').strip().lower()
     expected_value = str(
@@ -518,6 +493,7 @@ def normalize_live_snapshot(result: Any, args: argparse.Namespace) -> Dict[str, 
         'membership': membership,
         'validation': {
             'board_count': len(normalized_boards),
+            'board_list_page_count': board_list_page_count,
             'board_names_unique': len(seen_names) == len(normalized_boards),
             'pagination_cursor_invariants_passed': True,
             'accessible_note_occurrences': sum(len(board['note_ids']) for board in normalized_boards),

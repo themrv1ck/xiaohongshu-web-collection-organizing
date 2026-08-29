@@ -74,6 +74,7 @@ class VerifyClassificationMembershipTests(unittest.TestCase):
     def browser_result(self):
         return {
             'board_count': 2,
+            'board_list_page_count': 1,
             'boards': [
                 {
                     'id': self.BOARD_A,

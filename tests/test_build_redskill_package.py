@@ -28,7 +28,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             archive_path = Path(result['archive_path'])
             self.assertTrue(archive_path.is_file())
             self.assertEqual(result['skill_name'], 'xiaohongshu-web-collection-organizing')
-            self.assertEqual(result['version'], '2.0.7')
+            self.assertEqual(result['version'], '2.1.0')
             self.assertEqual(result['channel'], 'redskill')
             self.assertLessEqual(result['packaged_file_count'], 100)
             self.assertEqual(result['validation_errors'], [])
@@ -44,7 +44,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 root + 'LICENSE.txt',
                 root + 'scripts/enable_workbuddy_mcp.py',
             })
-            self.assertIn('发布版本：`2.0.7`', skill_text)
+            self.assertIn('发布版本：`2.1.0`', skill_text)
             self.assertIn('不自动运营账号', skill_text)
             self.assertIn('不读取系统浏览器 Cookie', skill_text)
             self.assertIn(
@@ -60,7 +60,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 ROOT, Path(tmp), channel='skillhub'
             )
             self.assertTrue(
-                result['archive_path'].endswith('-skillhub-2.0.7.zip')
+                result['archive_path'].endswith('-skillhub-2.1.0.zip')
             )
             self.assertEqual(result['validation_errors'], [])
 
@@ -83,7 +83,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             self.assertNotIn(root + 'scripts/workbuddy_bridge.py', names)
             self.assertNotIn(root + 'README.md', names)
             self.assertNotIn(root + 'manifest.yaml', names)
-            self.assertIn('version: "2.0.7"', skill_text)
+            self.assertIn('version: "2.1.0"', skill_text)
             self.assertIn('license: MIT', skill_text)
             self.assertIn('compatibility: "Requires network access', skill_text)
             validation = subprocess.run(
@@ -185,7 +185,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             root = 'xiaohongshu-web-collection-organizing/'
             source = ROOT / 'templates' / 'redskill.SKILL.md'
             skill_text = source.read_text(encoding='utf-8').replace(
-                '{{VERSION}}', '2.0.7'
+                '{{VERSION}}', '2.1.0'
             )
             files = {
                 'SKILL.md': skill_text,

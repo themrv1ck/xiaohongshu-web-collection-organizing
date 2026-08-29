@@ -20,8 +20,8 @@
 - 支持 `--source collection|liked|custom` 标记来源；支持 `--append-existing` 合并收藏和点赞，按 note id 去重，并保留 `source_lists`。
 - 默认低风险采集：一次只读取当前已显示卡片、每段最多 200 条；不自动滚动、刷新、点击、导航或进入下一段。
 - 支持真实批量移动收藏：默认不执行，必须显式传 `--execute --max-moves-per-session <1–200>`。
-- 执行清单生成前先做全部专辑成员关系核对：已在目标专辑的条目零写入排除；未归档条目直接加入；跨专辑条目必须携带真实 `source_board_id`。
-- 真实移动后会用 `U_` + `Ks` 查询目标专辑，确认 note id 已出现后才记为 `success`；`d0` 的空返回或静默 no-op 都不算成功。
+- 执行清单生成前先做全部专辑成员关系核对：不在任何专辑的条目处于 `first_archive_pending`，可以完成首次归档；当前已属于专辑的条目视为首次归档已确认并零写入保护。
+- 真实移动后会用 `U_` + `Ks` 查询目标专辑，确认 note id 已出现后才记为 `success` 并转为 `first_archive_confirmed`；`d0` 的空返回、dry-run、失败或未回读状态都不会提前触发保护。
 - 视频内容分类是可选开关：Video Transcript Extractor 优先获取平台字幕，无字幕时用 MiMo-V2.5-ASR-MLX 本地转写。
 - 视觉模块开启后，用户明确选择的每段视频都用 ffmpeg + macOS Vision + 所选 provider 分析完整时轴真实帧；所有本地分段完成后才可宣称覆盖全部视频。未开启视觉模块时只能标为 `transcript_only`。
 - analysis provider 三选一：`codex-cli`、本地 `mimo-vl-mlx`、`command`/宿主 Agent 适配器。这个 Skill 不强制使用 Codex CLI。
@@ -33,7 +33,7 @@
 
 - 用户必须先在浏览器里登录小红书网页端。
 - 目标专辑必须已经存在；当前脚本只核对缺失专辑，不自动创建专辑。
-- `run_reassign_batch.py` 不会自动推断来源专辑；跨专辑条目缺少真实 `source_board_id` 时不得进入 execute 清单。
+- `run_reassign_batch.py` 不执行跨专辑移动；只有 `membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending` 且 `source_board_id` 为空的条目能进入 execute 清单。
 - 小红书网页结构和前端模块可能变化；如果页面变更，需要重新验证。
 - 分类体系默认是空的，只能从本次真实内容和用户已有专辑生成；图文可使用元数据与 OCR，视频开关开启时使用合格文字稿、完整时轴真实帧（若启用视觉模块）和所选 provider。低置信度条目默认不会真实移动。
 - 200 是程序的防误操作分段上限，不是平台公开的安全阈值，不能保证不会出现验证。
@@ -85,7 +85,7 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
-若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.0.7` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.1.0` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
 
 在 WorkBuddy 对话中执行：
 
@@ -101,7 +101,7 @@
 
 `capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.0.7`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.1.0`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -460,9 +460,9 @@ python3 scripts/build_retry_queue.py run_report.json retry_queue.json
 python3 scripts/summarize_run_report.py run_report.json
 ```
 
-真实执行不接受浏览器 `auto`；必须把 `arc`、`chrome`、`safari` 或 `playwright` 写清楚，并且该浏览器已由用户在当前回合明确授权。缺少 `board_snapshot.json` 或 `created_boards.json` 时，脚本会在接触浏览器前拒绝执行。Arc 执行器通过隐藏 DOM bridge 把任务注入页面 main world，再从 Rspack `req.m` 按精确 endpoint 唯一解析 `LN/B1/d0/Ks/yC/U_`；匹配不唯一就停止，不猜导出名。
+真实执行不接受浏览器 `auto`；必须把 `arc`、`chrome`、`safari` 或 `playwright` 写清楚，并且该浏览器已由用户在当前回合明确授权。缺少 `board_snapshot.json` 或 `created_boards.json` 时，脚本会在接触浏览器前拒绝执行。Arc 执行器通过隐藏 DOM bridge 把任务注入页面 main world，再从 Rspack `req.m` 按精确 endpoint 唯一解析 `d0/Ks/yC/U_`；匹配不唯一就停止，不猜导出名。
 
-未归档条目使用 `d0 -> U_/Ks`。只有输入显式包含且不同于目标专辑的真实 `source_board_id` 才走跨专辑事务：先预检来源存在、目标不存在，再执行紧邻的 `LN -> B1 -> d0(target) -> U_/Ks`；不会为首次写入失败追加一次写入。非安全错误执行 `LN -> B1 -> d0(source) -> U_/Ks` 严格回滚；安全验证、登录页、页面绑定失效或状态不确定会先写报告和 `xhs_safety_state.json`，立即停写且不追加回滚。每次只提交一条，达到本次上限后等待人工检查，不自动进入下一段。
+首次归档待处理条目使用 `d0 -> U_/Ks`。任何当前已属于专辑、带 `source_board_id`、无法证明 `membership_state=not_in_any_board`，或生命周期不是 `first_archive_pending` 的条目都会在 Python 与页面 JavaScript 两层跳过；只有 `U_/Ks` 回读确认成功后才改为 `first_archive_confirmed`。执行器不解析取消收藏/重新收藏 endpoint，也不提供跨专辑事务。安全验证、登录页、页面绑定失效或状态不确定会先写报告和 `xhs_safety_state.json`，立即停写。每次只提交一条，达到本次上限后等待人工检查，不自动进入下一段。
 
 如果你使用 Safari：
 

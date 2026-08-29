@@ -90,6 +90,7 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         expected = expected_board_membership(contract)
         browser_result = {
             'board_count': len(expected),
+            'board_list_page_count': 1,
             'boards': [
                 {
                     'id': board_id,
@@ -134,7 +135,8 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         self.assertNotIn('req.c', job)
         self.assertIn("document.createElement('script')", job)
         self.assertIn("dataset.xhsSkillState = 'pending'", job)
-        self.assertIn('await readApi.yC(', job)
+        self.assertIn('await api.yC({', job)
+        self.assertIn('loadAllBoardsStrict(', job)
         self.assertIn('await boardSnapshot(readApi, board.id, payload.verifyPages, assertReadContext)', job)
         self.assertIn('current profile page binding no longer matches', job)
         self.assertIn('current account no longer matches', job)

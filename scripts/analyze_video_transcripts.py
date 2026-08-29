@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Callable
@@ -23,15 +24,22 @@ from xhs_ocr_common import load_taxonomy
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "video_analysis.schema.json"
-ANALYSIS_PROMPT_CONTRACT_VERSION = 4
+ANALYSIS_PROMPT_CONTRACT_VERSION = 9
+CJK_IDEOGRAPH_AT_START_RE = re.compile(r"^[\u3400-\u4DBF\u4E00-\u9FFF]")
 ANALYSIS_OUTPUT_CONTRACT = (
-    "返回 JSON 对象必须且只能包含这五个字段："
-    "main_topic（非空中文主题字符串）、"
-    "content_summary（非空中文内容摘要字符串）、"
+    "返回 JSON 对象必须且只能包含这五个字段，并按事实到分类的顺序生成："
+    "main_topic（直接写视频实际事实主题，不得写专辑名）、"
+    "content_summary（直接陈述实际内容的中文摘要字符串）、"
+    "reason（1 到 4 个只陈述主要对象、动作、用途等可见或可听事实的中文字符串；不得先替专辑辩护）、"
     "target_board（允许专辑之一，无法准确匹配时为空字符串）、"
-    "confidence（只能是 high、medium、low；target_board 为空时必须是 low）、"
-    "reason（1 到 4 个非空中文字符串组成的数组）。不得遗漏字段。"
+    "confidence（只能是 high、medium、low；target_board 为空时必须是 low）。"
+    "不得复述格式要求，不得遗漏字段。"
 )
+
+
+def starts_with_cjk_ideograph(value: str) -> bool:
+    """Mirror the schema's anchored CJK Unified Ideograph code-point ranges."""
+    return CJK_IDEOGRAPH_AT_START_RE.search(value) is not None
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -54,25 +62,42 @@ def validate_analysis(payload: Any, boards: list[str]) -> dict[str, Any]:
     for key in required:
         if key not in payload:
             raise ValueError(f"内容分析器返回值缺少字段：{key}")
-    target_board = str(payload.get("target_board") or "").strip()
+    raw_target_board = payload.get("target_board")
+    if not isinstance(raw_target_board, str):
+        raise ValueError("target_board 必须是字符串")
+    target_board = raw_target_board.strip()
     if target_board and target_board not in boards:
         raise ValueError(f"内容分析器返回了专辑体系之外的目标：{target_board}")
-    confidence = str(payload.get("confidence") or "").strip()
+    raw_confidence = payload.get("confidence")
+    if not isinstance(raw_confidence, str):
+        raise ValueError("confidence 必须是字符串")
+    confidence = raw_confidence.strip()
     if confidence not in {"high", "medium", "low"}:
         raise ValueError("confidence 必须是 high、medium 或 low")
-    main_topic = str(payload.get("main_topic") or "").strip()
-    content_summary = str(payload.get("content_summary") or "").strip()
-    if not main_topic or not content_summary:
-        raise ValueError("main_topic 和 content_summary 必须是非空字符串")
+    if not target_board and confidence != "low":
+        raise ValueError("target_board 为空时 confidence 必须是 low")
+    raw_main_topic = payload.get("main_topic")
+    raw_content_summary = payload.get("content_summary")
+    if not isinstance(raw_main_topic, str) or not isinstance(raw_content_summary, str):
+        raise ValueError("main_topic 和 content_summary 必须是字符串")
+    main_topic = raw_main_topic.strip()
+    content_summary = raw_content_summary.strip()
+    if not main_topic or not starts_with_cjk_ideograph(main_topic):
+        raise ValueError("main_topic 必须以中日韩统一表意文字开头并陈述事实主题")
+    if not content_summary or not starts_with_cjk_ideograph(content_summary):
+        raise ValueError("content_summary 必须以中日韩统一表意文字开头")
     reason = payload.get("reason")
     if (
         not isinstance(reason, list)
         or not 1 <= len(reason) <= 4
-        or not all(isinstance(row, str) and row.strip() for row in reason)
+        or not all(
+            isinstance(row, str)
+            and bool(row.strip())
+            and starts_with_cjk_ideograph(row.strip())
+            for row in reason
+        )
     ):
-        raise ValueError("reason 必须是 1 到 4 个非空字符串")
-    if not target_board and confidence != "low":
-        raise ValueError("target_board 为空时 confidence 必须是 low")
+        raise ValueError("reason 必须是 1 到 4 个以中日韩统一表意文字开头的字符串")
     return {
         "main_topic": main_topic,
         "content_summary": content_summary,
@@ -86,7 +111,7 @@ def analysis_prompt(row: dict[str, Any], boards: list[str]) -> str:
     segments = row.get("segments") if isinstance(row.get("segments"), list) else []
     return (
         "你只执行一次视频内容分类，不运行任何工具，不读取文件，也不根据标题、简介、作者或热度猜测。\n"
-        "下面只有已经通过覆盖率校验的视频转写。先判断视频实际主要内容，再从允许专辑中选择且只能选择一个。\n"
+        "下面只有已经通过覆盖率校验的视频转写。必须先写实际事实主题、摘要和证据，再从允许专辑中选择且只能选择一个。\n"
         "专辑名代表上位主题；视频内容是某个专辑的明确子主题时就应选择该专辑，不能只因内容更具体而留空。\n"
         "如果没有任何专辑准确匹配，target_board 返回空字符串并把 confidence 设为 low。不要创造新专辑。\n"
         f"允许专辑：{json.dumps(boards, ensure_ascii=False)}\n"
@@ -306,6 +331,7 @@ def main() -> int:
         worker_script=ROOT / "scripts" / "mimo_vl_worker.py",
         startup_timeout=args.provider_startup_timeout,
         working_directory=ROOT,
+        allowed_boards=boards,
     )
     try:
         identity = provider.identity()

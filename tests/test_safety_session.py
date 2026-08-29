@@ -178,8 +178,8 @@ class SafetySessionTests(unittest.TestCase):
                 calls["closed"] = True
 
         classification = [
-            {"id": "note-1", "title": "一", "target_board": "滑雪", "confidence": "high"},
-            {"id": "note-2", "title": "二", "target_board": "滑雪", "confidence": "high"},
+            {"id": "note-1", "title": "一", "target_board": "滑雪", "confidence": "high", "membership_state": "not_in_any_board", "archive_lifecycle_state": "first_archive_pending", "source_board_id": ""},
+            {"id": "note-2", "title": "二", "target_board": "滑雪", "confidence": "high", "membership_state": "not_in_any_board", "archive_lifecycle_state": "first_archive_pending", "source_board_id": ""},
         ]
         report = {"processed": [], "errors": [], "missing_boards": [], "board_counts_before": {}, "board_counts_after": {}}
         with tempfile.TemporaryDirectory() as tmp, \
@@ -238,6 +238,9 @@ class SafetySessionTests(unittest.TestCase):
             "title": "一",
             "target_board": "阅读",
             "confidence": "high",
+            "membership_state": "not_in_any_board",
+            "archive_lifecycle_state": "first_archive_pending",
+            "source_board_id": "",
         }]
         report = {
             "processed": [],
@@ -305,8 +308,8 @@ class SafetySessionTests(unittest.TestCase):
 
         result = {"processed": [], "errors": [], "missing_boards": [], "board_counts_before": {}, "board_counts_after": {}}
         classification = [
-            {"id": "note-1", "title": "一", "target_board": "滑雪", "confidence": "high"},
-            {"id": "note-2", "title": "二", "target_board": "滑雪", "confidence": "high"},
+            {"id": "note-1", "title": "一", "target_board": "滑雪", "confidence": "high", "membership_state": "not_in_any_board", "archive_lifecycle_state": "first_archive_pending", "source_board_id": ""},
+            {"id": "note-2", "title": "二", "target_board": "滑雪", "confidence": "high", "membership_state": "not_in_any_board", "archive_lifecycle_state": "first_archive_pending", "source_board_id": ""},
         ]
         report = {"processed": [], "errors": [], "missing_boards": [], "board_counts_before": {}, "board_counts_after": {}}
         with tempfile.TemporaryDirectory() as tmp, \
@@ -345,15 +348,18 @@ class SafetySessionTests(unittest.TestCase):
                 "target_board": "阅读",
                 "confidence": "high",
                 "excluded": True,
-                "exclude_reason": "already_in_target",
-                "membership_state": "already_in_target",
+                "exclude_reason": "existing_board_member_protected",
+                "membership_state": "existing_board_member_protected",
+                "archive_lifecycle_state": "first_archive_confirmed",
             },
             {
                 "id": "note-to-move",
                 "title": "真正待移动",
                 "target_board": "阅读",
                 "confidence": "high",
-                "membership_state": "in_other_board",
+                "membership_state": "not_in_any_board",
+                "archive_lifecycle_state": "first_archive_pending",
+                "source_board_id": "",
             },
         ]
         report = {
@@ -405,27 +411,41 @@ class SafetySessionTests(unittest.TestCase):
                 "target_board": "阅读",
                 "confidence": "high",
                 "excluded": True,
-                "exclude_reason": "already_in_target",
+                "exclude_reason": "existing_board_member_protected",
+                "membership_state": "existing_board_member_protected",
+                "archive_lifecycle_state": "first_archive_confirmed",
             },
             {
                 "id": "note-move-one",
                 "target_board": "阅读",
                 "confidence": "high",
+                "membership_state": "not_in_any_board",
+                "archive_lifecycle_state": "first_archive_pending",
+                "source_board_id": "",
             },
             {
                 "id": "note-no-target",
                 "target_board": "",
                 "confidence": "high",
+                "membership_state": "not_in_any_board",
+                "archive_lifecycle_state": "first_archive_pending",
+                "source_board_id": "",
             },
             {
                 "id": "note-low-confidence",
                 "target_board": "阅读",
                 "confidence": "low",
+                "membership_state": "not_in_any_board",
+                "archive_lifecycle_state": "first_archive_pending",
+                "source_board_id": "",
             },
             {
                 "id": "note-move-two",
                 "target_board": "阅读",
                 "confidence": "high",
+                "membership_state": "not_in_any_board",
+                "archive_lifecycle_state": "first_archive_pending",
+                "source_board_id": "",
             },
         ]
         report = {

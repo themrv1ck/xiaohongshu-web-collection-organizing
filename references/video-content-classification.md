@@ -331,7 +331,7 @@ python3 scripts/run_reassign_batch.py classification.json classification_preview
 
 用户没有确认分类和目标专辑时，不得传 `--execute`。确认一次“开启视频内容分类”不等于授权真实移动收藏。
 
-生成 execute 清单前，必须用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 完整分页生成 `board_snapshot.json`，再运行 `build_created_boards.py classification.json board_snapshot.json created_boards.json`。将两份证据传给 `run_reassign_batch.py` 后，脚本才会机械分流：已在目标专辑的标记 `already_in_target` 后排除并保持零写入；未归档条目的 `source_board_id` 留空；已在其他专辑的写入真实 `source_board_id`。多来源、来源不明确或分页不完整时硬闸门阻止执行。
+必须在视频下载、转写和视觉分析前，用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 完整分页生成 `board_snapshot.json`，先排除全部首次归档已确认的现有专辑成员。生成 execute 清单前再刷新快照并运行 `build_created_boards.py classification.json board_snapshot.json created_boards.json`。将两份证据传给 `run_reassign_batch.py` 后，任何已有专辑成员统一标记 `existing_board_member_protected + first_archive_confirmed` 并保持零写入；只有 `not_in_any_board + first_archive_pending` 且空 `source_board_id` 的条目可以执行首次归档。分页不完整或无法证明专辑外状态时硬闸门阻止执行。
 
 确认后使用 Arc 真实移动时，还必须先为独立工作标签页取得稳定的 Arc `window id`、`tab id`、预先写入 `window.name` 的稳定 marker，以及预期 URL 片段。执行器通过 `--arc-tab-marker` 核验该 `window.name`；任一缺失或不唯一就中止：
 
@@ -349,8 +349,8 @@ python3 scripts/run_reassign_batch.py classification.json run_report.json \
 ```
 
 `--browser auto` 会拒绝真实执行，防止未经本轮授权自动控制其他浏览器。
-Arc execute 通过隐藏 DOM 状态节点把任务注入页面 main world；前端 API 只从 Rspack `req.m` 按精确 endpoint 唯一解析 `LN/B1/d0/Ks/yC/U_`，匹配为 0 或多个都中止，禁止猜导出名。
+Arc execute 通过隐藏 DOM 状态节点把任务注入页面 main world；前端 API 只从 Rspack `req.m` 按精确 endpoint 唯一解析 `d0/Ks/yC/U_`，匹配为 0 或多个都中止，禁止猜导出名。
 
-未归档条目使用 `d0 -> U_/Ks`。只有输入显式带有且不同于目标专辑的真实 `source_board_id` 才启用跨专辑事务：预检来源存在、目标不存在后，严格执行紧邻 `LN({noteIds}) -> B1({noteId}) -> d0(target) -> U_/Ks`。非安全错误执行 `LN -> B1 -> d0(source) -> U_/Ks` 严格回滚，回滚成功也仍记失败；安全验证、异常访问、频繁访问或标签绑定变化时立即停写，不启动额外回滚。
+只有 `first_archive_pending` 的未归档条目使用 `d0 -> U_/Ks`。任何已有专辑成员、带 `source_board_id`、成员状态不是 `not_in_any_board` 或生命周期状态不是 `first_archive_pending` 的条目都在 Python 和页面 JavaScript 两层跳过；回读确认后才转为 `first_archive_confirmed`。不提供跨专辑事务，也不调用取消收藏/重新收藏 endpoint。安全验证、异常访问、频繁访问或标签绑定变化时立即停写。
 
 条目间默认固定等待 5 秒。Python 每次只提交一条；首个错误行先写入报告再停止整批。`d0` 返回 `{}` 或对已在其他专辑条目产生静默 no-op 都不能算成功，唯一成功依据是 `U_` + `Ks` 中确实存在 note id。

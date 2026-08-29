@@ -41,14 +41,14 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 
 ## 工具顺序
 
-1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.0.7`、独立 profile、平台 channel 和依赖状态；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
+1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.1.0`、独立 profile、平台 channel 和依赖状态；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
 2. `xhs_workbuddy_setup`：仅在用户明确同意后调用；在 `${CODEBUDDY_PLUGIN_DATA}/python-venv` 安装 `requirements-workbuddy.txt`。Windows 只检查系统 Edge，不下载 Chromium；macOS/Linux 安装独立 Chromium。
 3. `xhs_workbuddy_login`：仅在用户当前回合明确授权打开浏览器后调用，并传入已选择的 `source=collection|liked`。用户只需完成登录；工具自动从前端“我”入口取得当前账号、进入所选范围、返回无敏感参数的 `target_page_url`，随后关闭自己的浏览器并等待 profile 锁释放。禁止要求用户关窗口或复制 URL。
 4. `xhs_workbuddy_capture`：直接复用上一步返回的 `target_page_url`；不得再次向用户索取地址。收藏 URL 必须带 `tab=fav`，点赞 URL 必须带 `tab=liked`。`organizing_depth` 必填：快速整理传 `quick`，轻度整理传 `light`；`deep` 会因尚无视频语音和完整时轴画面证据入口而在浏览器启动前明确停止，禁止冒充深度结果。分组参数不暴露给模型：插件固定每 200 条保存一组，非末组真实等待 3 分钟。只有声明总数每次连读均不变化、实际唯一条数完全相等、且 `page_index ↔ note_id` 双向唯一并连续覆盖 `0..总数-1` 才允许分类；否则保存现有数据并硬停，不能把约 10 条首屏数据标为完整。轻度整理在关闭同一次 context 前，用进程内卡片链接打开全部条目详情，再以同一 BrowserContext 下载图片字节；`image_items.json` 只保存相对本地路径与内容 SHA256，不保存签名图片 URL。Cookie、卡片原始 query、签名 URL 与 xsec 不得落盘、进入错误或返回模型。只有 `ready_for_classification=true` 时，MCP 才对本次文件哈希签发 capture receipt。
-5. `xhs_workbuddy_prepare`（专辑清单阶段）：第一次不传 `classification`，只读生成完整 `board_snapshot.json`，返回真实 `existing_board_names` 与脱敏 `classification_inputs`。账号没有专辑时也继续分类，不再返回死路 blocker。
-6. 分类：模型只能使用 `classification_inputs`。优先选择真实已有专辑；确需新增时，只能依据本次内容提出最多 20 个 `proposed_board_names`，不得使用模板或插件预设，并明确统一的 `new_board_privacy=public|private`。每个提议名称必须至少被一条真实分类使用。
+5. `xhs_workbuddy_prepare`（专辑清单阶段）：第一次不传 `classification`，只读生成完整 `board_snapshot.json`，把当前属于任一专辑的全部 note id 视为首次归档已确认并标记为永久保护，只返回尚未首次归档的专辑外笔记脱敏 `classification_inputs`，并返回 `protected_existing_board_member_count`。账号没有专辑时也继续分类，不再返回死路 blocker。
+6. 分类：模型只能使用 `classification_inputs`，不得补回或纠正已保护专辑成员。优先选择真实已有专辑；确需新增时，只能依据本次内容提出最多 20 个 `proposed_board_names`，不得使用模板或插件预设，并明确统一的 `new_board_privacy=public|private`。每个提议名称必须至少被一条真实分类使用。
 7. `xhs_workbuddy_prepare`（dry-run 阶段）：第二次自动传入 classification、可选提议名称及隐私、移动上限、`verify_pages` 和 inventory receipt。工具机械核验所有输入，把待创建专辑、隐私、逐条移动与上限写入同一个 approval digest；此阶段不创建任何专辑。
-8. `xhs_workbuddy_execute`：用户一次确认上述完整方案后执行。MCP `COMMIT` 之后，Python 在同一个受管 BrowserContext 中先创建确认过的专辑，逐个核验名称、隐私和空成员，再移动收藏；任一创建结果不确定即写入安全停机并停止后续移动。WorkBuddy 中直接运行抓取脚本或 `run_reassign_batch.py --execute` 会被拒绝。
+8. `xhs_workbuddy_execute`：用户一次确认上述完整方案后执行。MCP `COMMIT` 之后，Python 在同一个受管 BrowserContext 中先创建确认过的专辑，逐个核验名称、隐私和空成员，再只移动 `not_in_any_board + first_archive_pending` 且空 `source_board_id` 的笔记；只有 `U_` + `Ks` 回读确认后才转为 `first_archive_confirmed` 并永久保护。已有专辑成员在 Python 与页面 JavaScript 两层跳过。任一创建结果不确定即写入安全停机并停止后续移动。WorkBuddy 中直接运行抓取脚本或 `run_reassign_batch.py --execute` 会被拒绝。
 
 ## 证据 receipt
 

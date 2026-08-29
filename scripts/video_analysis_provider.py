@@ -25,6 +25,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_SCHEMA = ROOT / "schemas" / "video_analysis.schema.json"
 DEFAULT_MIMO_WORKER = Path(__file__).resolve().with_name("mimo_vl_worker.py")
 MIMO_VLM_VERSION = "0.5.0"
+MIMO_OUTPUT_SCHEMA_CONTRACT_VERSION = 5
+# Full-timeline videos may contain more than 100 frames; use a deterministic
+# 512 merged-token budget per frame instead of silently exceeding 128k context.
+MIMO_MAX_IMAGE_PIXELS = 28 * 28 * 512
 
 
 class ProviderError(RuntimeError):
@@ -352,9 +356,12 @@ class MimoVlMlxProvider(AnalysisProvider):
         model: str,
         python_bin: str | os.PathLike[str],
         worker_script: str | os.PathLike[str] | None,
+        output_schema: str | os.PathLike[str] | None,
+        allowed_boards: Sequence[str] | None,
         timeout: int,
         startup_timeout: int,
         max_tokens: int,
+        max_image_pixels: int,
         working_directory: str | os.PathLike[str] | None,
     ) -> None:
         super().__init__()
@@ -373,6 +380,87 @@ class MimoVlMlxProvider(AnalysisProvider):
         self.model = model.strip()
         self.python_bin = str(Path(python_bin).expanduser())
         self.worker_script = str(Path(worker_script or DEFAULT_MIMO_WORKER).expanduser())
+        self.output_schema = Path(output_schema or DEFAULT_OUTPUT_SCHEMA).expanduser().resolve()
+        if not self.output_schema.is_file():
+            raise ProviderError(
+                "provider_config_invalid",
+                "MiMo-VL 输出 schema 不存在",
+                {"field": "output_schema", "path": str(self.output_schema)},
+            )
+        self._owned_output_schema: Path | None = None
+        if allowed_boards is not None:
+            if isinstance(allowed_boards, (str, bytes)):
+                raise ProviderError(
+                    "provider_config_invalid",
+                    "allowed_boards 必须是专辑名序列",
+                    {"field": "allowed_boards"},
+                )
+            normalized_boards = [str(board).strip() for board in allowed_boards]
+            if (
+                not normalized_boards
+                or any(not board for board in normalized_boards)
+                or len(set(normalized_boards)) != len(normalized_boards)
+            ):
+                raise ProviderError(
+                    "provider_config_invalid",
+                    "allowed_boards 必须是非空且不重复的专辑名序列",
+                    {"field": "allowed_boards"},
+                )
+            try:
+                schema = json.loads(self.output_schema.read_text(encoding="utf-8"))
+                target_board_schema = schema["properties"]["target_board"]
+                if (
+                    not isinstance(schema, dict)
+                    or not isinstance(target_board_schema, dict)
+                ):
+                    raise ValueError("invalid schema structure")
+                target_board_schema["enum"] = ["", *normalized_boards]
+                schema["anyOf"] = [
+                    {
+                        "properties": {
+                            "target_board": {"const": ""},
+                            "confidence": {"const": "low"},
+                        },
+                        "required": ["target_board", "confidence"],
+                    },
+                    *[
+                        {
+                            "properties": {
+                                "target_board": {"const": board},
+                            },
+                            "required": ["target_board"],
+                        }
+                        for board in normalized_boards
+                    ],
+                ]
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    suffix=".json",
+                    prefix="xhs-video-analysis-schema-",
+                    encoding="utf-8",
+                    delete=False,
+                ) as handle:
+                    json.dump(schema, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+                    constrained_path = Path(handle.name)
+                constrained_path.chmod(0o600)
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ProviderError(
+                    "provider_config_invalid",
+                    "无法为 MiMo-VL 构建精确专辑枚举 schema",
+                    {"field": "allowed_boards", "exception_type": type(exc).__name__},
+                ) from exc
+            self._owned_output_schema = constrained_path
+            self.output_schema = constrained_path
+        try:
+            self.output_schema_sha256 = hashlib.sha256(self.output_schema.read_bytes()).hexdigest()
+        except OSError as exc:
+            self._cleanup_output_schema()
+            raise ProviderError(
+                "provider_config_invalid",
+                "无法读取 MiMo-VL 的有效输出 schema",
+                {"field": "output_schema", "exception_type": type(exc).__name__},
+            ) from exc
         self.timeout = _validate_timeout(timeout, "timeout")
         self.startup_timeout = _validate_timeout(startup_timeout, "startup_timeout")
         if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
@@ -382,6 +470,13 @@ class MimoVlMlxProvider(AnalysisProvider):
                 {"field": "max_tokens"},
             )
         self.max_tokens = max_tokens
+        if isinstance(max_image_pixels, bool) or not isinstance(max_image_pixels, int) or max_image_pixels <= 0:
+            raise ProviderError(
+                "provider_config_invalid",
+                "max_image_pixels 必须是正整数",
+                {"field": "max_image_pixels"},
+            )
+        self.max_image_pixels = max_image_pixels
         self.working_directory = Path(working_directory or ROOT).expanduser().resolve()
         if not self.working_directory.is_dir():
             raise ProviderError(
@@ -391,13 +486,26 @@ class MimoVlMlxProvider(AnalysisProvider):
             )
         self.process: subprocess.Popen[str] | None = None
         self._io_lock = threading.Lock()
-        self._start_worker()
+        try:
+            self._start_worker()
+        except Exception:
+            self._cleanup_output_schema()
+            raise
+
+    def _cleanup_output_schema(self) -> None:
+        if self._owned_output_schema is not None:
+            self._owned_output_schema.unlink(missing_ok=True)
+            self._owned_output_schema = None
 
     def identity(self) -> dict[str, str]:
         return {
             "provider": "mimo-vl-mlx",
             "model": self.model,
-            "version": f"mlx-vlm-{MIMO_VLM_VERSION}",
+            "version": (
+                f"mlx-vlm-{MIMO_VLM_VERSION}-max-pixels-{self.max_image_pixels}"
+                f"-output-schema-v{MIMO_OUTPUT_SCHEMA_CONTRACT_VERSION}"
+            ),
+            "schema_sha256": self.output_schema_sha256,
         }
 
     def _start_worker(self) -> None:
@@ -409,6 +517,10 @@ class MimoVlMlxProvider(AnalysisProvider):
             self.model,
             "--max-tokens",
             str(self.max_tokens),
+            "--max-image-pixels",
+            str(self.max_image_pixels),
+            "--output-schema",
+            str(self.output_schema),
         ]
         try:
             self.process = subprocess.Popen(
@@ -562,6 +674,7 @@ class MimoVlMlxProvider(AnalysisProvider):
             if process.stdout is not None:
                 process.stdout.close()
         self.process = None
+        self._cleanup_output_schema()
         super().close()
 
 
@@ -577,7 +690,9 @@ def build_analysis_provider(
     worker_script: str | os.PathLike[str] | None = None,
     startup_timeout: int = 1800,
     max_tokens: int = 1024,
+    max_image_pixels: int = MIMO_MAX_IMAGE_PIXELS,
     working_directory: str | os.PathLike[str] | None = None,
+    allowed_boards: Sequence[str] | None = None,
 ) -> AnalysisProvider:
     """Build one strict analysis provider; unsupported names never downgrade."""
 
@@ -620,9 +735,12 @@ def build_analysis_provider(
             model=model,
             python_bin=python_bin,
             worker_script=worker_script,
+            output_schema=output_schema,
+            allowed_boards=allowed_boards,
             timeout=timeout,
             startup_timeout=startup_timeout,
             max_tokens=max_tokens,
+            max_image_pixels=max_image_pixels,
             working_directory=working_directory,
         )
     raise ProviderError(

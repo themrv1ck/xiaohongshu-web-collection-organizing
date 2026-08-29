@@ -335,26 +335,72 @@ def arc_cookie_status() -> dict[str, Any]:
         }
 
 
-def arc_xiaohongshu_page_status() -> dict[str, Any]:
+def arc_xiaohongshu_page_status(
+    *,
+    window_id: str = "",
+    tab_id: str = "",
+    tab_marker: str = "",
+    expected_url_substring: str = "",
+) -> dict[str, Any]:
+    """Probe only the caller's immutable Arc tab locator.
+
+    Enumerating URL properties of every Arc tab can stall on virtualized tabs.  A
+    video-access preflight must instead inspect the one tab already verified by
+    the collection binding, without changing focus or traversing other tabs.
+    """
+    target_window_id = str(window_id or "").strip()
+    target_tab_id = str(tab_id or "").strip()
+    target_marker = str(tab_marker or "").strip()
+    expected_url = str(expected_url_substring or "").strip()
+    selectors = (target_window_id, target_tab_id, target_marker, expected_url)
+    if any(selectors) and not all(selectors):
+        return {
+            "ok": False,
+            "tab_found": False,
+            "path": "",
+            "login_required": True,
+            "error": "arc_page_probe_locator_incomplete",
+        }
+    if not all(selectors):
+        return {
+            "ok": False,
+            "tab_found": False,
+            "path": "",
+            "login_required": True,
+            "error": "arc_page_probe_locator_required",
+        }
     if platform.system() != "Darwin" or not arc_running():
         return {"ok": False, "tab_found": False, "path": "", "login_required": True, "error": "arc_not_running"}
-    script = r'''
-tell application "Arc"
-  set targetTab to missing value
-  repeat with browserWindow in windows
-    repeat with browserTab in tabs of browserWindow
-      if (URL of browserTab as text) contains "xiaohongshu.com" then
-        set targetTab to browserTab
-        exit repeat
-      end if
-    end repeat
-    if targetTab is not missing value then exit repeat
-  end repeat
-  if targetTab is missing value then return "{\"tab_found\":false}"
-  return execute targetTab javascript "JSON.stringify({tab_found:true,path:location.pathname,login_required:location.pathname.indexOf('/login')===0||/手机号登录|扫码登录|登录后推荐|马上登录即可/.test((document.body&&document.body.innerText)||'')})"
-end tell
-'''.strip()
-    result = run_status(["osascript", "-e", script], timeout=15)
+    page_js = (
+        "JSON.stringify({"
+        "tab_found:true,"
+        "path:location.pathname,"
+        f"marker_matches:window.name==={json.dumps(target_marker, ensure_ascii=False)},"
+        "login_required:location.pathname.indexOf('/login')===0||/手机号登录|扫码登录|登录后推荐|马上登录即可/"
+        ".test((document.body&&document.body.innerText)||'')"
+        "})"
+    )
+    script = (
+        "const app = Application('Arc');\n"
+        f"const expectedWindowId = {json.dumps(target_window_id, ensure_ascii=False)};\n"
+        f"const expectedTabId = {json.dumps(target_tab_id, ensure_ascii=False)};\n"
+        f"const expectedURLPart = {json.dumps(expected_url, ensure_ascii=False)};\n"
+        "let payload;\n"
+        "try {\n"
+        "  const targetWindow = app.windows.byId(expectedWindowId);\n"
+        "  const targetTab = targetWindow.tabs.byId(expectedTabId);\n"
+        "  const targetURL = String(targetTab.url() || '');\n"
+        "  if (!targetURL.includes('xiaohongshu.com') || !targetURL.includes(expectedURLPart)) {\n"
+        "    payload = JSON.stringify({tab_found:false, locator_error:'arc_tab_url_mismatch'});\n"
+        "  } else {\n"
+        f"    payload = app.execute(targetTab, {{javascript: {json.dumps(page_js, ensure_ascii=False)}}});\n"
+        "  }\n"
+        "} catch (_) {\n"
+        "  payload = JSON.stringify({tab_found:false, locator_error:'arc_locator_not_found'});\n"
+        "}\n"
+        "payload;"
+    )
+    result = run_status(["osascript", "-l", "JavaScript", "-e", script], timeout=15)
     if not result["ok"]:
         return {
             "ok": False,
@@ -375,12 +421,22 @@ end tell
         return {"ok": False, "tab_found": False, "path": "", "login_required": True, "error": "arc_page_probe_invalid"}
     tab_found = payload.get("tab_found") is True
     login_required = payload.get("login_required") is not False
+    marker_matches = payload.get("marker_matches") is True
+    locator_error = str(payload.get("locator_error") or "")
+    if tab_found and marker_matches and not login_required:
+        error = ""
+    elif locator_error:
+        error = locator_error
+    elif tab_found and not marker_matches:
+        error = "arc_page_marker_mismatch"
+    else:
+        error = "xiaohongshu_login_required"
     return {
-        "ok": tab_found and not login_required,
+        "ok": tab_found and marker_matches and not login_required,
         "tab_found": tab_found,
         "path": str(payload.get("path") or ""),
         "login_required": login_required,
-        "error": "" if tab_found and not login_required else "xiaohongshu_login_required",
+        "error": error,
     }
 
 
@@ -398,8 +454,22 @@ def combine_arc_login_status(cookie: dict[str, Any], page: dict[str, Any]) -> di
     }
 
 
-def arc_login_status() -> dict[str, Any]:
-    return combine_arc_login_status(arc_cookie_status(), arc_xiaohongshu_page_status())
+def arc_login_status(
+    *,
+    window_id: str = "",
+    tab_id: str = "",
+    tab_marker: str = "",
+    expected_url_substring: str = "",
+) -> dict[str, Any]:
+    return combine_arc_login_status(
+        arc_cookie_status(),
+        arc_xiaohongshu_page_status(
+            window_id=window_id,
+            tab_id=tab_id,
+            tab_marker=tab_marker,
+            expected_url_substring=expected_url_substring,
+        ),
+    )
 
 
 def video_content_environment(
@@ -411,6 +481,10 @@ def video_content_environment(
     analysis_command: str | None = None,
     mimo_vl_root: str | Path | None = None,
     visual_analysis: bool = False,
+    arc_window_id: str = "",
+    arc_tab_id: str = "",
+    arc_tab_marker: str = "",
+    arc_expected_url_substring: str = "",
 ) -> dict[str, Any]:
     if analysis_provider is not None and analysis_provider not in ANALYSIS_PROVIDERS:
         raise ValueError(f"analysis_provider 必须是 {', '.join(ANALYSIS_PROVIDERS)} 之一")
@@ -461,7 +535,12 @@ def video_content_environment(
     arc_app = Path("/Applications/Arc.app").exists() if platform.system() == "Darwin" else False
     arc_is_running = arc_running() if browser == "arc" else None
     login = (
-        arc_login_status()
+        arc_login_status(
+            window_id=arc_window_id,
+            tab_id=arc_tab_id,
+            tab_marker=arc_tab_marker,
+            expected_url_substring=arc_expected_url_substring,
+        )
         if browser == "arc" and check_login_state
         else {
             "ok": None,

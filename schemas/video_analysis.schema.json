@@ -1,18 +1,49 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-guidance": {"whitespace_flexible": false},
   "type": "object",
   "additionalProperties": false,
+  "anyOf": [
+    {
+      "properties": {
+        "target_board": {"const": ""},
+        "confidence": {"const": "low"}
+      },
+      "required": ["target_board", "confidence"]
+    },
+    {
+      "properties": {
+        "target_board": {"type": "string", "minLength": 1}
+      },
+      "required": ["target_board"]
+    }
+  ],
   "required": ["main_topic", "content_summary", "target_board", "confidence", "reason"],
   "properties": {
-    "main_topic": {"type": "string", "minLength": 1},
-    "content_summary": {"type": "string", "minLength": 1},
-    "target_board": {"type": "string"},
-    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    "main_topic": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48,
+      "pattern": "^[\\u3400-\\u4DBF\\u4E00-\\u9FFF]"
+    },
+    "content_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "pattern": "^[\\u3400-\\u4DBF\\u4E00-\\u9FFF]"
+    },
     "reason": {
       "type": "array",
       "minItems": 1,
       "maxItems": 4,
-      "items": {"type": "string", "minLength": 1}
-    }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "pattern": "^[\\u3400-\\u4DBF\\u4E00-\\u9FFF]"
+      }
+    },
+    "target_board": {"type": "string", "maxLength": 64},
+    "confidence": {"type": "string", "enum": ["high", "medium", "low"]}
   }
 }

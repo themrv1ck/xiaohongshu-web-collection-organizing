@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import sys
 import tempfile
@@ -21,6 +22,35 @@ from video_analysis_provider import (  # noqa: E402
     ProviderError,
     build_analysis_provider,
 )
+
+
+def effective_schema_sha256(boards: list[str] | None = None) -> str:
+    schema_path = ROOT / "schemas" / "video_analysis.schema.json"
+    if boards is None:
+        payload = schema_path.read_bytes()
+    else:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema["properties"]["target_board"]["enum"] = ["", *boards]
+        schema["anyOf"] = [
+            {
+                "properties": {
+                    "target_board": {"const": ""},
+                    "confidence": {"const": "low"},
+                },
+                "required": ["target_board", "confidence"],
+            },
+            *[
+                {
+                    "properties": {
+                        "target_board": {"const": board},
+                    },
+                    "required": ["target_board"],
+                }
+                for board in boards
+            ],
+        ]
+        payload = (json.dumps(schema, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class NonClosingStringIO(io.StringIO):
@@ -170,6 +200,66 @@ class CommandProviderTests(unittest.TestCase):
 
 
 class MimoWorkerProviderTests(unittest.TestCase):
+    def test_mimo_worker_constrains_target_board_to_exact_taxonomy(self):
+        ready = {
+            "type": "ready",
+            "ok": True,
+            "identity": {
+                "provider": "mimo-vl-mlx",
+                "model": "/models/mimo",
+                "version": "mlx-vlm-0.5.0-max-pixels-401408-output-schema-v5",
+                "schema_sha256": effective_schema_sha256(["运动训练与体态", "体态纠正与康复"]),
+            },
+        }
+        process = FakeWorkerProcess([ready, {"ok": True, "closed": True}])
+        boards = ["运动训练与体态", "体态纠正与康复"]
+
+        with patch("video_analysis_provider.subprocess.Popen", return_value=process) as popen:
+            with patch("video_analysis_provider.select.select", side_effect=lambda read, *_: (read, [], [])):
+                provider = build_analysis_provider(
+                    "mimo-vl-mlx",
+                    model="/models/mimo",
+                    python_bin="/runtime/python",
+                    worker_script="/worker/mimo_vl_worker.py",
+                    allowed_boards=boards,
+                )
+                command = popen.call_args.args[0]
+                schema_path = Path(command[command.index("--output-schema") + 1])
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                self.assertEqual(schema["x-guidance"], {"whitespace_flexible": False})
+                self.assertEqual(
+                    schema["anyOf"][0]["properties"]["confidence"]["const"],
+                    "low",
+                )
+                self.assertEqual(schema["anyOf"][1]["properties"]["target_board"]["const"], boards[0])
+                self.assertEqual(schema["properties"]["target_board"]["enum"], ["", *boards])
+                self.assertEqual(schema["properties"]["main_topic"]["maxLength"], 48)
+                self.assertEqual(schema["properties"]["main_topic"]["minLength"], 1)
+                self.assertEqual(
+                    schema["properties"]["main_topic"]["pattern"],
+                    "^[\\u3400-\\u4DBF\\u4E00-\\u9FFF]",
+                )
+                self.assertNotIn("enum", schema["properties"]["main_topic"])
+                self.assertEqual(schema["properties"]["content_summary"]["maxLength"], 180)
+                self.assertEqual(schema["properties"]["content_summary"]["minLength"], 1)
+                self.assertEqual(
+                    schema["properties"]["content_summary"]["pattern"],
+                    "^[\\u3400-\\u4DBF\\u4E00-\\u9FFF]",
+                )
+                self.assertEqual(schema["properties"]["reason"]["items"]["maxLength"], 100)
+                self.assertEqual(schema["properties"]["reason"]["items"]["minLength"], 1)
+                self.assertEqual(
+                    schema["properties"]["reason"]["items"]["pattern"],
+                    "^[\\u3400-\\u4DBF\\u4E00-\\u9FFF]",
+                )
+                self.assertEqual(len(schema["anyOf"]), len(boards) + 1)
+                self.assertNotIn("main_topic", schema["anyOf"][0]["properties"])
+                self.assertEqual(provider.identity()["schema_sha256"], effective_schema_sha256(boards))
+                self.assertTrue(schema_path.is_file())
+                provider.close()
+
+        self.assertFalse(schema_path.exists())
+
     def test_mimo_worker_is_persistent_and_model_is_loaded_once(self):
         ready = {
             "type": "ready",
@@ -177,7 +267,8 @@ class MimoWorkerProviderTests(unittest.TestCase):
             "identity": {
                 "provider": "mimo-vl-mlx",
                 "model": "/models/mimo",
-                "version": "mlx-vlm-0.5.0",
+                "version": "mlx-vlm-0.5.0-max-pixels-401408-output-schema-v5",
+                "schema_sha256": effective_schema_sha256(),
             },
         }
         process = FakeWorkerProcess([
@@ -203,6 +294,10 @@ class MimoWorkerProviderTests(unittest.TestCase):
         popen.assert_called_once()
         command = popen.call_args.args[0]
         self.assertEqual(command[:3], ["/runtime/python", "-u", "/worker/mimo_vl_worker.py"])
+        self.assertEqual(command[command.index("--max-image-pixels") + 1], "401408")
+        self.assertIn("--output-schema", command)
+        schema_index = command.index("--output-schema") + 1
+        self.assertEqual(Path(command[schema_index]), ROOT / "schemas" / "video_analysis.schema.json")
         sent = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         self.assertEqual([row["action"] for row in sent], ["analyze", "analyze", "close"])
 
@@ -214,7 +309,8 @@ class MimoWorkerProviderTests(unittest.TestCase):
                 "identity": {
                     "provider": "mimo-vl-mlx",
                     "model": "/models/mimo",
-                    "version": "mlx-vlm-0.5.0",
+                    "version": "mlx-vlm-0.5.0-max-pixels-401408-output-schema-v5",
+                    "schema_sha256": effective_schema_sha256(),
                 },
             },
             {
@@ -248,17 +344,15 @@ class MimoOutputParsingTests(unittest.TestCase):
             self.assertIn("禁止输出 Markdown 代码块", value)
             self.assertEqual(value.count("/no_think"), 1)
 
-    def test_parser_accepts_strict_json_and_known_no_think_envelope(self):
+    def test_parser_accepts_only_strict_json(self):
         self.assertEqual(parse_model_output('{"main_topic":"滑雪"}'), {"main_topic": "滑雪"})
-        wrapped = '<think>\n本应禁用思考\n</think>\n{"main_topic":"滑雪"}'
-        self.assertEqual(parse_model_output(wrapped), {"main_topic": "滑雪"})
-        fenced_wire_payload = '<think>\n</think>\n```json\n{"main_topic":"滑雪"}\n```'
-        self.assertEqual(parse_model_output(fenced_wire_payload), {"main_topic": "滑雪"})
 
     def test_parser_rejects_markdown_or_prose_instead_of_extracting_json(self):
         for output in (
             '```json\n{"main_topic":"滑雪"}\n```',
             '结果如下：{"main_topic":"滑雪"}',
+            '<think>\n本应禁用思考\n</think>\n{"main_topic":"滑雪"}',
+            '<think>\n</think>\n```json\n{"main_topic":"滑雪"}\n```',
             '<think></think>\n结果：{"main_topic":"滑雪"}',
             '<think></think>\n说明\n```json\n{"main_topic":"滑雪"}\n```',
             '[{"main_topic":"滑雪"}]',
@@ -271,8 +365,20 @@ class MimoOutputParsingTests(unittest.TestCase):
         calls = {"load": 0}
         fake_package = ModuleType("mlx_vlm")
         fake_prompt_utils = ModuleType("mlx_vlm.prompt_utils")
+        fake_structured = ModuleType("mlx_vlm.structured")
         model = SimpleNamespace(config={"model_type": "qwen2_5_vl"})
-        processor = object()
+        processor = SimpleNamespace(
+            tokenizer=object(),
+            image_processor=SimpleNamespace(max_pixels=12_845_056),
+        )
+        structured_clone = object()
+
+        class FakeStructuredProcessor:
+            def clone(self):
+                calls["structured_clone_count"] = calls.get("structured_clone_count", 0) + 1
+                return structured_clone
+
+        structured_processor = FakeStructuredProcessor()
 
         def fake_load(model_path):
             calls["load"] += 1
@@ -289,26 +395,42 @@ class MimoOutputParsingTests(unittest.TestCase):
             return "FORMATTED"
 
         def fake_generate(actual_model, actual_processor, formatted, **kwargs):
+            calls["generate_count"] = calls.get("generate_count", 0) + 1
             calls["generate"] = {
                 "model": actual_model,
                 "processor": actual_processor,
                 "formatted": formatted,
                 **kwargs,
             }
-            return SimpleNamespace(text='{"main_topic":"滑雪"}')
+            if calls["generate_count"] == 1:
+                return SimpleNamespace(text='{"main_topic":"滑雪"}', generation_tokens=24)
+            return SimpleNamespace(text='{"main_topic":"未闭合"', generation_tokens=512)
 
         fake_package.load = fake_load
         fake_package.generate = fake_generate
         fake_prompt_utils.apply_chat_template = fake_template
 
+        def fake_build_json_schema_logits_processor(actual_tokenizer, schema):
+            calls["structured"] = {"tokenizer": actual_tokenizer, "schema": schema}
+            return structured_processor
+
+        fake_structured.build_json_schema_logits_processor = fake_build_json_schema_logits_processor
+
         with tempfile.TemporaryDirectory() as temp_dir:
             images = [Path(temp_dir) / "one.jpg", Path(temp_dir) / "two.jpg"]
             for image in images:
                 image.write_bytes(b"image")
+            output_schema = Path(temp_dir) / "schema.json"
+            output_schema.write_text(json.dumps({"type": "object"}), encoding="utf-8")
             requests = "".join([
                 json.dumps({
                     "action": "analyze",
                     "prompt": "只按真实画面分类",
+                    "image_paths": [str(path) for path in images],
+                }, ensure_ascii=False) + "\n",
+                json.dumps({
+                    "action": "analyze",
+                    "prompt": "验证截断判定",
                     "image_paths": [str(path) for path in images],
                 }, ensure_ascii=False) + "\n",
                 json.dumps({"action": "close"}) + "\n",
@@ -317,10 +439,16 @@ class MimoOutputParsingTests(unittest.TestCase):
             with patch.dict(sys.modules, {
                 "mlx_vlm": fake_package,
                 "mlx_vlm.prompt_utils": fake_prompt_utils,
+                "mlx_vlm.structured": fake_structured,
             }):
                 with patch("mimo_vl_worker.importlib.metadata.version", return_value="0.5.0"):
                     with patch("mimo_vl_worker.sys.stdin", io.StringIO(requests)):
-                        exit_code = run_worker("XiaomiMiMo/MiMo-VL-7B-RL-2508", 512, protocol=protocol)
+                        exit_code = run_worker(
+                            "XiaomiMiMo/MiMo-VL-7B-RL-2508",
+                            512,
+                            output_schema=output_schema,
+                            protocol=protocol,
+                        )
 
         responses = [json.loads(line) for line in protocol.getvalue().splitlines()]
         self.assertEqual(exit_code, 0)
@@ -331,7 +459,14 @@ class MimoOutputParsingTests(unittest.TestCase):
         self.assertEqual(calls["generate"]["temperature"], 0.0)
         self.assertEqual(calls["generate"]["top_p"], 1.0)
         self.assertEqual(calls["generate"]["max_tokens"], 512)
+        self.assertEqual(processor.image_processor.max_pixels, 401_408)
+        self.assertEqual(calls["generate"]["logits_processors"], [structured_clone])
+        self.assertEqual(calls["structured_clone_count"], 2)
+        self.assertIs(calls["structured"]["tokenizer"], processor.tokenizer)
+        self.assertEqual(calls["structured"]["schema"], {"type": "object"})
         self.assertEqual(responses[1], {"ok": True, "result": {"main_topic": "滑雪"}})
+        self.assertEqual(responses[2]["reason_code"], "mimo_vl_output_truncated")
+        self.assertEqual(responses[2]["metadata"]["generation_tokens"], 512)
 
 
 class FactoryValidationTests(unittest.TestCase):

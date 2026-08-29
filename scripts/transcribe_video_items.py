@@ -27,6 +27,8 @@ from video_content_common import (
     video_content_environment,
     xiaohongshu_access_url,
 )
+from collection_scope import validate_scope_input
+from archive_exclusion import combine_archived_note_maps
 from xhs_safety import (
     SafetyHaltedError,
     classify_safety_error,
@@ -39,11 +41,6 @@ from xhs_safety import (
 class BatchInfrastructureError(RuntimeError):
     """Abort the batch while preserving checkpoints when shared infrastructure dies."""
 
-
-SUSPICIOUS_YT_DLP_PAGE_ERRORS = (
-    "unable to extract initial state",
-    "no video formats found",
-)
 
 VIDEO_EXTRACTOR_PREPARED_SAMPLE_RATE = 16_000
 VIDEO_EXTRACTOR_PREPARED_CHANNELS = 1
@@ -439,66 +436,6 @@ def probe_video_metadata(
     return {"ok": True, "duration": duration, "result": {"returncode": 0, "stdout": "", "stderr": ""}}
 
 
-def probe_known_success_video(
-    item: dict[str, Any],
-    *,
-    module: Any,
-    browser: str,
-    arc_profile: str,
-    arc_contexts: dict[str, dict[str, Any]] | None,
-    shared_cookie_file: Path | None,
-    timeout: int,
-) -> bool:
-    note_id = str(item.get("id") or "").strip()
-    canonical_url = canonical_xiaohongshu_note_url(item)
-    if not note_id or not canonical_url:
-        return False
-
-    access_url = canonical_url
-    cookies_from_browser: str | None = browser
-    if browser == "arc":
-        arc_context = (
-            arc_contexts.get(note_id, {"found": False, "content_type": "unknown"})
-            if arc_contexts is not None
-            else find_arc_collection_note_context(note_id, profile=arc_profile)
-        )
-        if arc_context.get("found") is not True or arc_context.get("content_type") != "video":
-            return False
-        access_url = xiaohongshu_access_url(canonical_url, arc_context)
-        cookies_from_browser = None
-
-    try:
-        metadata = probe_video_metadata(
-            module,
-            access_url,
-            cookies_from_browser=cookies_from_browser,
-            cookie_file=shared_cookie_file,
-            timeout=timeout,
-        )
-    except Exception:
-        return False
-    return metadata.get("ok") is True
-
-
-def is_suspicious_yt_dlp_page_failure(row: dict[str, Any]) -> bool:
-    if row.get("status") == "success":
-        return False
-    error = str(row.get("error") or "").lower()
-    return any(message in error for message in SUSPICIOUS_YT_DLP_PAGE_ERRORS)
-
-
-def is_valid_success_transcript(row: dict[str, Any]) -> bool:
-    if row.get("status") != "success":
-        return False
-    segments = row.get("segments")
-    coverage = row.get("coverage")
-    if not isinstance(segments, list) or not segments:
-        return False
-    if not isinstance(coverage, dict) or coverage.get("transcript_quality_passed") is not True:
-        return False
-    return bool(row.get("transcript_sha256")) and row.get("transcript_sha256") == transcript_sha256(segments)
-
-
 def transcript_source_name(material: dict[str, Any], *, used_audio: bool) -> str:
     if used_audio:
         return "mimo_audio"
@@ -697,11 +634,9 @@ def build_transcript_rows(
     video_ids: set[str] | None = None,
     initial_rows: list[dict[str, Any]] | None = None,
     on_row: Callable[[list[dict[str, Any]]], None] | None = None,
-    control_probe: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     explicit_video_order: list[str] = []
     explicit_video_ids: set[str] = set()
-    video_items_by_id: dict[str, dict[str, Any]] = {}
     for item in items:
         if normalize_content_type(item.get("content_type") or item.get("note_type") or item.get("type")) != "video":
             continue
@@ -712,7 +647,6 @@ def build_transcript_rows(
             raise ValueError(f"当前输入包含重复视频 ID：{note_id}")
         explicit_video_ids.add(note_id)
         explicit_video_order.append(note_id)
-        video_items_by_id[note_id] = item
     if video_ids is not None:
         missing = sorted(video_ids - explicit_video_ids)
         if missing:
@@ -727,20 +661,17 @@ def build_transcript_rows(
         if note_id in checkpoint_ids:
             raise ValueError(f"断点文件包含重复视频 ID：{note_id}")
         checkpoint_ids.add(note_id)
-        if row.get("status") != "success":
-            continue
-        segments = row.get("segments")
-        coverage = row.get("coverage")
-        if not isinstance(segments, list) or not segments:
-            raise ValueError(f"断点文件中的成功文字稿缺少 segments：{note_id}")
-        if not isinstance(coverage, dict) or coverage.get("transcript_quality_passed") is not True:
-            raise ValueError(f"断点文件中的成功文字稿未通过质量门：{note_id}")
-        expected_hash = transcript_sha256(segments)
-        if not row.get("transcript_sha256") or row.get("transcript_sha256") != expected_hash:
-            raise ValueError(f"断点文件中的文字稿哈希不匹配：{note_id}")
+        if row.get("status") == "success":
+            segments = row.get("segments")
+            coverage = row.get("coverage")
+            if not isinstance(segments, list) or not segments:
+                raise ValueError(f"断点文件中的成功文字稿缺少 segments：{note_id}")
+            if not isinstance(coverage, dict) or coverage.get("transcript_quality_passed") is not True:
+                raise ValueError(f"断点文件中的成功文字稿未通过质量门：{note_id}")
+            expected_hash = transcript_sha256(segments)
+            if not row.get("transcript_sha256") or row.get("transcript_sha256") != expected_hash:
+                raise ValueError(f"断点文件中的文字稿哈希不匹配：{note_id}")
         result_by_id[note_id] = dict(row)
-
-    control_note_id = next((note_id for note_id in explicit_video_order if note_id in result_by_id), None)
 
     def ordered_rows() -> list[dict[str, Any]]:
         return [result_by_id[note_id] for note_id in explicit_video_order if note_id in result_by_id]
@@ -757,31 +688,37 @@ def build_transcript_rows(
         if max_videos is not None and processed >= max_videos:
             break
         row = acquire(item)
-        if is_suspicious_yt_dlp_page_failure(row):
-            if control_note_id is None:
-                raise BatchInfrastructureError(
-                    "yt-dlp 页面提取失败，但没有有效的成功文字稿可作对照；已中止批次且不写入当前失败。"
-                )
-            if control_probe is None:
-                raise BatchInfrastructureError(
-                    "yt-dlp 页面提取失败，但未配置已有成功文字稿的对照探针；已中止批次且不写入当前失败。"
-                )
-            try:
-                control_ok = control_probe(video_items_by_id[control_note_id]) is True
-            except Exception:
-                control_ok = False
-            if not control_ok:
-                raise BatchInfrastructureError(
-                    f"yt-dlp 当前视频与已有成功文字稿的对照视频 {control_note_id} 同时提取失败；"
-                    "判定为共享访问链路故障，已中止批次且不写入当前失败。"
-                )
         result_by_id[note_id] = row
-        if control_note_id is None and is_valid_success_transcript(row):
-            control_note_id = note_id
         processed += 1
         if on_row is not None:
             on_row(ordered_rows())
     return ordered_rows()
+
+
+def expected_transcript_count(
+    items: list[dict[str, Any]],
+    *,
+    max_videos: int | None = None,
+    video_ids: set[str] | None = None,
+    initial_rows: list[dict[str, Any]] | None = None,
+) -> int:
+    """Return the total rows that the requested run will retain or add."""
+    video_order = [
+        str(item.get("id") or "").strip()
+        for item in items
+        if normalize_content_type(item.get("content_type") or item.get("note_type") or item.get("type")) == "video"
+    ]
+    retained_ids = {
+        str(row.get("id") or "").strip()
+        for row in initial_rows or []
+        if str(row.get("id") or "").strip()
+    }
+    if video_ids is not None:
+        return len(retained_ids | video_ids)
+    if max_videos is not None:
+        missing_ids = [note_id for note_id in video_order if note_id not in retained_ids]
+        return len(retained_ids) + min(max_videos, len(missing_ids))
+    return len(video_order)
 
 
 def main() -> int:
@@ -790,13 +727,19 @@ def main() -> int:
     parser.add_argument("out", help="video_transcripts.json 输出路径")
     parser.add_argument("--browser", choices=("arc", "chrome", "safari", "edge", "brave", "firefox"), required=True)
     parser.add_argument("--arc-profile", default="Default")
+    parser.add_argument("--arc-window-id", default="", help="Arc 已核验工作窗口的不可变 id")
+    parser.add_argument("--arc-tab-id", default="", help="Arc 已核验工作标签页的不可变 id")
+    parser.add_argument("--arc-tab-marker", default="", help="该标签页预先写入的 window.name 唯一标记")
+    parser.add_argument("--arc-expected-url-substring", default="", help="已核验 Arc 标签页 URL 必须包含的片段")
     parser.add_argument("--extractor-root")
     parser.add_argument("--cache-dir")
     parser.add_argument("--keep-cache", action="store_true")
     parser.add_argument("--max-videos", type=int)
     parser.add_argument("--video-id", action="append", help="只处理指定视频 ID；可重复传入，用于可复现抽样测试")
-    parser.add_argument("--resume", action="store_true", help="复用输出文件中已经完成的条目，只处理缺失视频")
+    parser.add_argument("--resume", action="store_true", help="保留输出文件中已落盘的条目，只处理缺失视频")
     parser.add_argument("--allow-video-access", action="store_true", help="明确同意本次访问所选视频；默认低风险模式不会请求视频页面或媒体")
+    parser.add_argument("--collection-scope", default="", help="可选 collection_scope.json；提供时强制校验完整 note ID 范围")
+    parser.add_argument("--archive-registry", action="append", default=[], help="已确认归档基线或 existing boards inventory；可重复传入，命中 ID 不访问视频")
     parser.add_argument("--safety-state", default="", help="共享安全状态文件；默认继承输入文件旁已有状态，否则使用输出同目录的 xhs_safety_state.json")
     parser.add_argument("--subtitle-timeout", type=int, default=180)
     parser.add_argument("--audio-timeout", type=int, default=900)
@@ -811,6 +754,18 @@ def main() -> int:
         parser.error("视频访问必须明确传 --max-videos 或至少一个 --video-id；不会默认处理全部视频。")
     if args.max_videos is not None and (not isinstance(args.max_videos, int) or isinstance(args.max_videos, bool) or not 1 <= args.max_videos <= 200):
         parser.error("--max-videos 必须是 1 到 200 的整数")
+    if args.browser == "arc":
+        arc_locator = (
+            str(args.arc_window_id or "").strip(),
+            str(args.arc_tab_id or "").strip(),
+            str(args.arc_tab_marker or "").strip(),
+            str(args.arc_expected_url_substring or "").strip(),
+        )
+        if not all(arc_locator):
+            parser.error(
+                "Arc 视频访问必须同时提供 --arc-window-id、--arc-tab-id、--arc-tab-marker 和 --arc-expected-url-substring；"
+                "不会遍历其他标签页猜测登录态。"
+            )
 
     src = Path(args.src)
     out = Path(args.out)
@@ -830,10 +785,99 @@ def main() -> int:
     items = json.loads(src.read_text(encoding="utf-8"))
     if not isinstance(items, list):
         raise SystemExit("visible_items.json 必须是数组")
+    scope_user_id = ""
+    if str(args.collection_scope or "").strip():
+        scope = validate_scope_input(args.collection_scope, items, stage="视频转写输入")
+        scope_user_id = str((scope.get("page_binding") or {}).get("user_id") or "")
+    archived_note_map = combine_archived_note_maps(
+        args.archive_registry,
+        expected_user_id=scope_user_id or None,
+    )
+    archived_excluded_count = sum(
+        str(item.get("id") or "").strip() in archived_note_map
+        for item in items
+    )
+    items = [
+        item for item in items
+        if str(item.get("id") or "").strip() not in archived_note_map
+    ]
+    initial_rows: list[dict[str, Any]] = []
+    if args.resume and out.exists():
+        existing_payload = json.loads(out.read_text(encoding="utf-8"))
+        if not isinstance(existing_payload, list):
+            raise SystemExit("已有 video_transcripts.json 必须是数组")
+        if any(not isinstance(row, dict) for row in existing_payload):
+            raise SystemExit("已有 video_transcripts.json 每一项都必须是对象")
+        initial_rows = [
+            row for row in existing_payload
+            if str(row.get("id") or "").strip() not in archived_note_map
+        ]
+
+    # Validate the filtered input and checkpoint before touching the browser,
+    # extractor, cookies, or ASR runtime.
+    build_transcript_rows(
+        items,
+        lambda _item: (_ for _ in ()).throw(AssertionError("unexpected acquisition")),
+        max_videos=0,
+        initial_rows=initial_rows,
+    )
+    video_order = [
+        str(item.get("id") or "").strip()
+        for item in items
+        if normalize_content_type(item.get("content_type") or item.get("note_type") or item.get("type")) == "video"
+    ]
+    available_video_ids = set(video_order)
+    checkpoint_ids = {str(row.get("id") or "").strip() for row in initial_rows}
+    if args.video_id:
+        requested_video_ids = set(args.video_id)
+        missing_requested = sorted(requested_video_ids - available_video_ids)
+        if missing_requested:
+            raise ValueError(
+                "请求的视频 ID 不属于未归档视频范围：" + ", ".join(missing_requested)
+            )
+        pending_ids = requested_video_ids - checkpoint_ids
+    else:
+        pending_ids = set(
+            [note_id for note_id in video_order if note_id not in checkpoint_ids][
+                :args.max_videos
+            ]
+        )
+
+    if not pending_ids:
+        rows = build_transcript_rows(
+            items,
+            lambda _item: (_ for _ in ()).throw(AssertionError("unexpected acquisition")),
+            max_videos=args.max_videos,
+            video_ids=set(args.video_id) if args.video_id else None,
+            initial_rows=initial_rows,
+        )
+        write_json(out, rows)
+        expected_count = expected_transcript_count(
+            items,
+            max_videos=args.max_videos,
+            video_ids=set(args.video_id) if args.video_id else None,
+            initial_rows=initial_rows,
+        )
+        print(json.dumps({
+            "video_count": len(rows),
+            "success_count": sum(row.get("status") == "success" for row in rows),
+            "failed_count": sum(row.get("status") != "success" for row in rows),
+            "expected_count": expected_count,
+            "complete": len(rows) == expected_count,
+            "archived_excluded": archived_excluded_count,
+            "output": str(out),
+            "safety_state": str(safety_state),
+        }, ensure_ascii=False, indent=2))
+        return 0
+
     environment = video_content_environment(
         extractor_root=args.extractor_root,
         browser=args.browser,
         check_login_state=args.browser == "arc",
+        arc_window_id=args.arc_window_id,
+        arc_tab_id=args.arc_tab_id,
+        arc_tab_marker=args.arc_tab_marker,
+        arc_expected_url_substring=args.arc_expected_url_substring,
     )
     if not environment["video_content_ready"]:
         print(json.dumps(environment, ensure_ascii=False, indent=2))
@@ -842,13 +886,6 @@ def main() -> int:
     runtime = module.ensure_environment()
     cache_root = Path(args.cache_dir).expanduser() if args.cache_dir else out.parent / ".video-content-cache"
     arc_contexts = load_arc_collection_note_contexts(profile=args.arc_profile) if args.browser == "arc" else None
-    initial_rows: list[dict[str, Any]] = []
-    if args.resume and out.exists():
-        existing_payload = json.loads(out.read_text(encoding="utf-8"))
-        if not isinstance(existing_payload, list):
-            raise SystemExit("已有 video_transcripts.json 必须是数组")
-        initial_rows = existing_payload
-
     shared_cookie_file: Path | None = None
     mimo_worker: PersistentMiMoWorker | None = None
     try:
@@ -877,17 +914,6 @@ def main() -> int:
                 mimo_worker=mimo_worker,
             )
 
-        def control_probe(item: dict[str, Any]) -> bool:
-            return probe_known_success_video(
-                item,
-                module=module,
-                browser=args.browser,
-                arc_profile=args.arc_profile,
-                arc_contexts=arc_contexts,
-                shared_cookie_file=shared_cookie_file,
-                timeout=args.subtitle_timeout,
-            )
-
         def checkpoint(current: list[dict[str, Any]]) -> None:
             write_json(out, current)
             last = current[-1] if current else {}
@@ -909,7 +935,6 @@ def main() -> int:
             video_ids=set(args.video_id) if args.video_id else None,
             initial_rows=initial_rows,
             on_row=checkpoint,
-            control_probe=control_probe,
         )
     finally:
         if mimo_worker is not None:
@@ -922,22 +947,19 @@ def main() -> int:
             except OSError:
                 pass
     write_json(out, rows)
-    explicit_video_count = sum(
-        normalize_content_type(item.get("content_type") or item.get("note_type") or item.get("type")) == "video"
-        for item in items
+    expected_count = expected_transcript_count(
+        items,
+        max_videos=args.max_videos,
+        video_ids=set(args.video_id) if args.video_id else None,
+        initial_rows=initial_rows,
     )
-    if args.video_id:
-        expected_count = len(set(args.video_id))
-    elif args.max_videos is not None:
-        expected_count = min(args.max_videos, explicit_video_count)
-    else:
-        expected_count = explicit_video_count
     print(json.dumps({
         "video_count": len(rows),
         "success_count": sum(row.get("status") == "success" for row in rows),
         "failed_count": sum(row.get("status") != "success" for row in rows),
         "expected_count": expected_count,
         "complete": len(rows) == expected_count,
+        "archived_excluded": archived_excluded_count,
         "output": str(out),
         "safety_state": str(safety_state),
     }, ensure_ascii=False, indent=2))

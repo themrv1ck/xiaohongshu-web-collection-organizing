@@ -17,6 +17,8 @@ from typing import Any, Callable, Iterable
 
 from analyze_video_transcripts import ANALYSIS_OUTPUT_CONTRACT, validate_analysis
 from video_analysis_provider import ProviderError, build_analysis_provider
+from collection_scope import validate_scope_input
+from archive_exclusion import combine_archived_note_maps
 from video_content_common import (
     MIMO_VL_MODEL_SUBDIR,
     canonical_xiaohongshu_note_url,
@@ -27,6 +29,7 @@ from video_content_common import (
     resolve_mimo_vl_root,
     safe_error,
     transcript_sha256,
+    video_content_environment,
     xiaohongshu_access_url,
 )
 from xhs_ocr_common import load_taxonomy
@@ -43,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "video_analysis.schema.json"
 OCR_SCRIPT = ROOT / "scripts" / "ocr_image.swift.txt"
 VISUAL_EVIDENCE_SCHEMA_VERSION = 1
-VISUAL_ANALYSIS_PROMPT_CONTRACT_VERSION = 4
+VISUAL_ANALYSIS_PROMPT_CONTRACT_VERSION = 9
 DEFAULT_MAX_FRAME_GAP_SECONDS = 10.0
 
 
@@ -252,7 +255,7 @@ def build_visual_prompt(
     return (
         "你只执行一次视频真实画面理解与分类，不运行工具、不读取其他文件。\n"
         "附件图片就是该视频按完整时轴等间隔抽取的真实单帧，按 frame_evidence 的 index 和时间戳顺序对应。"
-        "必须先判断画面持续展示的主要对象、动作和用途；背景音乐或歌词与画面冲突时，以画面主体为准。\n"
+        "必须先写出画面持续展示的主要对象、动作和用途，再判断专辑；背景音乐或歌词与画面冲突时，以画面主体为准。\n"
         "只可使用附件画面、逐帧 Vision OCR 和通过质量门的转写。严禁根据标题、简介、作者、标签、热度、封面或文件外信息猜测。\n"
         "专辑名代表上位主题；主要内容是某个专辑的明确子主题时就应选择该专辑，不能只因内容更具体而留空。\n"
         "OCR 为空或错误不代表视频失败，仍须直接观察附件画面。若画面证据不足以确定任何现有专辑，"
@@ -739,6 +742,10 @@ def main() -> int:
     parser.add_argument("--taxonomy")
     parser.add_argument("--browser", choices=("arc",), default="arc")
     parser.add_argument("--arc-profile", default="Default")
+    parser.add_argument("--arc-window-id", default="", help="Arc 已核验工作窗口的不可变 id")
+    parser.add_argument("--arc-tab-id", default="", help="Arc 已核验工作标签页的不可变 id")
+    parser.add_argument("--arc-tab-marker", default="", help="该标签页预先写入的 window.name 唯一标记")
+    parser.add_argument("--arc-expected-url-substring", default="", help="已核验 Arc 标签页 URL 必须包含的片段")
     parser.add_argument("--extractor-root")
     parser.add_argument("--cache-dir")
     parser.add_argument("--keep-cache", action="store_true", help="保留视频和逐帧证据；cookie 始终删除")
@@ -757,6 +764,8 @@ def main() -> int:
     parser.add_argument("--ffprobe-bin", default=shutil.which("ffprobe") or "ffprobe")
     parser.add_argument("--resume", action="store_true", help="只复用视觉证据哈希、转写哈希和专辑体系均匹配的成功项")
     parser.add_argument("--allow-video-access", action="store_true", help="明确同意本次访问所选视频；默认低风险模式不会请求视频页面或媒体")
+    parser.add_argument("--collection-scope", default="", help="可选 collection_scope.json；提供时强制校验完整 note ID 范围")
+    parser.add_argument("--archive-registry", action="append", default=[], help="已确认归档基线或 existing boards inventory；可重复传入，命中 ID 不下载或分析视频")
     parser.add_argument("--safety-state", default="", help="共享安全状态文件；默认继承输入文件旁已有状态，否则使用输出同目录的 xhs_safety_state.json")
     args = parser.parse_args()
 
@@ -766,6 +775,17 @@ def main() -> int:
         parser.error("--all-videos 必须同时传 --max-videos；不会默认分析全部视频。")
     if args.max_videos is not None and (not isinstance(args.max_videos, int) or isinstance(args.max_videos, bool) or not 1 <= args.max_videos <= 200):
         parser.error("--max-videos 必须是 1 到 200 的整数")
+    arc_locator = (
+        str(args.arc_window_id or "").strip(),
+        str(args.arc_tab_id or "").strip(),
+        str(args.arc_tab_marker or "").strip(),
+        str(args.arc_expected_url_substring or "").strip(),
+    )
+    if not all(arc_locator):
+        parser.error(
+            "Arc 视频访问必须同时提供 --arc-window-id、--arc-tab-id、--arc-tab-marker 和 --arc-expected-url-substring；"
+            "不会遍历其他标签页猜测登录态。"
+        )
 
     visible_path = Path(args.visible_items)
     transcripts_path = Path(args.transcripts)
@@ -789,8 +809,44 @@ def main() -> int:
         },
     )
     items = load_json_list(visible_path, "visible_items.json")
+    scope_user_id = ""
+    if str(args.collection_scope or "").strip():
+        scope = validate_scope_input(args.collection_scope, items, stage="视频画面分析输入")
+        scope_user_id = str((scope.get("page_binding") or {}).get("user_id") or "")
+    archived_note_map = combine_archived_note_maps(
+        args.archive_registry,
+        expected_user_id=scope_user_id or None,
+    )
+    archived_excluded_count = sum(
+        str(item.get("id") or "").strip() in archived_note_map
+        for item in items
+    )
+    items = [
+        item for item in items
+        if str(item.get("id") or "").strip() not in archived_note_map
+    ]
     transcript_rows = load_json_list(transcripts_path, "video_transcripts.json")
     base_rows = load_json_list(analysis_path, "video_analysis.json")
+    unarchived_video_items = [
+        item for item in items
+        if normalize_content_type(item.get("content_type") or item.get("note_type") or item.get("type")) == "video"
+    ]
+    if args.all_videos and not unarchived_video_items:
+        validate_full_analysis_contract(items, base_rows)
+        transcript_order, _ = index_unique_rows(transcript_rows, "video_transcripts.json")
+        if transcript_order:
+            raise ValueError("video_transcripts.json 包含当前未归档视频集合之外的 ID")
+        atomic_write_json(out_path, base_rows)
+        print(json.dumps({
+            "selected_count": 0,
+            "success_count": 0,
+            "failed_count": 0,
+            "full_analysis_count": len(base_rows),
+            "archived_excluded": archived_excluded_count,
+            "output": str(out_path),
+            "safety_state": str(safety_state),
+        }, ensure_ascii=False, indent=2))
+        return 0
     selected_items = select_videos(items, list(args.video_id or []), all_videos=args.all_videos)
     if args.max_videos is not None:
         selected_items = selected_items[:args.max_videos]
@@ -810,6 +866,25 @@ def main() -> int:
     resume_map: dict[str, dict[str, Any]] = {}
     if args.resume and out_path.exists():
         resume_map = validate_resume_rows(load_json_list(out_path, "resume video_analysis.json"), base_order)
+
+    # Every scope, archive, transcript, and analysis contract is checked before
+    # browser login state, cookies, media, or the visual provider are touched.
+    environment = video_content_environment(
+        extractor_root=args.extractor_root,
+        browser=args.browser,
+        check_login_state=True,
+        analysis_provider=args.analysis_provider,
+        analysis_command=(args.analysis_command or [""])[0],
+        mimo_vl_root=args.mimo_vl_root,
+        visual_analysis=True,
+        arc_window_id=args.arc_window_id,
+        arc_tab_id=args.arc_tab_id,
+        arc_tab_marker=args.arc_tab_marker,
+        arc_expected_url_substring=args.arc_expected_url_substring,
+    )
+    if not environment["video_content_ready"]:
+        print(json.dumps(environment, ensure_ascii=False, indent=2))
+        raise SystemExit(2)
 
     cache_root = Path(args.cache_dir).expanduser() if args.cache_dir else out_path.parent / ".video-visual-cache"
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -839,6 +914,7 @@ def main() -> int:
             worker_script=ROOT / "scripts" / "mimo_vl_worker.py",
             startup_timeout=args.provider_startup_timeout,
             working_directory=ROOT,
+            allowed_boards=boards,
         )
         provider_identity = provider.identity()
     except Exception as exc:
@@ -954,6 +1030,7 @@ def main() -> int:
                                 result["analysis_provider"] = str(provider_identity.get("provider") or "")
                                 result["analysis_model"] = str(provider_identity.get("model") or "")
                                 result["analysis_provider_version"] = str(provider_identity.get("version") or "")
+                                result["analysis_schema_sha256"] = str(provider_identity.get("schema_sha256") or "")
                                 result["evidence_manifest"] = manifest
                                 replacements[note_id] = result
                     except SafetyHaltedError:
@@ -982,6 +1059,7 @@ def main() -> int:
         "success_count": sum(row.get("status") == "success" for row in selected_rows),
         "failed_count": sum(row.get("status") != "success" for row in selected_rows),
         "full_analysis_count": len(merged),
+        "archived_excluded": archived_excluded_count,
         "output": str(out_path),
         "safety_state": str(safety_state),
     }, ensure_ascii=False, indent=2))

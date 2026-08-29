@@ -12,7 +12,7 @@ SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
 from classify_items import main as classify_items_main  # noqa: E402
-from enrich_note_images import SecurityBlockError, enrich_item_from_html, main as enrich_note_images_main  # noqa: E402
+from enrich_note_images import SecurityBlockError, enrich_item_from_html, main as enrich_note_images_main, requires_detail_enrichment  # noqa: E402
 from extract_visible_items import ITEMS_JS  # noqa: E402
 from xhs_safety import SafetyHaltedError, load_safety_state  # noqa: E402
 from xhs_ocr_common import (  # noqa: E402
@@ -704,6 +704,70 @@ process.stdout.write(eval({json.dumps(ITEMS_JS)}));
         self.assertEqual(results, [])
         download.assert_not_called()
         run_ocr.assert_not_called()
+
+    def test_unknown_type_requires_an_explicit_detail_resolution_flag(self):
+        self.assertFalse(requires_detail_enrichment('unknown', False))
+        self.assertTrue(requires_detail_enrichment('unknown', True))
+
+    def test_unknown_type_can_be_resolved_to_video_with_bounded_detail_request(self):
+        note_id = '66d19b54000000001d03a93d'
+        html = self.setup_state_html({
+            'noteId': note_id,
+            'type': 'video',
+            'imageList': [{'urlDefault': 'https://ci.xiaohongshu.com/video-cover.jpg'}],
+        })
+        items = [{'id': note_id, 'title': '未知类型视频', 'content_type': 'unknown'}]
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / 'visible_items.json'
+            out = Path(tmp) / 'image_items.json'
+            src.write_text(json.dumps(items, ensure_ascii=False), encoding='utf-8')
+            argv = [
+                'enrich_note_images.py', str(src), str(out),
+                '--allow-detail-requests', '--max-items', '1',
+                '--resolve-unknown-content-types', '--request-interval', '0',
+            ]
+            with patch.object(sys, 'argv', argv), \
+                    patch('enrich_note_images.fetch_note_html', return_value=html) as fetch:
+                enrich_note_images_main()
+            rows = json.loads(out.read_text(encoding='utf-8'))
+
+        fetch.assert_called_once()
+        self.assertEqual(rows[0]['content_type'], 'video')
+        self.assertEqual(rows[0]['content_type_source'], 'mobile_ssr_note_data.type')
+        self.assertEqual(rows[0]['image_enrichment_status'], 'not_applicable')
+
+    def test_arc_detail_transport_uses_only_the_current_note_context_in_memory(self):
+        note_id = '66d19b54000000001d03a93d'
+        html = self.setup_state_html({
+            'noteId': note_id,
+            'type': 'normal',
+            'imageList': [{'urlDefault': 'https://ci.xiaohongshu.com/inner.jpg'}],
+        })
+        items = [{'id': note_id, 'title': '需要 Arc 会话的图文', 'content_type': 'unknown'}]
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / 'visible_items.json'
+            out = Path(tmp) / 'image_items.json'
+            src.write_text(json.dumps(items, ensure_ascii=False), encoding='utf-8')
+            argv = [
+                'enrich_note_images.py', str(src), str(out),
+                '--allow-detail-requests', '--max-items', '1',
+                '--resolve-unknown-content-types', '--browser', 'arc',
+                '--arc-profile', 'Default', '--request-interval', '0',
+            ]
+            with patch.object(sys, 'argv', argv), \
+                    patch('enrich_note_images.find_arc_collection_note_context', return_value={
+                        'found': True, 'xsec_token': 'secret', 'xsec_source': 'pc_user',
+                    }) as context, \
+                    patch('enrich_note_images.xiaohongshu_access_url', return_value='https://example.invalid/private') as access_url, \
+                    patch('enrich_note_images.fetch_note_html', return_value=html) as fetch:
+                enrich_note_images_main()
+            rows = json.loads(out.read_text(encoding='utf-8'))
+
+        context.assert_called_once_with(note_id, profile='Default')
+        access_url.assert_called_once()
+        fetch.assert_called_once_with('https://example.invalid/private', timeout_sec=20)
+        self.assertEqual(rows[0]['content_type'], 'image')
+        self.assertEqual(rows[0]['detail_access_transport'], 'arc_collection_session')
 
     def test_detail_missing_type_is_a_hard_failure(self):
         note_id = '66d19b54000000001d03a93d'

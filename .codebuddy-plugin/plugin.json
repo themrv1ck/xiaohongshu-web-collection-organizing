@@ -1,6 +1,6 @@
 {
   "name": "xiaohongshu-organizer",
-  "version": "2.0.7",
+  "version": "2.1.0",
   "description": "在 WorkBuddy 中用独立 Playwright 浏览器安全整理小红书收藏与点赞。",
   "author": {
     "name": "themrv1ck"

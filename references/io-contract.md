@@ -28,9 +28,13 @@
 
 `visible_items.json` 来自收藏/点赞列表页。列表页的 `cover_image_url` / `image_urls` 和 `content_type` 都只是 observed 线索：图片必须保持 `image_urls_complete=false`、`image_count=null`，不能证明已经取得图文笔记的全部图片，也不能直接作为“全图 OCR 已完成”的依据。图文 OCR 开启时，必须先生成下面的 `image_items.json`。
 
+### `collection_scope.json`
+
+默认全量收藏只在页面声明数、真实 note id 数和 `page_index` 完全一致时建立。若用户明确把范围限定为“当前可访问的 N 条真实笔记”，`scripts/collection_scope.py` 才能建立 `scope_kind=user_confirmed_accessible_collection`。它同时记录 `declared_count`、`accessible_count`、`unidentified_count`、有序 `note_ids` 及其哈希、`visible_items.json` 哈希、连续位置覆盖、页面/账号绑定、active 安全会话和每个 passive 分段哈希。后续输入必须以同一顺序覆盖全部 `note_ids`；未识别计数永远没有虚构的 note id。
+
 ### `image_items.json`
 
-由用户明确授权的 `scripts/enrich_note_images.py visible_items.json image_items.json --allow-detail-requests --max-items <1–200>` 生成。默认低风险模式不会访问详情。详情 `LAUNCHER_SSR_STORE_PAGE_DATA.noteData.type` 是图文/视频类型的权威来源，覆盖列表页 observed 类型；详情确认是图文时，`image_urls` 按 `noteData.imageList` 原始顺序排列，包含封面和全部内页图片。安全停机后必须使用新的 `xhs_safety_state.json`，不能用 `--resume` 重发。
+由用户明确授权的 `scripts/enrich_note_images.py visible_items.json image_items.json --allow-detail-requests --max-items <1–200>` 生成。默认低风险模式不会访问详情。用户已授权 Arc 时必须加 `--browser arc --arc-profile <profile>`，脚本仅在内存中用当前收藏 API 缓存的单条会话上下文构造详情访问，不写出 xsec 或签名 query；缓存中找不到该条目时直接失败，禁止降级为猜测。详情 `LAUNCHER_SSR_STORE_PAGE_DATA.noteData.type` 是图文/视频类型的权威来源，覆盖列表页 observed 类型；详情确认是图文时，`image_urls` 按 `noteData.imageList` 原始顺序排列，包含封面和全部内页图片。安全停机后必须使用新的 `xhs_safety_state.json`，不能用 `--resume` 重发。
 
 ```json
 [
@@ -276,12 +280,13 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 `source_lists` / `source_primary` 从输入条目透传，用于区分收藏、点赞或二者都有。图文 OCR 关闭时，普通条目必须使用 `classification_basis=metadata_only` 和 `ocr_status=skipped`；开启且完整图片集合逐张 OCR 成功时为 `metadata_and_ocr`。图片集合不完整或任一图片失败时，图文行必须使用 `classification_basis=image_ocr_incomplete`、空目标专辑和 `review_state=image_ocr_incomplete`，不得使用部分 OCR 文本。成功图文行从 `ocr_results.json` 透传同一个非空 `ocr_run_fingerprint`；非图文、跳过或没有成功 OCR 的行该字段为空。视频开关开启后，视频行必须使用 `classification_basis=video_content`，并从 `video_analysis.json` 透传 `video_analysis_basis`、`visual_status` 和 provider identity。转写或所选 analysis provider 失败时不得根据简介/OCR 补分类。
 
-真实 dry-run 和 execute 前必须先用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 生成完整 `board_snapshot.json`，再生成 `created_boards.json`。两份证据必须同时传给 `run_reassign_batch.py`；否则只能得到 `classification_preview`、`ready_for_execute=false`、`missing_boards=null`。硬闸门通过后，执行清单字段必须满足：
+真实 dry-run 和 execute 前必须先用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 生成完整 `board_snapshot.json`，再生成 `created_boards.json`。两份证据必须同时传给 `run_reassign_batch.py`；否则只能得到 `classification_preview`、`ready_for_execute=false`、`missing_boards=null`。成员关系判定必须早于目标专辑校验。硬闸门通过后，执行清单字段必须满足：
 
-- 已在目标专辑：从执行清单排除，或保留 `excluded=true`、`exclude_reason=already_in_target`，确保零写入。
-- 不在任何专辑：`source_board`、`source_board_id` 都为空，执行器使用直接 `d0`。
-- 已在另一个专辑：`source_board_id` 必须是核验得到的真实 board id；只有它显式存在且不同于目标 board id，执行器才启用跨专辑事务。
-- 多来源、来源不明确或 `Ks` 分页不完整：目标留空或标为人工复核，不得进入 execute。
+- 已属于任一专辑：当前实时成员关系视为首次归档已确认，统一保留 `excluded=true`、`exclude_reason=existing_board_member_protected`、`membership_state=existing_board_member_protected`、`archive_lifecycle_state=first_archive_confirmed`，确保零写入；模型目标不同或不存在也不能改变该结果。
+- 不在任何专辑：`membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending`，且 `source_board`、`source_board_id` 都为空，执行器才可使用直接 `d0` 完成首次归档。
+- 同时属于多个专辑：视为首次归档已经完成并永久保护，`source_board` 可记录多个名称，禁止选择来源或执行迁移。
+- `d0` 调用、dry-run、失败、中止或未核验都不能改变生命周期；只有 `U_` + `Ks` 回读确认 note id 已进入目标专辑后，才把成功行改为 `first_archive_confirmed`。
+- `Ks` 分页不完整、账号/页面绑定变化或无法证明不在任何专辑：不得进入 execute。
 
 ```json
 [
@@ -325,24 +330,25 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     ],
     "source_board": "",
     "source_board_id": "",
+    "archive_lifecycle_state": "first_archive_pending",
     "source_lists": ["收藏", "点赞"],
     "source_primary": "收藏"
   },
   {
     "id": "694d3390000000002203ae33",
     "title": "听CASI考官详细拆解什么固定器角度适合你？",
-    "target_board": "示例主题A",
-    "confidence": "high",
-    "reason": ["核心内容是示例主题A装备设置", "完整转写持续讨论固定器角度"],
-    "review_state": "video_content_classified",
+    "target_board": "",
+    "confidence": "low",
+    "reason": ["existing_board_member_protected"],
+    "review_state": "existing_board_member_protected",
     "content_type": "video",
-    "classification_basis": "video_content",
-    "video_analysis_status": "success",
-    "video_analysis_basis": "full_timeline_visual_with_transcript",
-    "visual_status": "analyzed",
-    "analysis_provider": "mimo-vl-mlx",
-    "main_topic": "示例主题A固定器角度设置",
-    "content_summary": "解释固定器角度对站姿的影响，并建议按个人前后脚习惯调整。",
+    "classification_basis": "archive_excluded",
+    "video_analysis_status": "",
+    "video_analysis_basis": "",
+    "visual_status": "",
+    "analysis_provider": "",
+    "main_topic": "",
+    "content_summary": "",
     "ocr_status": "skipped",
     "ocr_confidence": null,
     "ocr_text": "",
@@ -352,6 +358,9 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "ocr_image_evidence": [],
     "source_board": "杂项灵感",
     "source_board_id": "board-source-001",
+    "archive_lifecycle_state": "first_archive_confirmed",
+    "excluded": true,
+    "exclude_reason": "existing_board_member_protected",
     "source_lists": ["点赞"],
     "source_primary": "点赞"
   },
@@ -370,13 +379,13 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "ocr_image_set_complete": false,
     "ocr_image_evidence": [],
     "excluded": true,
-    "exclude_reason": "user_kept_existing_boards",
+    "exclude_reason": "existing_board_member_protected",
     "source_board": "示例主题A"
   }
 ]
 ```
 
-不要把直接 `d0` 交给已在其他专辑但缺少 `source_board_id` 的条目。该调用可能静默 no-op；即使返回 `{}` 也不能算成功，必须以 `U_` + `Ks` 中确实出现 note id 为唯一成功依据。
+不要把直接 `d0` 交给任何已有专辑成员、带 `source_board_id`、成员状态不是 `not_in_any_board`，或生命周期状态不是 `first_archive_pending` 的条目。即使 `d0` 返回 `{}` 也不能算成功，必须以 `U_` + `Ks` 中确实出现 note id 为唯一成功依据；确认后才转为 `first_archive_confirmed` 并永久保护。
 
 ### `created_boards.json`
 ```json
@@ -385,11 +394,11 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 ### `board_snapshot.json`
 
-由 `capture_board_snapshot.py` 通过当前授权的小红书前端只读生成。`mode` 必须是 `read_only`、`source.writes_performed=false`、`validation.full_membership_complete=true`；每个专辑必须包含真实 id、声明数量、完整分页数量和 `note_ids`。任一分页未完成、数量不一致或成员重复都会阻止 dry-run。
+由 `capture_board_snapshot.py` 通过当前授权的小红书前端只读生成。专辑清单本身必须用 `yC` 按 `num=100` 连续读取 `page=1..N`，其中 `N=max(1,ceil(boardCount/100))`；100、101、181、200、201 个专辑分别必须读取 1、2、2、2、3 页。每页都必须返回同一个权威 `boardCount`，并满足该页精确应有数量；缺页、跨页重复 id/名称、总数变化或缺少 `boardCount` 时立即失败，不得只保留第一页。`mode` 必须是 `read_only`、`source.writes_performed=false`、`validation.full_membership_complete=true`；每个专辑必须包含真实 id、声明数量、完整分页数量和 `note_ids`。任一分页未完成、数量不一致或成员重复都会阻止 dry-run。
 
 ### `run_report.json`
 
-没有两份专辑证据时，报告必须是 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，所有可分类项只能是 `preview_only`，不能是 `planned`。真实 dry-run 只有同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才可提交用户确认。未归档成功项应出现 `note_move:CALLED`、`verify:note_present`。跨专辑成功项应出现 `transaction:uncollect`、`transaction:recollect`、`transaction:move`、`transaction:target_verified`。跨专辑非安全失败会严格回滚到真实 `source_board_id`；回滚成功仍是失败。Python 每次只提交一条，首个错误行先写入报告再停止整批。安全验证或页面绑定失效后立即停写，不追加回滚写操作。
+没有两份专辑证据时，报告必须是 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，所有可分类项只能是 `preview_only`，不能是 `planned`。真实 dry-run 只有同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才可提交用户确认。未归档成功项应出现 `note_move:CALLED`、`verify:note_present`；已有专辑成员只能出现保护跳过事件，不得出现任何写入事件。Python 每次只提交一条，首个错误行先写入报告再停止整批。安全验证或页面绑定失效后立即停写。
 
 ```json
 {"started_at":"2026-04-17T01:17:03Z","mode":"execute","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4个技能直接出活","target_board":"示例主题A","status":"success","attempt":1,"events":["board:FOUND:示例主题A","note_move:CALLED","verify:note_present"],"error":"","verified":true}],"errors":[],"missing_boards":[],"board_counts_before":{"示例主题A":76},"board_counts_after":{"示例主题A":77}}

@@ -348,6 +348,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 'target_board': '旅行',
                 'source_board_id': '',
                 'membership_state': 'not_in_any_board',
+                'archive_lifecycle_state': 'first_archive_pending',
                 'status': 'planned',
             }],
         }
@@ -945,6 +946,75 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         self.assertEqual(classification[0]['title'], '客厅照明改造')
         self.assertEqual(classification[1]['target_board'], '')
 
+    def test_workbuddy_excludes_existing_board_members_from_model_and_plan(self):
+        protected_id = '66d19b54000000001d03a93d'
+        unassigned_id = '66d19b54000000001d03a93e'
+        visible_rows = [
+            {'id': protected_id, 'title': '用户已手动整理'},
+            {'id': unassigned_id, 'title': '尚未归档'},
+        ]
+        evidence = {
+            'visible_ids': [protected_id, unassigned_id],
+            'visible_by_id': {row['id']: row for row in visible_rows},
+            'image_by_id': {},
+            'ocr_by_id': {},
+            'image_ocr_enabled': False,
+        }
+        safe_inputs = workbuddy_classification_inputs(evidence, {protected_id})
+        self.assertEqual([row['id'] for row in safe_inputs], [unassigned_id])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / 'visible_items.json').write_text(
+                json.dumps(visible_rows, ensure_ascii=False),
+                encoding='utf-8',
+            )
+            result = write_workbuddy_classification(
+                directory,
+                [{
+                    'id': unassigned_id,
+                    'target_board': '阅读',
+                    'confidence': 'high',
+                    'reason': ['内容是书摘'],
+                }],
+                ['阅读', '用户手动专辑'],
+                evidence,
+                {protected_id: '用户手动专辑'},
+            )
+            classification = json.loads(
+                (directory / 'classification.json').read_text(encoding='utf-8')
+            )
+            with self.assertRaisesRegex(RuntimeError, '已归档保护笔记'):
+                write_workbuddy_classification(
+                    directory,
+                    [
+                        {'id': protected_id, 'target_board': '阅读'},
+                        {'id': unassigned_id, 'target_board': '阅读'},
+                    ],
+                    ['阅读'],
+                    evidence,
+                    {protected_id: '用户手动专辑'},
+                )
+
+        self.assertEqual(result['classification_count'], 2)
+        protected_row, unassigned_row = classification
+        self.assertTrue(protected_row['excluded'])
+        self.assertEqual(
+            protected_row['exclude_reason'],
+            'existing_board_member_protected',
+        )
+        self.assertEqual(protected_row['source_board'], '用户手动专辑')
+        self.assertEqual(protected_row['target_board'], '')
+        self.assertEqual(
+            protected_row['archive_lifecycle_state'],
+            'first_archive_confirmed',
+        )
+        self.assertEqual(unassigned_row['target_board'], '阅读')
+        self.assertEqual(
+            unassigned_row['archive_lifecycle_state'],
+            'first_archive_pending',
+        )
+
     def test_valid_workbuddy_ocr_is_bound_and_merged_without_sensitive_urls(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -1202,6 +1272,12 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         {'id': 'a' * 24, 'name': '阅读', 'note_ids': []},
                         {'id': 'b' * 24, 'name': '运动', 'note_ids': []},
                     ],
+                    'validation': {
+                        'pagination_cursor_invariants_passed': True,
+                        'board_names_unique': True,
+                        'within_board_duplicates': [],
+                        'full_membership_complete': True,
+                    },
                 }, ensure_ascii=False), encoding='utf-8')
                 return subprocess.CompletedProcess(args, 0, '{}', '')
 
@@ -1248,6 +1324,12 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         'verify_pages': 100,
                     },
                     'boards': [],
+                    'validation': {
+                        'pagination_cursor_invariants_passed': True,
+                        'board_names_unique': True,
+                        'within_board_duplicates': [],
+                        'full_membership_complete': True,
+                    },
                 }), encoding='utf-8')
                 return subprocess.CompletedProcess(args, 0, '{}', '')
 
@@ -1322,6 +1404,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                             'target_board': '阅读',
                             'source_board_id': '',
                             'membership_state': 'target_board_planned',
+                            'archive_lifecycle_state': 'first_archive_pending',
                             'status': 'planned',
                         }],
                     }, ensure_ascii=False), encoding='utf-8')
@@ -1421,6 +1504,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                             'target_board': '阅读',
                             'source_board_id': '',
                             'membership_state': 'not_in_any_board',
+                            'archive_lifecycle_state': 'first_archive_pending',
                             'status': 'planned',
                         }],
                     }, ensure_ascii=False), encoding='utf-8')

@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import importlib.metadata
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any, TextIO
 
 
 REQUIRED_MLX_VLM_VERSION = "0.5.0"
+OUTPUT_SCHEMA_CONTRACT_VERSION = 5
+# One Qwen merged visual token covers 28x28 pixels.  Capping each timeline
+# frame at 512 tokens keeps even 100+ real frames inside MiMo's 128k context.
+DEFAULT_MAX_IMAGE_PIXELS = 28 * 28 * 512
 TEMPERATURE = 0.0
 TOP_P = 1.0
 NO_THINK_SUFFIX = "/no_think"
@@ -21,16 +25,6 @@ JSON_ONLY_CONTRACT = (
     "这是机器到机器的 JSON 接口。回复第一个字符必须是 {，最后一个字符必须是 }。"
     "禁止输出 Markdown 代码块、```、解释文字或任何 JSON 之外的字符。"
 )
-THINK_ENVELOPE = re.compile(
-    r"\A\s*<think>(?P<thinking>.*?)</think>\s*(?P<payload>\{.*\})\s*\Z",
-    re.DOTALL,
-)
-THINK_JSON_FENCE_ENVELOPE = re.compile(
-    r"\A\s*<think>(?P<thinking>.*?)</think>\s*```json\s*(?P<payload>\{.*\})\s*```\s*\Z",
-    re.DOTALL,
-)
-
-
 def ensure_no_think(prompt: str) -> str:
     """Append the strict JSON protocol and put MiMo's control command last."""
     stripped = prompt.rstrip()
@@ -50,24 +44,13 @@ def _load_json_object(raw: str) -> dict[str, Any]:
 
 
 def parse_model_output(raw: str) -> dict[str, Any]:
-    """Parse strict JSON, allowing only MiMo's two observed wire envelopes.
-
-    It never searches for a brace substring, removes arbitrary prose, or
-    repairs malformed JSON. A JSON fence is accepted only when it is the sole
-    payload inside MiMo's exact ``<think>...</think>`` transport envelope.
-    """
+    """Parse exactly one strict JSON object; never strip, search, or repair."""
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("MiMo-VL output is empty")
     try:
         return _load_json_object(raw)
-    except (json.JSONDecodeError, ValueError):
-        match = THINK_ENVELOPE.fullmatch(raw) or THINK_JSON_FENCE_ENVELOPE.fullmatch(raw)
-        if match is None:
-            raise ValueError("MiMo-VL output is not strict JSON")
-        try:
-            return _load_json_object(match.group("payload"))
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise ValueError("MiMo-VL output envelope does not contain strict JSON") from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("MiMo-VL output is not strict JSON") from exc
 
 
 def _write(protocol: TextIO, payload: dict[str, Any]) -> None:
@@ -99,13 +82,36 @@ def _validate_request(payload: Any) -> tuple[str, list[str]]:
     return prompt, image_paths
 
 
-def run_worker(model_path: str, max_tokens: int, *, protocol: TextIO = sys.stdout) -> int:
+def _load_output_schema(path: str | Path) -> dict[str, Any]:
+    schema_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read output schema: {schema_path}") from exc
+    if not isinstance(payload, dict) or payload.get("type") != "object":
+        raise ValueError("output schema must describe a JSON object")
+    return payload
+
+
+def run_worker(
+    model_path: str,
+    max_tokens: int,
+    *,
+    output_schema: str | Path,
+    max_image_pixels: int = DEFAULT_MAX_IMAGE_PIXELS,
+    protocol: TextIO = sys.stdout,
+) -> int:
     identity = {
         "provider": "mimo-vl-mlx",
         "model": model_path,
-        "version": f"mlx-vlm-{REQUIRED_MLX_VLM_VERSION}",
+        "version": (
+            f"mlx-vlm-{REQUIRED_MLX_VLM_VERSION}-max-pixels-{max_image_pixels}"
+            f"-output-schema-v{OUTPUT_SCHEMA_CONTRACT_VERSION}"
+        ),
     }
     try:
+        schema_path = Path(output_schema).expanduser().resolve()
+        identity["schema_sha256"] = hashlib.sha256(schema_path.read_bytes()).hexdigest()
         installed_version = importlib.metadata.version("mlx-vlm")
         if installed_version != REQUIRED_MLX_VLM_VERSION:
             raise RuntimeError(
@@ -116,8 +122,16 @@ def run_worker(model_path: str, max_tokens: int, *, protocol: TextIO = sys.stdou
         with contextlib.redirect_stdout(sys.stderr):
             from mlx_vlm import generate, load
             from mlx_vlm.prompt_utils import apply_chat_template
+            from mlx_vlm.structured import build_json_schema_logits_processor
 
             model, processor = load(model_path)
+            image_processor = getattr(processor, "image_processor", None)
+            if image_processor is None or not hasattr(image_processor, "max_pixels"):
+                raise RuntimeError("MiMo image processor does not expose max_pixels")
+            image_processor.max_pixels = max_image_pixels
+            schema = _load_output_schema(schema_path)
+            tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+            structured_processor = build_json_schema_logits_processor(tokenizer, schema)
         _write(protocol, {"type": "ready", "ok": True, "identity": identity})
     except Exception as exc:
         _write(protocol, _error_payload(
@@ -172,6 +186,7 @@ def run_worker(model_path: str, max_tokens: int, *, protocol: TextIO = sys.stdou
                     max_tokens=max_tokens,
                     temperature=TEMPERATURE,
                     top_p=TOP_P,
+                    logits_processors=[structured_processor.clone()],
                 )
             raw_output = generated.text if hasattr(generated, "text") else generated
         except Exception as exc:
@@ -183,10 +198,16 @@ def run_worker(model_path: str, max_tokens: int, *, protocol: TextIO = sys.stdou
         try:
             result = parse_model_output(raw_output)
         except ValueError as exc:
+            generation_tokens = int(getattr(generated, "generation_tokens", 0) or 0)
+            truncated = generation_tokens >= max_tokens
             _write(protocol, _error_payload(
-                "mimo_vl_invalid_json",
+                "mimo_vl_output_truncated" if truncated else "mimo_vl_invalid_json",
                 str(exc),
-                {"output_length": len(raw_output) if isinstance(raw_output, str) else 0},
+                {
+                    "output_length": len(raw_output) if isinstance(raw_output, str) else 0,
+                    "generation_tokens": generation_tokens,
+                    "max_tokens": max_tokens,
+                },
             ))
             continue
         _write(protocol, {"ok": True, "result": result})
@@ -197,15 +218,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Persistent MiMo-VL MLX JSONL worker")
     parser.add_argument("--model", required=True, help="Official BF16 model directory or Hugging Face ID")
     parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--max-image-pixels", type=int, default=DEFAULT_MAX_IMAGE_PIXELS)
+    parser.add_argument("--output-schema", required=True, help="JSON schema used for constrained decoding")
     args = parser.parse_args(argv)
     if args.max_tokens <= 0:
         parser.error("--max-tokens must be positive")
+    if args.max_image_pixels <= 0:
+        parser.error("--max-image-pixels must be positive")
     return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    return run_worker(args.model, args.max_tokens)
+    return run_worker(
+        args.model,
+        args.max_tokens,
+        output_schema=args.output_schema,
+        max_image_pixels=args.max_image_pixels,
+    )
 
 
 if __name__ == "__main__":
