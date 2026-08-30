@@ -28,6 +28,7 @@ from xhs_safety import (
     resolve_safety_state_path,
 )
 from workbuddy_runtime import apply_workbuddy_browser_policy, is_workbuddy_host
+from archive_rules import UNCERTAIN_BOARD_NAME
 
 
 LOGIN_MARKERS = ('手机号登录', '登录后推荐', '马上登录即可', '扫码登录', '验证码登录')
@@ -679,6 +680,15 @@ def normalize_classification(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return normalized
 
 
+def confidence_allows_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
+    """The fixed review album is the only low-confidence target allowed directly."""
+    return (
+        str(item.get('target_board') or '').strip() == UNCERTAIN_BOARD_NAME
+        or item.get('confidence') != 'low'
+        or allow_low_confidence
+    )
+
+
 def initial_report(classification: List[Dict[str, Any]], mode: str) -> Dict[str, Any]:
     return {
         'started_at': utc_now(),
@@ -779,7 +789,7 @@ def append_classification_preview(
     elif not item['target_board']:
         status = 'needs_review'
         error = 'missing target_board'
-    elif item['confidence'] == 'low' and not allow_low_confidence:
+    elif not confidence_allows_move(item, allow_low_confidence):
         status = 'needs_review'
         error = 'low confidence classification; review before membership preflight'
     report['processed'].append({
@@ -970,7 +980,7 @@ def prepare_write_preflight(
             not item.get('exclude_reason'),
             bool(item.get('id')),
             bool(item.get('target_board')),
-            item.get('confidence') != 'low' or allow_low_confidence,
+            confidence_allows_move(item, allow_low_confidence),
         ])
         if not actionable:
             membership_counts['excluded' if item.get('excluded') or item.get('exclude_reason') else 'needs_review'] += 1
@@ -1195,7 +1205,7 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
     elif not item['target_board']:
         status = 'needs_review'
         error = 'missing target_board'
-    elif item['confidence'] == 'low' and not allow_low_confidence:
+    elif not confidence_allows_move(item, allow_low_confidence):
         status = 'needs_review'
         error = 'low confidence classification; rerun with --allow-low-confidence after review'
     report['processed'].append({
@@ -1223,6 +1233,7 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
     payload = {
         'items': items,
         'allowLowConfidence': args.allow_low_confidence,
+        'uncertainBoardName': UNCERTAIN_BOARD_NAME,
         'verifyPages': args.verify_pages,
         'userId': args.user_id or '',
         'expectedTabMarker': getattr(args, 'arc_tab_marker', '') or '',
@@ -1404,7 +1415,11 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
           processed.push(row);
           continue;
         }
-        if (item.confidence === 'low' && !payload.allowLowConfidence) {
+        if (
+          item.confidence === 'low'
+          && item.target_board !== payload.uncertainBoardName
+          && !payload.allowLowConfidence
+        ) {
           row.status = 'needs_review';
           row.error = 'low confidence classification; review before executing';
           events.push('skip:low_confidence');
@@ -1595,7 +1610,7 @@ def is_ready_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
         not bool(str(item.get('source_board_id') or '').strip()),
         bool(str(item.get('id') or '').strip()),
         bool(str(item.get('target_board') or '').strip()),
-        item.get('confidence') != 'low' or allow_low_confidence,
+        confidence_allows_move(item, allow_low_confidence),
     ))
 
 

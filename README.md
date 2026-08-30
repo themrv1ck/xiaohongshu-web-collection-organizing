@@ -16,6 +16,8 @@
 - 支持 Windows Chrome/Edge + Playwright/CDP 抓取。
 - 支持 Tesseract / EasyOCR OCR。
 - 支持分类计划、dry-run 报告、retry queue、报告汇总。
+- 无法可靠判断目标的未归档笔记固定进入“无法确定”；WorkBuddy 会在不存在时把该专辑加入同一次创建确认，之后由用户自行调整。
+- 轻度/深度整理开始前询问是否需要最终报告；肯定回答会在完整回读核验后生成桌面 HTML，按专辑说明主题和主要笔记内容。
 - 支持已有专辑排除清单，默认不移动用户决定保留的已有专辑内容。
 - 支持 `--source collection|liked|custom` 标记来源；支持 `--append-existing` 合并收藏和点赞，按 note id 去重，并保留 `source_lists`。
 - 默认低风险采集：一次只读取当前已显示卡片、每段最多 200 条；不自动滚动、刷新、点击、导航或进入下一段。
@@ -32,7 +34,7 @@
 必须知道的限制：
 
 - 用户必须先在浏览器里登录小红书网页端。
-- 目标专辑必须已经存在；当前脚本只核对缺失专辑，不自动创建专辑。
+- 非 WorkBuddy 直接路径要求目标专辑已存在；WorkBuddy 可在用户确认名称和隐私后创建缺失专辑。“无法确定”也遵守同一确认闸门。
 - `run_reassign_batch.py` 不执行跨专辑移动；只有 `membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending` 且 `source_board_id` 为空的条目能进入 execute 清单。
 - 小红书网页结构和前端模块可能变化；如果页面变更，需要重新验证。
 - 分类体系默认是空的，只能从本次真实内容和用户已有专辑生成；图文可使用元数据与 OCR，视频开关开启时使用合格文字稿、完整时轴真实帧（若启用视觉模块）和所选 provider。低置信度条目默认不会真实移动。
@@ -85,7 +87,7 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
-若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.1.0` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.2.0` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
 
 在 WorkBuddy 对话中执行：
 
@@ -97,11 +99,11 @@
 
 加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意后才安装 Playwright 依赖。Windows 复用系统 Edge 程序但使用插件独立 profile，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。用户只需在这个专用窗口登录一次小红书。
 
-正常使用时，用户不需要寻找 URL、复制地址、手动滚动或关闭浏览器。插件在同一个专用浏览器会话中自动完成列表和轻度 OCR 详情读取，固定每 200 条独立保存一组，非末组真实等待 3 分钟；只有声明总数、实际条数与全部位置严格一致才算完整，绝不会把首屏约 10 条当作全部。Cookie、原始 query、签名图片 URL 和 xsec 不写入 JSON。插件先只读取得真实已有专辑；没有合适专辑时，模型只能依据本次真实内容提议新名称，不附带任何固定类别。待创建专辑及公开/私密设置、逐条移动和上限会合并为一次确认；执行时在同一个受管 BrowserContext 中先创建并核验空专辑，再移动收藏。
+正常使用时，用户不需要寻找 URL、复制地址、手动滚动或关闭浏览器。插件在同一个专用浏览器会话中自动完成列表和轻度 OCR 详情读取，固定每 200 条独立保存一组，非末组真实等待 3 分钟；只有声明总数、实际条数与全部位置严格一致才算完整，绝不会把首屏约 10 条当作全部。Cookie、原始 query、签名图片 URL 和 xsec 不写入 JSON。插件先只读取得真实已有专辑；没有合适专辑时，模型只能依据本次真实内容提议新名称，不附带预设内容类别。唯一固定规则是空目标进入“无法确定”，等待用户自行调整。待创建专辑及公开/私密设置、逐条移动和上限会合并为一次确认；执行时在同一个受管 BrowserContext 中先创建并核验空专辑，再移动收藏。
 
 `capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.1.0`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.2.0`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -254,6 +256,8 @@ python3 scripts/check_environment.py --capability-preflight
 | 深度整理 | 开启 | 开启 | 开启 |
 
 快速整理跳过 OCR 和视频功能卡，不安装、不运行任何内容识别组件；轻度整理按 OCR 的既有安装与复验规则执行；深度整理按 OCR、语音和画面功能的既有规则执行。选择档位不授权打开浏览器或移动笔记；若需要安装，会先显示实际缺失组件和体积，系统权限窗口仍由用户确认。深度整理发现多个可用画面识别能力时，仍须由用户选择 analysis provider，不能默认绑定 Codex CLI。
+
+选择轻度或深度整理后、任何采集或分析开始前，Skill 会再问一次是否需要整理完成报告。回答“需要”时，只有最终专辑成员完整回读并与同批分类逐条一致，才会在桌面生成 `我的小红书专辑整理报告.html`；回答“不需要”则不生成。报告不会重新读取或分析笔记。
 
 只有用户回复“自定义”时，再显示图文 OCR 卡片：
 
@@ -494,6 +498,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 - `video_analysis.json`：所选 analysis provider 根据合格文字稿和/或完整时轴真实帧生成的主要内容、短摘要、目标专辑、置信度和理由；视觉项额外带可验证证据清单，纯文字项必须标明 `transcript_only`
 - `existing_boards_inventory.json`：用户决定保留的已有专辑排除清单
 - `classification.json`：分类建议；图文 OCR 成功时包含逐图证据和同一 `ocr_run_fingerprint`，非图文、跳过或未成功 OCR 的行指纹为空
+- `我的小红书专辑整理报告.html`：仅在轻度/深度整理前明确选择且最终核验通过时生成，默认放在桌面
 - `board_snapshot.json`：通过当前授权浏览器前端只读取得的全部专辑、完整分页成员关系及完整性检查
 - `created_boards.json`：目标专辑确认/缺失结果
 - `run_report.json`：分类预览、硬闸门 dry-run 或真实移动报告；`ready_for_execute` 和 `blockers` 是唯一执行资格依据
@@ -522,6 +527,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 - `scripts/verify_classification_membership.py`：移动完成后只读复抓全部专辑，核验完整分类中所有已放行视频都只出现一次且位于目标专辑；空目标、低置信度和待复核视频单独列出。
 - `scripts/build_retry_queue.py`：从运行报告生成重试队列。
 - `scripts/summarize_run_report.py`：汇总运行报告。
+- `scripts/generate_collection_report.py`：从最终完整专辑快照和同批完整分类生成桌面 HTML；缺页、重复、数量变化或目标不一致时拒绝生成。
 
 ## 安全边界
 
@@ -529,7 +535,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 - 不自动创建、删除、重命名专辑。
 - 不把 `.collect-wrapper` 图标变化当成“已加入目标专辑”。
 - 不把 UI 总数当成完整抓取数。
-- 不移动低置信度分类，除非显式传 `--allow-low-confidence`。
+- 不移动普通低置信度分类，除非显式传 `--allow-low-confidence`；固定目标“无法确定”是唯一例外，因为它明确表示等待用户自行调整。
 - 视频内容分类失败时不使用标题、简介、作者、封面 OCR 或猜测兜底。
 - 视频链路只产出文字稿、分类 memo 和必要证据 JSON，不要求 Qwen 或 LM Studio。
 - 不将仅文字稿的结果冒充为已检查画面；视觉模块开启后，不跳过任何明确视频的完整时轴画面证据。

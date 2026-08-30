@@ -990,11 +990,14 @@ process.stdout.write(eval({json.dumps(ITEMS_JS)}));
                     classify_items_main()
 
                 row = json.loads(classification_path.read_text(encoding='utf-8'))[0]
-                self.assertEqual(row['target_board'], '')
+                self.assertEqual(row['target_board'], '无法确定')
                 self.assertEqual(row['confidence'], 'low')
                 self.assertEqual(row['classification_basis'], 'image_ocr_incomplete')
-                self.assertEqual(row['review_state'], 'image_ocr_incomplete')
-                self.assertEqual(row['reason'], [expected_reason])
+                self.assertEqual(row['review_state'], 'manual_reclassification_required')
+                self.assertEqual(
+                    row['reason'],
+                    [expected_reason, 'uncertain_assignment_pending_user_reclassification'],
+                )
                 self.assertEqual(row['ocr_status'], ocr_status)
                 self.assertEqual(row['ocr_run_fingerprint'], '')
 

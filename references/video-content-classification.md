@@ -247,7 +247,7 @@ Arc 不由本 skill 静默安装或启动。缺少 Arc 时先询问用户是否�
 5. 如果视觉模块开启，`analyze_video_visuals.py` 必须处理用户明确选定的每段视频；`--all-videos` 也必须同时传 `--allow-video-access --max-videos <1–200>`。每条下载真实视频，至少均匀抽 5 帧、首尾都覆盖、任意相邻帧最大间隔不超过 10 秒。每帧保存时间戳、SHA256 和 Vision OCR，再交给有视觉能力的 provider。
 6. 如果视觉模块未开启，不运行抽帧分析；文字分析成功项必须标记 `analysis_basis=transcript_only` 和 `visual_status=not_enabled`，不得把封面 OCR 当成画面分析，也不得声称已检查画面。
 7. provider 输出最小内容 memo：`main_topic`、`content_summary`、`target_board`、`confidence`、`reason`。视觉成功项额外带 `evidence_manifest`、`visual_evidence_sha256`、`analysis_basis=full_timeline_visual_with_transcript|full_timeline_visual` 和 `visual_status=analyzed`；`video_sha256` 位于 `evidence_manifest` 内，不是顶层字段。
-8. `classify_items.py` 将视频分析合入 `classification.json`。转写与所选分析路径都失败时，`target_board` 必须为空，`review_state=video_content_unavailable`，不得回退简介/封面 OCR。
+8. `classify_items.py` 将视频分析合入 `classification.json`。转写与所选分析路径都失败时，先保留 `video_content_unavailable` 真实状态，再机械写入 `target_board=无法确定`、`review_state=manual_reclassification_required`、`uncertain_assignment=true`；不得回退简介/封面 OCR。
 9. 转写、文字分析和视觉分析都原子续跑；视觉结果只在真实帧、文字稿、provider identity 和专辑体系哈希都匹配时复用。
 10. 所有本地保存分段完成后，正式分类才要求 `video_analysis.json` 覆盖所有明确视频；安全停机或未完成分段时，不能把未完成部分伪装成全量。`--allow-partial-video-analysis` 只允许用于显式抽样测试。
 11. 先展示分类结果、不可用条目和目标专辑，再做 dry-run；只有用户再次明确确认后才能真实移动。
@@ -261,7 +261,7 @@ Arc 不由本 skill 静默安装或启动。缺少 Arc 时先询问用户是否�
 3. 每帧记录时间戳和 SHA256，并用 macOS Vision 识别画面文字；Vision OCR 不可用时仍让所选视觉 provider 直接看真实帧，但明确记录 OCR 不可用。
 4. provider 同时查看按时间顺序排列的真实帧、帧内文字和可用文字稿，只输出视频主要内容、短摘要、目标专辑、置信度和理由。
 5. 保存视频哈希、抽帧哈希、首尾覆盖和最大间隔证据；证据不完整就不得把结果标记为成功。
-6. 语音与画面两条链路都失败时，保留 `video_content_unavailable` 和空目标专辑，不使用标题、简介或封面猜测。
+6. 语音与画面两条链路都失败时，分析结果保留空目标；最终分类保留 `video_content_unavailable` 并机械进入“无法确定”，不使用标题、简介或封面猜测。
 7. `mimo-vl-mlx` 只接收真实帧与文字 prompt，不读取视频音轨；不能把它的画面结论写成“已听取原视频”。
 
 Arc 示例命令：
@@ -326,7 +326,7 @@ python3 scripts/run_reassign_batch.py classification.json classification_preview
 
 - `video_content_unavailable`
 - `content_type_needs_review`
-- `target_board` 为空
+- `target_board=无法确定` 且 `uncertain_assignment=true`
 - 低置信度分类
 
 用户没有确认分类和目标专辑时，不得传 `--execute`。确认一次“开启视频内容分类”不等于授权真实移动收藏。

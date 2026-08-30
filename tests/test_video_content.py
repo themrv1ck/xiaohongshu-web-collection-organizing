@@ -633,9 +633,12 @@ class VideoContentTests(unittest.TestCase):
                 '--allow-partial-video-analysis',
             )
             row = json.loads(out.read_text(encoding='utf-8'))[0]
-            self.assertEqual(row['target_board'], '')
-            self.assertEqual(row['review_state'], 'video_content_unavailable')
-            self.assertEqual(row['reason'], ['video_content_unavailable'])
+            self.assertEqual(row['target_board'], '无法确定')
+            self.assertEqual(row['review_state'], 'manual_reclassification_required')
+            self.assertEqual(row['reason'], [
+                'video_content_unavailable',
+                'uncertain_assignment_pending_user_reclassification',
+            ])
 
     def test_full_video_classification_rejects_incomplete_analysis(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -674,8 +677,8 @@ class VideoContentTests(unittest.TestCase):
                 '--classify-video-by-content', '--video-analysis', str(analysis),
             )
             row = json.loads(out.read_text(encoding='utf-8'))[0]
-            self.assertEqual(row['target_board'], '')
-            self.assertEqual(row['review_state'], 'content_type_needs_review')
+            self.assertEqual(row['target_board'], '无法确定')
+            self.assertEqual(row['review_state'], 'manual_reclassification_required')
 
     def test_transcriber_processes_only_explicit_videos_and_continues_after_failure(self):
         items = [

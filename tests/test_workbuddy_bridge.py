@@ -179,6 +179,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             'visible_items': str(visible),
             'visible_items_sha256': file_hash(visible),
             'organizing_depth': 'light' if image_ocr_enabled else 'quick',
+            'report_requested': False,
             'image_ocr_enabled': image_ocr_enabled,
             'ready_for_classification': ready_for_classification,
             'image_ocr_blockers': list(blockers or []),
@@ -927,7 +928,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                     'reason': ['内容不足'],
                     'review_state': 'pending',
                 },
-            ], ['居住空间'])
+            ], ['居住空间', '无法确定'])
             taxonomy = json.loads(
                 (directory / 'board_taxonomy.json').read_text(encoding='utf-8')
             )
@@ -940,11 +941,16 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                     'target_board': '无关类别',
                 }], ['居住空间'])
 
-        self.assertEqual(result['taxonomy'], ['居住空间'])
-        self.assertEqual(taxonomy, {'boards': ['居住空间']})
+        self.assertEqual(result['taxonomy'], ['居住空间', '无法确定'])
+        self.assertEqual(taxonomy, {'boards': ['居住空间', '无法确定']})
         self.assertEqual([row['id'] for row in classification], [first_id, second_id])
         self.assertEqual(classification[0]['title'], '客厅照明改造')
-        self.assertEqual(classification[1]['target_board'], '')
+        self.assertEqual(classification[1]['target_board'], '无法确定')
+        self.assertTrue(classification[1]['uncertain_assignment'])
+        self.assertEqual(
+            classification[1]['review_state'],
+            'manual_reclassification_required',
+        )
 
     def test_workbuddy_excludes_existing_board_members_from_model_and_plan(self):
         protected_id = '66d19b54000000001d03a93d'
@@ -1439,6 +1445,99 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         self.assertEqual(created['missing'], [])
         self.assertTrue(any('--allow-planned-board-creation' in args for args in commands))
 
+    def test_prepare_routes_empty_target_to_created_uncertain_board(self):
+        user_id = '66d19b54000000001d03a93d'
+        note_id = '66d19b54000000001d03a93e'
+        expected = f'/user/profile/{user_id}'
+        page_url = f'https://www.xiaohongshu.com{expected}?tab=fav'
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            directory = data_dir / 'runs' / 'run-1'
+            self.write_capture_contract(directory, [{
+                'id': note_id,
+                'title': '现有证据仍无法判断主题',
+                'content_type': 'image',
+            }])
+            (directory / 'board_snapshot.json').write_text(json.dumps({
+                'mode': 'read_only',
+                'source': {
+                    'browser': 'playwright',
+                    'writes_performed': False,
+                    'user_id': user_id,
+                    'expected_url_substring': page_url,
+                    'live_page_binding': page_url,
+                    'live_account_user_id': user_id,
+                    'verify_pages': 100,
+                },
+                'boards': [{
+                    'id': 'a' * 24,
+                    'name': '阅读',
+                    'declared_total': 0,
+                    'page_count': 1,
+                    'note_ids': [],
+                }],
+                'validation': {
+                    'pagination_cursor_invariants_passed': True,
+                    'board_names_unique': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': True,
+                },
+            }, ensure_ascii=False), encoding='utf-8')
+            trusted = self.trusted_evidence(directory, 'inventory')
+
+            def fake_run_command(args, **_kwargs):
+                if 'build_created_boards.py' in args[1]:
+                    Path(args[4]).write_text(json.dumps({
+                        'confirmed': [],
+                        'created': [],
+                        'missing': ['无法确定'],
+                        'failed': [],
+                    }, ensure_ascii=False), encoding='utf-8')
+                elif 'run_reassign_batch.py' in args[1]:
+                    Path(args[3]).write_text(json.dumps({
+                        'mode': 'dry_run',
+                        'ready_for_execute': True,
+                        'blockers': [],
+                        'warnings': [],
+                        'processed': [{
+                            'id': note_id,
+                            'target_board': '无法确定',
+                            'source_board_id': '',
+                            'membership_state': 'not_in_any_board',
+                            'archive_lifecycle_state': 'first_archive_pending',
+                            'status': 'planned',
+                        }],
+                    }, ensure_ascii=False), encoding='utf-8')
+                return subprocess.CompletedProcess(args, 0, '{}', '')
+
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch('workbuddy_bridge.run_command', side_effect=fake_run_command),
+            ):
+                result = prepare_action(
+                    'run-1', user_id, page_url, expected, 100,
+                    [{
+                        'id': note_id,
+                        'target_board': '',
+                        'confidence': 'low',
+                        'reason': ['证据不足'],
+                    }],
+                    max_moves=10,
+                    trusted_evidence=trusted,
+                    new_board_privacy='private',
+                )
+            classification = json.loads(
+                (directory / 'classification.json').read_text(encoding='utf-8')
+            )
+
+        self.assertEqual(result['planned_board_creations'], [
+            {'name': '无法确定', 'privacy': 1},
+        ])
+        self.assertEqual(result['taxonomy'], ['无法确定'])
+        self.assertEqual(classification[0]['target_board'], '无法确定')
+        self.assertTrue(classification[0]['uncertain_assignment'])
+        self.assertEqual(result['planned_move_count'], 1)
+
     def test_prepare_second_phase_reuses_bound_snapshot_and_rejects_new_categories(self):
         user_id = '66d19b54000000001d03a93d'
         note_id = '66d19b54000000001d03a93e'
@@ -1892,10 +1991,12 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             '--organizing-depth', 'light',
             '--batch-size', '10',
             '--pause-minutes', '3',
+            '--generate-report',
         ])
         self.assertEqual(parsed.organizing_depth, 'light')
         self.assertEqual(parsed.batch_size, 10)
         self.assertEqual(parsed.pause_minutes, 3)
+        self.assertTrue(parsed.generate_report)
         self.assertNotIn('detail_request_limit', vars(parsed))
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1937,6 +2038,16 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         200,
                         3,
                         'deep',
+                    )
+                with self.assertRaisesRegex(RuntimeError, '快速整理不生成'):
+                    capture_action(
+                        'quick-report-not-supported',
+                        'collection',
+                        target_url,
+                        200,
+                        3,
+                        'quick',
+                        True,
                     )
             browser.assert_not_called()
 

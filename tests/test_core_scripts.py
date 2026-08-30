@@ -1211,6 +1211,14 @@ function createTransactionModel(options) {
             {key: value for key, value in item.items() if key != 'archive_lifecycle_state'},
             allow_low_confidence=False,
         ))
+        self.assertFalse(is_ready_move(
+            {**item, 'confidence': 'low'},
+            allow_low_confidence=False,
+        ))
+        self.assertTrue(is_ready_move(
+            {**item, 'target_board': '无法确定', 'confidence': 'low'},
+            allow_low_confidence=False,
+        ))
 
     def test_live_api_resolver_accepts_one_exact_factory_and_renamed_exports(self):
         result = self.run_live_api_resolver_js(r'''

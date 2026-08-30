@@ -180,7 +180,7 @@ python scripts\ocr_note_images.py image_items.json ocr_results.json --provider e
 - 网页端总数与可抓取总数可能不一致。
 - 列表页取得的封面或其它图片只能算 observed，必须保持 `image_urls_complete=false`；只有详情 `noteData.imageList` 才能声明完整。详情 `noteData.type` 是图文/视频类型的权威来源，覆盖列表页 observed 类型。
 - 图文 OCR 必须基于笔记详情中按原顺序取得的封面和全部内页图片；图片列表不完整时标记 `incomplete_image_set`，不得只识别封面后声称完成。详情请求触发 `security_blocked` 时立即停止后续请求、落盘未请求状态并以非零退出码结束。
-- 任一图文图片下载或 OCR 失败时，不使用部分 OCR 文本分类；目标专辑保持为空并进入人工复核，同时保留真实错误状态，不得静默退回元数据分类。
+- 任一图文图片下载或 OCR 失败时，不使用部分 OCR 文本分类；最终分类机械进入“无法确定”等待用户自行调整，同时保留真实错误状态，不得静默退回元数据分类。
 - OCR 只提取可见文字。没有文字的纯画面不属于 OCR，OCR 不能理解人物、物体、场景或动作。
 - OCR 缓存只有在 `image_set_sha256` 和 `ocr_run_fingerprint` 同时一致时才可复用；运行指纹绑定实际 provider、Tesseract 语言及 Swift OCR 脚本版本。
 - 上一条图文 OCR 边界不改变视频规则：视频内容分类开启后，视频转写/分析失败必须留给人工复核，不得回退简介或视频封面 OCR。视觉模块开启后，任意明确视频没有完整时轴证据都必须标为未完成。

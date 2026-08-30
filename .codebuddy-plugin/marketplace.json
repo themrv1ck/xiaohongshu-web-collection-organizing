@@ -8,7 +8,7 @@
       "name": "xiaohongshu-organizer",
       "source": "./",
       "description": "在 WorkBuddy 中用独立 Playwright 浏览器安全整理小红书收藏与点赞。",
-      "version": "2.1.0"
+      "version": "2.2.0"
     }
   ]
 }

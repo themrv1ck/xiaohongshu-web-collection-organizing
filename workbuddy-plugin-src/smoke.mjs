@@ -66,6 +66,8 @@ try {
     || 'pause_minutes' in captureProperties
     || JSON.stringify(captureSources) !== JSON.stringify(['collection', 'liked'])
     || !captureRequired.includes('organizing_depth')
+    || !captureRequired.includes('generate_report')
+    || captureProperties.generate_report?.type !== 'boolean'
     || JSON.stringify(captureProperties.organizing_depth?.enum)
       !== JSON.stringify(['quick', 'light', 'deep'])
     || 'image_ocr_enabled' in captureProperties
@@ -119,7 +121,7 @@ try {
   if (
     result.isError
     || result.structuredContent?.runtime?.host !== 'workbuddy'
-    || result.structuredContent?.plugin_version !== '2.1.0'
+    || result.structuredContent?.plugin_version !== '2.2.0'
   ) {
     throw new Error(`MCP status failed: ${JSON.stringify(result)}`);
   }

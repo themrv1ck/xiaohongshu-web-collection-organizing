@@ -32,7 +32,7 @@ let evidenceLedger;
 
 const RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
 const APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-const PLUGIN_VERSION = '2.1.0';
+const PLUGIN_VERSION = '2.2.0';
 const MCP_LAUNCH_KEY_FD = 3;
 const MCP_EXECUTE_READY_FD = 4;
 const MCP_EXECUTE_COMMIT_FD = 5;
@@ -440,13 +440,14 @@ server.registerTool(
   {
     title: '分组读取小红书完整范围',
     description:
-      '只用插件独立 Playwright Chromium 打开精确页面并在同一会话中自动翻页；organizing_depth 必填，quick 不做 OCR，light 用同一登录态读取全部详情、下载本地图片字节并 OCR，deep 在视频证据入口接入前于浏览器启动前停止。固定每 200 条独立保存一组、非末组真实暂停 3 分钟；完成后由插件签发会话 receipt，用户无需处理；不导出 Cookie、签名图片 URL 或 xsec。',
+      '只用插件独立 Playwright Chromium 打开精确页面并在同一会话中自动翻页；organizing_depth 必填，quick 不做 OCR，light 用同一登录态读取全部详情、下载本地图片字节并 OCR，deep 在视频证据入口接入前于浏览器启动前停止。轻度整理前必须把用户是否需要整理后专辑 HTML 报告写入 generate_report；快速整理固定为 false。固定每 200 条独立保存一组、非末组真实暂停 3 分钟；完成后由插件签发会话 receipt，用户无需处理；不导出 Cookie、签名图片 URL 或 xsec。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确授权此精确页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/).optional(),
       source: z.enum(['collection', 'liked']),
       page_url: z.string().url(),
       organizing_depth: z.enum(['quick', 'light', 'deep']).describe('必填：quick=快速整理，light=图文完整 OCR；deep 在视频证据入口接入前会于浏览器启动前明确停止'),
+      generate_report: z.boolean().describe('用户是否确认在轻度/深度整理完成并最终回读核验后生成桌面专辑 HTML；快速整理必须为 false'),
     }),
   },
   async ({
@@ -455,6 +456,7 @@ server.registerTool(
     source,
     page_url,
     organizing_depth,
+    generate_report,
   }, extra) => {
     try {
       requireTrue(browser_authorized, 'browser_authorized');
@@ -466,11 +468,15 @@ server.registerTool(
         '--pause-minutes', '3',
         '--organizing-depth', organizing_depth,
       ];
+      if (organizing_depth === 'quick' && generate_report) {
+        throw new Error('快速整理不生成专辑报告；generate_report 必须为 false。');
+      }
       if (organizing_depth === 'deep') {
         throw new Error(
           'WorkBuddy Plugin 当前只支持快速或轻度整理；深度整理需要视频语音和完整时轴画面证据，尚未接入，未打开浏览器。',
         );
       }
+      if (generate_report) args.push('--generate-report');
       if (run_id) args.push('--run-id', run_id);
       const payload = await runBridge(
         'capture',
@@ -515,7 +521,7 @@ server.registerTool(
   {
     title: '生成真实专辑证据与硬闸门 dry-run',
     description:
-      '两阶段固定入口：第一次只读返回真实已有专辑，并只把当前不属于任何专辑的笔记放入 classification_inputs；这些笔记完成首次归档并回读确认后才进入永久保护，当前已有专辑成员视为已完成首次归档。第二次提交必须精确覆盖 classification_inputs，禁止补回受保护 ID。若需新专辑，同时提交仅依据本次内容生成的 proposed_board_names 与明确的公开或私密设置；专辑创建和逐条移动合并为一次用户确认并写入 approval_digest。两阶段 receipt 均由 WorkBuddy 自动传递，用户无需处理。',
+      '两阶段固定入口：第一次只读返回真实已有专辑，并只把当前不属于任何专辑的笔记放入 classification_inputs；这些笔记完成首次归档并回读确认后才进入永久保护，当前已有专辑成员视为已完成首次归档。第二次提交必须精确覆盖 classification_inputs，禁止补回受保护 ID。空 target_board 会机械转入固定的“无法确定”专辑；若该专辑不存在，会连同用户确认的公开或私密设置加入同一次创建与移动方案。其他新专辑只能来自本次真实内容。两阶段 receipt 均由 WorkBuddy 自动传递，用户无需处理。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合授权只读核验此页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
@@ -540,7 +546,7 @@ server.registerTool(
         '第二阶段必须精确覆盖第一次返回的 classification_inputs；不得包含任何已有专辑成员',
       ),
       proposed_board_names: z.array(z.string().min(1)).max(20).optional().describe(
-        '仅依据本次 classification_inputs 提议的新专辑名称；不得使用插件预设类别',
+        '仅依据本次 classification_inputs 提议的新专辑名称；不得使用插件预设类别。“无法确定”由工具在空目标出现时机械加入，无需在此重复提议',
       ),
       new_board_privacy: z.enum(['public', 'private']).optional().describe(
         '存在 proposed_board_names 时必填，并与创建及移动方案一起由用户确认',

@@ -252,16 +252,17 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 上例只用了文字稿，因此不能当成画面分析成功。视觉模块开启后，对每个明确视频的最终行必须改为 `analysis_basis=full_timeline_visual_with_transcript|full_timeline_visual`、`visual_status=analyzed`，并带齐上述全时轴证据字段。
 
-对应的 `classification.json` 失败行必须保持空目标专辑，不能补用简介：
+对应的 `video_analysis.json` 失败结果保持空目标；写入最终 `classification.json` 时，必须机械进入固定“无法确定”专辑，不能补用简介：
 
 ```json
 {
   "id": "694d3390000000002203ae35",
   "title": "转写失败的视频",
-  "target_board": "",
+  "target_board": "无法确定",
   "confidence": "low",
   "reason": ["transcript_coverage_too_low"],
-  "review_state": "video_content_unavailable",
+  "review_state": "manual_reclassification_required",
+  "uncertain_assignment": true,
   "content_type": "video",
   "classification_basis": "video_content",
   "video_analysis_status": "failed",
@@ -278,12 +279,13 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 ### `classification.json`
 
-`source_lists` / `source_primary` 从输入条目透传，用于区分收藏、点赞或二者都有。图文 OCR 关闭时，普通条目必须使用 `classification_basis=metadata_only` 和 `ocr_status=skipped`；开启且完整图片集合逐张 OCR 成功时为 `metadata_and_ocr`。图片集合不完整或任一图片失败时，图文行必须使用 `classification_basis=image_ocr_incomplete`、空目标专辑和 `review_state=image_ocr_incomplete`，不得使用部分 OCR 文本。成功图文行从 `ocr_results.json` 透传同一个非空 `ocr_run_fingerprint`；非图文、跳过或没有成功 OCR 的行该字段为空。视频开关开启后，视频行必须使用 `classification_basis=video_content`，并从 `video_analysis.json` 透传 `video_analysis_basis`、`visual_status` 和 provider identity。转写或所选 analysis provider 失败时不得根据简介/OCR 补分类。
+`source_lists` / `source_primary` 从输入条目透传，用于区分收藏、点赞或二者都有。图文 OCR 关闭时，普通条目必须使用 `classification_basis=metadata_only` 和 `ocr_status=skipped`；开启且完整图片集合逐张 OCR 成功时为 `metadata_and_ocr`。图片集合不完整、任一图片失败或其他证据无法可靠选定目标时，不得使用部分证据或猜测；最终分类机械写为 `target_board=无法确定`、`confidence=low`、`review_state=manual_reclassification_required`、`uncertain_assignment=true`，同时保留真实失败状态和原因。成功图文行从 `ocr_results.json` 透传同一个非空 `ocr_run_fingerprint`；非图文、跳过或没有成功 OCR 的行该字段为空。视频开关开启后，视频行必须使用 `classification_basis=video_content`，并从 `video_analysis.json` 透传 `video_analysis_basis`、`visual_status` 和 provider identity。转写或所选 analysis provider 失败时不得根据简介/OCR 补分类。
 
 真实 dry-run 和 execute 前必须先用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 生成完整 `board_snapshot.json`，再生成 `created_boards.json`。两份证据必须同时传给 `run_reassign_batch.py`；否则只能得到 `classification_preview`、`ready_for_execute=false`、`missing_boards=null`。成员关系判定必须早于目标专辑校验。硬闸门通过后，执行清单字段必须满足：
 
 - 已属于任一专辑：当前实时成员关系视为首次归档已确认，统一保留 `excluded=true`、`exclude_reason=existing_board_member_protected`、`membership_state=existing_board_member_protected`、`archive_lifecycle_state=first_archive_confirmed`，确保零写入；模型目标不同或不存在也不能改变该结果。
 - 不在任何专辑：`membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending`，且 `source_board`、`source_board_id` 都为空，执行器才可使用直接 `d0` 完成首次归档。
+- 未归档且无法可靠选定目标：固定进入“无法确定”；该专辑不存在时必须作为明确待创建项进入用户确认。它是唯一允许在未传通用 `--allow-low-confidence` 时执行的低置信度目标，用户以后自行调整。
 - 同时属于多个专辑：视为首次归档已经完成并永久保护，`source_board` 可记录多个名称，禁止选择来源或执行迁移。
 - `d0` 调用、dry-run、失败、中止或未核验都不能改变生命周期；只有 `U_` + `Ks` 回读确认 note id 已进入目标专辑后，才把成功行改为 `first_archive_confirmed`。
 - `Ks` 分页不完整、账号/页面绑定变化或无法证明不在任何专辑：不得进入 execute。
@@ -403,6 +405,10 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 ```json
 {"started_at":"2026-04-17T01:17:03Z","mode":"execute","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4个技能直接出活","target_board":"示例主题A","status":"success","attempt":1,"events":["board:FOUND:示例主题A","note_move:CALLED","verify:note_present"],"error":"","verified":true}],"errors":[],"missing_boards":[],"board_counts_before":{"示例主题A":76},"board_counts_after":{"示例主题A":77}}
 ```
+
+### 专辑 HTML 报告
+
+轻度或深度整理开始前记录 `report_requested=true|false`。只有最终完整成员核验通过且该值为 `true` 时，才允许运行 `scripts/generate_collection_report.py`，默认输出 `$HOME/Desktop/我的小红书专辑整理报告.html`。输入必须是最终 `board_snapshot.json` 与同批完整 `classification.json`，二者的 note id 集合和每条目标专辑必须完全一致；缺页、重复、数量变化或目标不一致直接失败。报告只使用已保存标题、内容类型、`main_topic` 和 `content_summary`，缺少摘要时明确标注，不重新读取或猜测。
 
 ### `retry_queue.json`
 ```json

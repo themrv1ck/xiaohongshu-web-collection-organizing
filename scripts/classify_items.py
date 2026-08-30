@@ -8,6 +8,7 @@ from collection_scope import validate_scope_input
 from analyze_video_transcripts import validate_analysis
 from video_content_common import normalize_content_type
 from archive_exclusion import combine_archived_note_maps, load_archived_note_map
+from archive_rules import apply_uncertain_assignment
 
 
 def load_existing_inventory(path):
@@ -263,6 +264,8 @@ def main():
                 else 'not_checked'
             ),
         }
+        if not source_board:
+            row = apply_uncertain_assignment(row)
         if source_board:
             row['excluded'] = True
             row['exclude_reason'] = (

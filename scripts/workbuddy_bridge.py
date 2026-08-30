@@ -74,6 +74,10 @@ from xhs_safety import (
     mark_security_halted,
     resolve_safety_state_path,
 )
+from archive_rules import (
+    UNCERTAIN_BOARD_NAME,
+    apply_uncertain_assignment,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2153,6 +2157,7 @@ def capture_action(
     batch_size: int,
     pause_minutes: int,
     organizing_depth: str,
+    report_requested: bool = False,
 ) -> Dict[str, Any]:
     require_workbuddy()
     organizing_depth = str(organizing_depth or '').strip().lower()
@@ -2162,6 +2167,10 @@ def capture_action(
             'deep 需要视频语音和完整时轴画面证据，尚未接入，已在打开浏览器前停止。'
         )
     image_ocr_enabled = organizing_depth == 'light'
+    if not isinstance(report_requested, bool):
+        raise RuntimeError('report_requested 必须是布尔值。')
+    if organizing_depth == 'quick' and report_requested:
+        raise RuntimeError('快速整理不生成专辑报告；只有轻度或深度整理会询问。')
     supplied_url = validate_xhs_url(page_url, source)
     captured_user_id = profile_user_id(supplied_url)
     if source in LOGIN_SOURCES and not captured_user_id:
@@ -2216,6 +2225,7 @@ def capture_action(
                 'workbuddy_exact_url_open': checked_url,
                 'organizing_depth': organizing_depth,
                 'image_ocr_enabled': bool(image_ocr_enabled),
+                'report_requested': report_requested,
                 'detail_batch_size': batch_size if image_ocr_enabled else 0,
                 'detail_pause_minutes': pause_minutes if image_ocr_enabled else 0,
             },
@@ -2315,6 +2325,7 @@ def capture_action(
     )
     result.update({
         'image_ocr_enabled': bool(image_ocr_enabled),
+        'report_requested': report_requested,
         'organizing_depth': organizing_depth,
         'image_items': (
             str(image_items)
@@ -2457,11 +2468,14 @@ def validate_workbuddy_capture_evidence(
     if expected_url_substring and expected_url_substring not in captured_page_binding:
         raise RuntimeError('抓取页面与 expected_url_substring 不一致。')
     image_ocr_enabled = manifest.get('image_ocr_enabled')
+    report_requested = manifest.get('report_requested')
     organizing_depth = str(manifest.get('organizing_depth') or '').strip()
     if (
         organizing_depth not in {'quick', 'light'}
         or not isinstance(image_ocr_enabled, bool)
+        or not isinstance(report_requested, bool)
         or image_ocr_enabled is not (organizing_depth == 'light')
+        or (organizing_depth == 'quick' and report_requested)
     ):
         raise RuntimeError('crawl_manifest.json 缺少一致的 WorkBuddy 整理档位。')
     blockers = manifest.get('image_ocr_blockers')
@@ -2471,6 +2485,7 @@ def validate_workbuddy_capture_evidence(
     evidence: Dict[str, Any] = {
         'image_ocr_enabled': image_ocr_enabled,
         'organizing_depth': organizing_depth,
+        'report_requested': report_requested,
         'classification_basis': (
             'workbuddy_authenticated_frontend_ocr'
             if image_ocr_enabled
@@ -2639,6 +2654,7 @@ def capture_evidence_summary(evidence: Dict[str, Any]) -> Dict[str, Any]:
         'capture_page_binding': evidence['capture_page_binding'],
         'image_ocr_enabled': evidence['image_ocr_enabled'],
         'organizing_depth': evidence['organizing_depth'],
+        'report_requested': evidence['report_requested'],
         'classification_basis': evidence['classification_basis'],
         'visible_count': evidence['visible_count'],
         'image_note_count': evidence['image_note_count'],
@@ -3063,6 +3079,16 @@ def write_workbuddy_classification(
             ),
         })
         row.update(ocr_fields)
+        if not protected_source_board:
+            row = apply_uncertain_assignment(row)
+            normalized_target = str(row.get('target_board') or '').strip()
+            if normalized_target not in allowed_board_set:
+                raise RuntimeError(
+                    f'分类目标不属于本次真实已有或待创建专辑：'
+                    f'{note_id} target_board={normalized_target!r}'
+                )
+            if normalized_target not in taxonomy:
+                taxonomy.append(normalized_target)
         if protected_source_board:
             row.update({
                 'target_board': '',
@@ -3213,8 +3239,26 @@ def prepare_action(
         expected,
         verify_pages,
     )
+    effective_proposed_board_names = proposed_board_names
+    if isinstance(classification_rows, list) and any(
+        isinstance(row, dict)
+        and str(row.get('target_board') or '').strip() in {'', UNCERTAIN_BOARD_NAME}
+        for row in classification_rows
+    ):
+        if effective_proposed_board_names is None:
+            effective_proposed_board_names = []
+        if not isinstance(effective_proposed_board_names, list):
+            raise RuntimeError('proposed_board_names 必须是数组。')
+        if (
+            UNCERTAIN_BOARD_NAME not in existing_board_names
+            and UNCERTAIN_BOARD_NAME not in effective_proposed_board_names
+        ):
+            effective_proposed_board_names = [
+                *effective_proposed_board_names,
+                UNCERTAIN_BOARD_NAME,
+            ]
     planned_boards = validate_proposed_board_plan(
-        proposed_board_names,
+        effective_proposed_board_names,
         new_board_privacy,
         existing_board_names,
     )
@@ -3599,6 +3643,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument('--batch-size', type=int, default=DEFAULT_CAPTURE_BATCH_SIZE)
     capture.add_argument('--pause-minutes', type=int, default=DEFAULT_CAPTURE_PAUSE_MINUTES)
     capture.add_argument('--organizing-depth', choices=['quick', 'light'], required=True)
+    capture.add_argument('--generate-report', action='store_true')
 
     prepare = sub.add_parser('prepare')
     prepare.add_argument('--run-id', required=True)
@@ -3641,6 +3686,7 @@ def main() -> None:
                 args.batch_size,
                 args.pause_minutes,
                 args.organizing_depth,
+                args.generate_report,
             )
         elif args.action == 'prepare':
             classification_rows = None
