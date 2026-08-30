@@ -87,7 +87,7 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
-若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.2.0` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.2.1` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
 
 在 WorkBuddy 对话中执行：
 
@@ -103,7 +103,7 @@
 
 `capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.2.0`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.2.1`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -257,7 +257,7 @@ python3 scripts/check_environment.py --capability-preflight
 
 快速整理跳过 OCR 和视频功能卡，不安装、不运行任何内容识别组件；轻度整理按 OCR 的既有安装与复验规则执行；深度整理按 OCR、语音和画面功能的既有规则执行。选择档位不授权打开浏览器或移动笔记；若需要安装，会先显示实际缺失组件和体积，系统权限窗口仍由用户确认。深度整理发现多个可用画面识别能力时，仍须由用户选择 analysis provider，不能默认绑定 Codex CLI。
 
-选择轻度或深度整理后、任何采集或分析开始前，Skill 会再问一次是否需要整理完成报告。回答“需要”时，只有最终专辑成员完整回读并与同批分类逐条一致，才会在桌面生成 `我的小红书专辑整理报告.html`；回答“不需要”则不生成。报告不会重新读取或分析笔记。
+选择轻度或深度整理后、任何采集或分析开始前，Skill 会再问一次是否需要整理完成报告。回答“需要”时，只有最终专辑成员完整回读并与同批分类逐条一致，才会用已保存的完整图文 OCR 生成整体概括，并在桌面生成 `我的小红书专辑整理报告.html`；回答“不需要”则不生成。报告不会重新读取收藏或移动笔记，原始 OCR 只作本地摘要证据，不直接写进 HTML。
 
 只有用户回复“自定义”时，再显示图文 OCR 卡片：
 
@@ -527,7 +527,8 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 - `scripts/verify_classification_membership.py`：移动完成后只读复抓全部专辑，核验完整分类中所有已放行视频都只出现一次且位于目标专辑；空目标、低置信度和待复核视频单独列出。
 - `scripts/build_retry_queue.py`：从运行报告生成重试队列。
 - `scripts/summarize_run_report.py`：汇总运行报告。
-- `scripts/generate_collection_report.py`：从最终完整专辑快照和同批完整分类生成桌面 HTML；缺页、重复、数量变化或目标不一致时拒绝生成。
+- `scripts/analyze_image_ocr.py`：把已核验完整的图文 OCR 转成整体中文概括，并用来源哈希绑定证据。
+- `scripts/generate_collection_report.py`：从最终完整专辑快照、同批完整分类和图文概括生成桌面 HTML；缺页、重复、数量变化、目标不一致或图文摘要来源变化时拒绝生成。
 
 ## 安全边界
 

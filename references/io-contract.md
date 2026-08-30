@@ -408,7 +408,9 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 ### 专辑 HTML 报告
 
-轻度或深度整理开始前记录 `report_requested=true|false`。只有最终完整成员核验通过且该值为 `true` 时，才允许运行 `scripts/generate_collection_report.py`，默认输出 `$HOME/Desktop/我的小红书专辑整理报告.html`。输入必须是最终 `board_snapshot.json` 与同批完整 `classification.json`，二者的 note id 集合和每条目标专辑必须完全一致；缺页、重复、数量变化或目标不一致直接失败。报告只使用已保存标题、内容类型、`main_topic` 和 `content_summary`，缺少摘要时明确标注，不重新读取或猜测。
+轻度或深度整理开始前记录 `report_requested=true|false`。只有最终完整成员核验通过且该值为 `true` 时，才允许先运行 `scripts/analyze_image_ocr.py`，把同批 `classification.json` 中状态为 `ok`、图片集合完整且指纹非空的图文 OCR 生成 `image_analysis.json`。每条摘要必须保存 `id`、整体 `main_topic`、连贯 `content_summary`、`source_sha256` 和 analysis provider 身份；`source_sha256` 绑定标题、完整 OCR、OCR 指纹和图片数。摘要不得逐张照抄 OCR、输出“第1张/第2张”原文列表或把识别碎片当正文。
+
+随后运行 `scripts/generate_collection_report.py --board-snapshot <最终快照> --classification <同批完整分类> --image-analysis <image_analysis.json>`，默认输出 `$HOME/Desktop/我的小红书专辑整理报告.html`。快照与分类的 note id 集合及每条目标专辑必须完全一致；图文摘要还必须精确覆盖全部完整 OCR 图文 ID，且来源哈希逐条一致。缺页、重复、数量变化、目标不一致、摘要缺项或来源变化直接失败。HTML 只展示视频内容摘要和图文整体概括；原始 OCR 保留在本地 JSON 作为证据，不写入报告正文。报告阶段不重新读取收藏、不重新 OCR、不移动笔记。
 
 ### `retry_queue.json`
 ```json

@@ -121,7 +121,7 @@ try {
   if (
     result.isError
     || result.structuredContent?.runtime?.host !== 'workbuddy'
-    || result.structuredContent?.plugin_version !== '2.2.0'
+    || result.structuredContent?.plugin_version !== '2.2.1'
   ) {
     throw new Error(`MCP status failed: ${JSON.stringify(result)}`);
   }
