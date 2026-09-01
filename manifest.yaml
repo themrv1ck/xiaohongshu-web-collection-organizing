@@ -1,5 +1,5 @@
 name: xiaohongshu-web-collection-organizing
-version: 2.2.1
-description: "安全读取、分析并整理小红书收藏与点赞；WorkBuddy 使用专用 Playwright 登录态通路，支持图文 OCR、分组处理、dry-run 和移动前确认。"
+version: 2.2.2
+description: "小红书收藏与点赞离线分析 Skill；2.2.2 已安全停用专辑读取、创建和移动，等待非注入式实现。"
 category: productivity
 author: themrv1ck

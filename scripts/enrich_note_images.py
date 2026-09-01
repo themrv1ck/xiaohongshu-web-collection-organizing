@@ -33,8 +33,13 @@ MOBILE_USER_AGENT = (
     'Mobile/15E148 Safari/604.1'
 )
 SETUP_MARKER = 'window.__SETUP_SERVER_STATE__='
-SECURITY_MARKERS = ('IP 存在风险', '异常访问', '安全验证', '访问过于频繁')
-SECURITY_CODE_RE = re.compile(r'["\'](?:code|errorCode)["\']\s*:\s*300012(?:\D|$)')
+SECURITY_MARKERS = (
+    'IP 存在风险', '异常访问', '安全验证', '当前请求异常',
+    'website-login/error', '访问过于频繁',
+)
+SECURITY_CODE_RE = re.compile(
+    r'(?:["\'](?:code|errorCode)["\']\s*:\s*)?(?:300012|300031)(?:\D|$)'
+)
 NOTE_ID_RE = re.compile(r'^[a-f0-9]{24}$', re.IGNORECASE)
 
 
@@ -220,7 +225,7 @@ def enrich_item_from_html(item, html_text):
             if marker in html_text:
                 raise SecurityBlockError(f'小红书页面触发安全限制：{marker}')
         if SECURITY_CODE_RE.search(html_text):
-            raise SecurityBlockError('小红书页面触发安全限制：code=300012')
+            raise SecurityBlockError('小红书页面触发安全限制：security_code')
         raise
     enriched = dict(item)
     enriched['content_type'] = detail_type

@@ -21,11 +21,13 @@ from xhs_safety import (
     classify_safety_error,
     ensure_active_session,
     mark_security_halted,
+    reject_unsafe_private_runtime,
     resolve_safety_state_path,
 )
 
 
 def build_create_board_job(args: argparse.Namespace) -> str:
+    reject_unsafe_private_runtime('创建专辑')
     payload = {
         'name': args.name,
         'desc': args.desc,
@@ -56,7 +58,8 @@ def build_create_board_job(args: argparse.Namespace) -> str:
   }
 
   const securityMarkers = [
-    '安全验证', '异常访问', '访问异常', '访问过于频繁', '操作过于频繁',
+    '安全验证', '异常访问', '访问异常', '当前请求异常', '300031', 'website-login/error',
+    '访问过于频繁', '操作过于频繁',
     '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
     '拖动滑块', 'captcha', 'security verification', 'abnormal access', 'too many requests'
   ];
@@ -80,17 +83,8 @@ def build_create_board_job(args: argparse.Namespace) -> str:
     }
   }
 
-  function exposeRspackRequire() {
-    const chunk = window.webpackChunkxhs_pc_web;
-    if (!chunk || typeof chunk.push !== 'function') {
-      throw new Error('Rspack runtime not found in Xiaohongshu main world');
-    }
-    let capturedRequire = null;
-    chunk.push([['xhs-create-board-runtime-' + runId], {}, function(req) {
-      capturedRequire = req;
-    }]);
-    if (!capturedRequire) throw new Error('failed to capture Xiaohongshu Rspack require');
-    return capturedRequire;
+  function privateRuntimeAccessDisabled() {
+    throw new Error('private Xiaohongshu runtime access is disabled');
   }
 
   LIVE_API_RESOLVER_JS
@@ -146,7 +140,7 @@ def build_create_board_job(args: argparse.Namespace) -> str:
 
   async function run() {
     assertContext();
-    const req = exposeRspackRequire();
+    const req = privateRuntimeAccessDisabled();
     const api = findApi(req);
     const createBoard = findCreateBoardExport(req);
     const before = await loadBoards(api);
@@ -317,6 +311,7 @@ def validate_result(result: Any, execute: bool) -> Dict[str, Any]:
 
 def execute_create_board(args: argparse.Namespace) -> Dict[str, Any]:
     validate_args(args)
+    build_create_board_job(args)
     report_path = Path(args.report)
     safety_state = resolve_safety_state_path(getattr(args, 'safety_state', ''), report_path)
     ensure_active_session(
@@ -375,13 +370,13 @@ def execute_create_board(args: argparse.Namespace) -> Dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='通过小红书当前前端官方调用严格创建一个专辑；默认 dry-run。'
+        description='创建专辑已安全停用；命令会在打开浏览器前停止。'
     )
     parser.add_argument('--name', required=True, help='专辑名称')
     parser.add_argument('--desc', default='', help='专辑描述；默认空')
     parser.add_argument('--privacy', type=int, choices=(0, 1), default=0, help='0 公开，1 私密')
     parser.add_argument('--report', required=True, help='创建报告 JSON')
-    parser.add_argument('--execute', action='store_true', help='真实创建；不传只做查重 dry-run')
+    parser.add_argument('--execute', action='store_true', help='已停用；不会打开浏览器或创建专辑')
     parser.add_argument('--user-id', required=True)
     parser.add_argument('--arc-window-id', required=True)
     parser.add_argument('--arc-tab-id', required=True)

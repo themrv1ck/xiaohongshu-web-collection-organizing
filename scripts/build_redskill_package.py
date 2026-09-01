@@ -85,9 +85,8 @@ def _skillhub_skill_text(text, version):
     release_fields = [
         'version: "{}"'.format(version),
         'license: MIT',
-        'compatibility: "Requires network access for user-authorized '
-        'Xiaohongshu page and image requests; WorkBuddy users install the '
-        'GitHub Plugin on first use."',
+        'compatibility: "Album organizing is offline-only in 2.2.2; live '
+        'album reads, creation, and moves are disabled before browser launch."',
     ]
     return '\n'.join(lines[:end] + release_fields + lines[end:]) + '\n'
 

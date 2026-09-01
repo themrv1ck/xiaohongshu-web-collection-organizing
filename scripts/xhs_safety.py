@@ -26,6 +26,19 @@ class SafetyHaltedError(RuntimeError):
     """Raised before any Xiaohongshu action when a shared session is halted."""
 
 
+class UnsafePrivateRuntimeAccessError(RuntimeError):
+    """Raised before a browser starts when legacy private-runtime access is requested."""
+
+
+def reject_unsafe_private_runtime(operation: str) -> None:
+    """Disable the runtime-module probing associated with Xiaohongshu 300031."""
+    label = str(operation or "小红书账号操作").strip()
+    raise UnsafePrivateRuntimeAccessError(
+        f"安全停止：{label}依赖的小红书内部模块探测已禁用。"
+        "当前版本不会打开浏览器、不会注册自定义网页模块，也不会改用其他私有接口。"
+    )
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -326,7 +339,7 @@ def classify_safety_error(error: object) -> tuple[str, str] | None:
     text = _redact_message(raw_text)
     lowered = raw_text.lower()
     markers = (
-        ("security_challenge", ("safety_breaker", "securitychallengeerror", "安全验证", "异常访问", "访问异常", "访问过于频繁", "操作过于频繁", "请求过于频繁", "网络环境存在风险", "当前环境存在风险", "拖动滑块", "captcha", "security verification", "abnormal access", "too many requests", "http 403", "http 412", "http 429", "http 461", "code=300012", "code 300012")),
+        ("security_challenge", ("safety_breaker", "securitychallengeerror", "安全验证", "异常访问", "访问异常", "当前请求异常", "访问过于频繁", "操作过于频繁", "请求过于频繁", "网络环境存在风险", "当前环境存在风险", "拖动滑块", "captcha", "security verification", "abnormal access", "too many requests", "/website-login/error", "http 403", "http 412", "http 429", "http 461", "300031", "code=300012", "code 300012")),
         ("page_binding_lost", (
             "executepagebindingerror", "page binding", "current page is not xiaohongshu.com",
             "arc worker runtime marker", "arc tab runtime marker", "arc worker expected url no longer matches",

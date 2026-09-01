@@ -23,6 +23,7 @@ from xhs_safety import (
     classify_safety_error,
     ensure_active_session,
     mark_security_halted,
+    reject_unsafe_private_runtime,
     resolve_safety_state_path,
 )
 
@@ -218,6 +219,7 @@ def validate_input_contract(
 
 
 def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str, expected_url_substring: str) -> str:
+    reject_unsafe_private_runtime('读取专辑及成员')
     parsed_expected = urlparse(str(expected_url_substring or '').strip())
     expected_match = re.fullmatch(
         r'/user/profile/([0-9a-fA-F]{24})/?',
@@ -266,7 +268,8 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
   }
 
   const securityMarkers = [
-    '安全验证', '异常访问', '访问异常', '访问过于频繁', '操作过于频繁',
+    '安全验证', '异常访问', '访问异常', '当前请求异常', '300031', 'website-login/error',
+    '访问过于频繁', '操作过于频繁',
     '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
     '拖动滑块', 'captcha', 'security verification', 'abnormal access', 'too many requests'
   ];
@@ -306,15 +309,8 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
     }
   }
 
-  function exposeRspackRequire() {
-    const chunk = window.webpackChunkxhs_pc_web;
-    if (!chunk || typeof chunk.push !== 'function') {
-      throw new Error('Rspack runtime not found in Xiaohongshu main world');
-    }
-    let capturedRequire = null;
-    chunk.push([['xhs-snapshot-runtime-' + runId], {}, function(req) { capturedRequire = req; }]);
-    if (!capturedRequire) throw new Error('failed to capture Xiaohongshu Rspack require');
-    return capturedRequire;
+  function privateRuntimeAccessDisabled() {
+    throw new Error('private Xiaohongshu runtime access is disabled');
   }
 
   LIVE_API_RESOLVER_JS
@@ -325,7 +321,7 @@ def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str
 
   async function run() {
     assertReadContext();
-    const fullApi = findApi(exposeRspackRequire());
+    const fullApi = findApi(privateRuntimeAccessDisabled());
     const readApi = Object.freeze({ yC: fullApi.yC, U_: fullApi.U_, Ks: fullApi.Ks });
     assertReadContext();
     const boardInventory = await loadAllBoardsStrict(
@@ -643,6 +639,12 @@ def validate_arc_locator(args: argparse.Namespace) -> None:
 
 def execute_snapshot_verification(args: argparse.Namespace) -> Dict[str, Any]:
     validate_arc_locator(args)
+    job = build_snapshot_job(
+        args.user_id,
+        args.verify_pages,
+        args.arc_tab_marker,
+        args.arc_expected_url_substring,
+    )
     safe_path = Path(args.safe160)
     cross_path = Path(args.cross38)
     baseline_path = Path(args.baseline)
@@ -671,12 +673,6 @@ def execute_snapshot_verification(args: argparse.Namespace) -> Dict[str, Any]:
 
     runner = BrowserRunner('arc', args)
     try:
-        job = build_snapshot_job(
-            args.user_id,
-            args.verify_pages,
-            args.arc_tab_marker,
-            args.arc_expected_url_substring,
-        )
         run_id = parse_browser_job_id(runner.run_javascript(job))
         result = poll_browser_job(runner, run_id, args.timeout_sec)
     except Exception as exc:
@@ -720,7 +716,7 @@ def execute_snapshot_verification(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='只读抓取小红书全部专辑成员，并严格验收 160 条分类结果。')
+    parser = argparse.ArgumentParser(description='专辑成员读取已安全停用；命令会在打开浏览器前停止。')
     parser.add_argument('--safe160', required=True, help='160 条最终分类 JSON')
     parser.add_argument('--cross38', required=True, help='38 条跨专辑计划 JSON')
     parser.add_argument('--baseline', required=True, help='移动前只读全专辑快照 JSON')

@@ -15,6 +15,7 @@ def is_security_halted(item, report):
     ]).lower()
     return any(marker in text for marker in (
         'safety_breaker', 'securitychallengeerror', '安全验证', '异常访问',
+        '当前请求异常', '300031', 'website-login/error',
         '访问过于频繁', 'security verification', 'high_risk_state_uncertain',
         'arc worker runtime marker', 'state bridge is missing',
     ))

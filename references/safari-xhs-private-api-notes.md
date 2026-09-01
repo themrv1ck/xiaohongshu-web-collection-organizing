@@ -5,14 +5,9 @@
 ## 背景
 在 Safari 已登录小红书网页端、用户要求使用 Safari 的场景中，AppleScript `do JavaScript` 可稳定驱动页面；复杂 JS 应写入临时文件后执行，避免 shell/AppleScript 引号问题。
 
-## 已验证的稳定执行方式
-- 使用 Safari 当前标签执行 JS：`tell application "Safari" to do JavaScript ... in current tab of front window`
-- 对复杂逻辑：先把 JS 写入文件，再由 Python/AppleScript 包装器读取文件内容注入 Safari。
-- 可通过 webpack chunk 暴露运行时：
-  ```js
-  window.__wreq = null;
-  window.webpackChunkxhs_pc_web.push([[Math.floor(Math.random()*1e9)], {}, function(r){ window.__wreq = r; }]);
-  ```
+## 已废止的运行时探测
+
+旧版本曾向网页打包运行时注册自定义模块，用来取得内部接口。该动作与自动化会话被重定向到安全验证错误页高度相关，现已从全部可执行代码删除。任何宿主、模型或浏览器都不得恢复、复制或改写这种探测方式。
 
 ## 小红书前端模块观察
 前端 API 模块曾定位到 webpack module `40122`，其中导出含义包括：
@@ -39,4 +34,4 @@
 
 ## 当前规则
 
-不再把接口不稳定时“回到 UI”视为可自动执行的回退。移动只能由 `scripts/run_reassign_batch.py` 在用户确认的会话中完成；它会限制范围、逐条落盘并在任何安全或页面状态异常时停止。只读核验也必须经过对应的验证脚本与同一份安全状态文件。
+读取专辑成员、创建专辑和移动笔记当前全部安全停用，并在打开浏览器前报错。只有新的非注入式实现经过真实页面验证和回归测试后，才能重新开放这些功能。

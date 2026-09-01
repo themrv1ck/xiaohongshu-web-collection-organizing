@@ -25,6 +25,7 @@ from xhs_safety import (
     load_safety_state,
     mark_security_halted,
     redact_persisted_errors,
+    reject_unsafe_private_runtime,
     resolve_safety_state_path,
 )
 from workbuddy_runtime import apply_workbuddy_browser_policy, is_workbuddy_host
@@ -1141,7 +1142,8 @@ JSON.stringify((() => {
   const payload = PAYLOAD_JSON;
   const bodyText = (document.body && document.body.innerText) || '';
   const securityMarkers = [
-    '安全验证', '异常访问', '访问异常', '访问过于频繁', '操作过于频繁',
+    '安全验证', '异常访问', '访问异常', '当前请求异常', '300031', 'website-login/error',
+    '访问过于频繁', '操作过于频繁',
     '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
     '拖动滑块', 'captcha', 'security verification', 'abnormal access',
     'too many requests'
@@ -1229,6 +1231,7 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
 
 
 def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> str:
+    reject_unsafe_private_runtime('移动笔记')
     binding = expected_profile_binding(args, required=False)
     payload = {
         'items': items,
@@ -1269,7 +1272,8 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
   }
 
   const securityMarkers = [
-    '安全验证', '异常访问', '访问异常', '访问过于频繁', '操作过于频繁',
+    '安全验证', '异常访问', '访问异常', '当前请求异常', '300031', 'website-login/error',
+    '访问过于频繁', '操作过于频繁',
     '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
     '拖动滑块', 'captcha', 'security verification', 'abnormal access', 'too many requests'
   ];
@@ -1327,17 +1331,8 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
     }
   }
 
-  function exposeRspackRequire() {
-    const chunk = window.webpackChunkxhs_pc_web;
-    if (!chunk || typeof chunk.push !== 'function') {
-      throw new Error('Rspack runtime not found in Xiaohongshu main world');
-    }
-    let capturedRequire = null;
-    chunk.push([['xhs-skill-runtime-' + runId], {}, function(req) {
-      capturedRequire = req;
-    }]);
-    if (!capturedRequire) throw new Error('failed to capture Xiaohongshu Rspack require');
-    return capturedRequire;
+  function privateRuntimeAccessDisabled() {
+    throw new Error('private Xiaohongshu runtime access is disabled');
   }
 
   LIVE_API_RESOLVER_JS
@@ -1354,7 +1349,7 @@ def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> 
     if (/手机号登录|登录后推荐|马上登录即可|扫码登录|验证码登录/.test(bodyText)) {
       throw new Error('current Xiaohongshu page looks logged out');
     }
-    const req = exposeRspackRequire();
+    const req = privateRuntimeAccessDisabled();
     const api = findApi(req);
     const boardInventory = await loadAllBoardsStrict(api, payload.userId, () => {
       assertNoSecurityChallenge();
@@ -1668,6 +1663,7 @@ def apply_batch(
         report['updated_at'] = utc_now()
         write_json(report_path, report)
         return
+    build_browser_job(planned_items, args)
     runner = BrowserRunner(backend, args)
     try:
         if commit_callback is not None:
@@ -1770,10 +1766,10 @@ def apply_batch(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='只把当前不属于任何专辑的小红书笔记完成首次归档；回读确认后才锁定保护。无闸门证据时只输出分类预览。')
+    parser = argparse.ArgumentParser(description='生成离线分类预览；真实专辑读取、创建和移动已安全停用。')
     parser.add_argument('classification', help='classification.json 路径')
     parser.add_argument('report', nargs='?', default='run_report.json', help='run_report.json 输出路径')
-    parser.add_argument('--execute', action='store_true', help='真实移动收藏；不传则只生成计划')
+    parser.add_argument('--execute', action='store_true', help='已停用；传入后会在打开浏览器前安全停止')
     parser.add_argument('--browser', choices=['auto', 'arc', 'chrome', 'safari', 'playwright'], default='auto', help='执行浏览器后端；真实执行必须显式指定，禁止 auto')
     parser.add_argument('--allow-low-confidence', action='store_true', help='允许移动 low confidence 条目；默认要求人工复核')
     parser.add_argument('--verify-pages', type=int, default=10, help='每个目标专辑最多翻页核验次数')

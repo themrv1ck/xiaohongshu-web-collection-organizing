@@ -1062,6 +1062,7 @@ function createTransactionModel(options) {
         result = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}}
         with tempfile.TemporaryDirectory() as tmp, \
                 patch('run_reassign_batch.BrowserRunner', return_value=runner), \
+                patch('run_reassign_batch.build_browser_job', return_value='safe-test-job'), \
                 patch('run_reassign_batch.poll_browser_job', return_value=result), \
                 patch('run_reassign_batch.time.sleep') as sleep:
             apply_batch(classification, report, args, Path(tmp) / 'report.json')
@@ -1105,6 +1106,7 @@ function createTransactionModel(options) {
         }
         with tempfile.TemporaryDirectory() as tmp, \
                 patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
+                patch('run_reassign_batch.build_browser_job', return_value='safe-test-job'), \
                 patch('run_reassign_batch.validate_write_live_binding'), \
                 patch('run_reassign_batch.poll_browser_job', return_value=result):
             apply_batch(
@@ -1157,6 +1159,7 @@ function createTransactionModel(options) {
         ]
         with tempfile.TemporaryDirectory() as tmp, \
                 patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
+                patch('run_reassign_batch.build_browser_job', return_value='safe-test-job'), \
                 patch('run_reassign_batch.poll_browser_job', return_value=result) as poll:
             report_path = Path(tmp) / 'report.json'
             with self.assertRaisesRegex(RuntimeError, '已先写入报告'):
@@ -1168,30 +1171,16 @@ function createTransactionModel(options) {
         self.assertEqual(persisted['processed'], [failed_row])
         self.assertEqual(persisted['errors'], [failed_row])
 
-    def test_browser_job_checks_security_immediately_before_each_write_and_rethrows(self):
+    def test_browser_job_is_disabled_before_any_write(self):
         args = type('Args', (), {
             'allow_low_confidence': False,
             'verify_pages': 1,
             'user_id': '',
         })()
-        job = build_browser_job([
-            {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high'},
-        ], args)
-        self.assertIn('class SecurityChallengeError extends Error', job)
-        self.assertIn('class ExecutePageBindingError extends Error', job)
-        self.assertIn(
-            "assertNoSecurityChallenge();\n        assertExpectedExecutePage();\n        await api.d0",
-            job,
-        )
-        self.assertIn("item.membership_state !== 'not_in_any_board'", job)
-        self.assertIn("item.archive_lifecycle_state !== 'first_archive_pending'", job)
-        self.assertIn("row.archive_lifecycle_state = 'first_archive_confirmed'", job)
-        self.assertIn("events.push('archive:first_confirmed')", job)
-        self.assertNotIn('moveAcrossBoardsTransaction', job)
-        self.assertNotIn('/api/sns/web/v1/note/uncollect', job)
-        self.assertNotIn('/api/sns/web/v1/note/collect', job)
-        self.assertIn("error.name === 'SecurityChallengeError' || error.name === 'ExecutePageBindingError'", job)
-        self.assertIn('SAFETY_BREAKER:', job)
+        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+            build_browser_job([
+                {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high'},
+            ], args)
 
     def test_first_archive_requires_pending_state_and_confirmed_state_is_locked(self):
         item = {
@@ -1665,29 +1654,14 @@ async function attempt(options) {
         self.assertEqual(result['error']['name'], 'ExecutePageBindingError')
         self.assertIn('Arc worker runtime marker no longer matches', result['error']['message'])
 
-    def test_browser_job_injects_main_world_script_and_uses_dom_state_bridge(self):
+    def test_browser_job_does_not_generate_main_world_script(self):
         args = type('Args', (), {
             'allow_low_confidence': False,
             'verify_pages': 1,
             'user_id': '',
         })()
-        job = build_browser_job([], args)
-        self.assertIn("document.createElement('script')", job)
-        self.assertIn("dataset.xhsSkillState = 'pending'", job)
-        self.assertIn('mainWorldJob.toString()', job)
-        self.assertNotIn('window.__xhsSkillRuns', job)
-        self.assertNotIn('window.__xhsSkillReq', job)
-        self.assertNotIn('fetch(', job)
-        self.assertIn('declared_total: snapshot.declaredTotal', job)
-        self.assertIn('accessible_total: snapshot.accessibleTotal', job)
-        self.assertIn('count_mismatch: snapshot.countMismatch', job)
-        subprocess.run(
-            ['node', '-e', 'new Function(process.argv[1]);', job],
-            cwd=str(ROOT),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
+        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+            build_browser_job([], args)
 
     def test_poll_browser_job_reads_and_cleans_dom_state_bridge(self):
         captured = {}

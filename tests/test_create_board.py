@@ -33,33 +33,9 @@ def args(**overrides):
 
 
 class CreateBoardTests(unittest.TestCase):
-    def test_job_uses_exact_official_create_contract_and_strict_postflight(self):
-        job = build_create_board_job(args())
-        self.assertIn("'/api/sns/web/v1/board'", job)
-        self.assertIn("'web创建专辑'", job)
-        self.assertIn(r'/\.\s*post\s*\(/', job)
-        self.assertIn('name: payload.name', job)
-        self.assertIn('desc: payload.desc', job)
-        self.assertIn('privacy: payload.privacy', job)
-        self.assertIn('after.boardCount !== before.boardCount + 1', job)
-        self.assertIn('assertOldBoardsUnchanged(before, after)', job)
-        self.assertIn('snapshot.accessibleTotal !== 0', job)
-        self.assertIn('loadAllBoardsStrict(api, payload.userId, assertContext)', job)
-        self.assertIn('response.boardCount !== declaredTotal', job)
-        self.assertIn("events: ['preflight:board_already_exists', 'verify:existing_board_empty']", job)
-        self.assertIn('HIGH_RISK_STATE_UNCERTAIN', job)
-        self.assertIn('no delete rollback attempted', job)
-        self.assertNotIn('await api.LN(', job)
-        self.assertNotIn('await api.B1(', job)
-        self.assertNotIn('await api.d0(', job)
-        self.assertNotIn('fetch(', job)
-        subprocess.run(
-            ['node', '-e', 'new Function(process.argv[1]);', job],
-            cwd=str(ROOT),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
+    def test_create_job_is_disabled_before_browser_execution(self):
+        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+            build_create_board_job(args())
 
     def test_args_are_strict(self):
         validate_args(args())

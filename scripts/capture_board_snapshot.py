@@ -44,6 +44,12 @@ def validate_args(args: argparse.Namespace) -> str:
 
 def capture_snapshot(args: argparse.Namespace) -> dict:
     backend = validate_args(args)
+    job = build_snapshot_job(
+        args.user_id,
+        args.verify_pages,
+        args.arc_tab_marker if backend == 'arc' else '',
+        args.expected_url_substring,
+    )
     output_path = Path(args.output)
     safety_state = resolve_safety_state_path(
         args.safety_state,
@@ -61,12 +67,6 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
     )
     runner = BrowserRunner(backend, args)
     try:
-        job = build_snapshot_job(
-            args.user_id,
-            args.verify_pages,
-            args.arc_tab_marker if backend == 'arc' else '',
-            args.expected_url_substring,
-        )
         run_id = parse_browser_job_id(runner.run_javascript(job))
         result = poll_browser_job(runner, run_id, args.timeout_sec)
     except Exception as exc:
@@ -109,7 +109,7 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='通过用户本轮明确授权的小红书前端，只读抓取全部专辑及完整成员关系。'
+        description='专辑成员读取已安全停用；命令会在打开浏览器前停止。'
     )
     parser.add_argument('output', help='board_snapshot.json 输出路径')
     parser.add_argument('--browser', required=True, choices=['arc', 'chrome', 'safari', 'playwright'])

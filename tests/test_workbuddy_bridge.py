@@ -3366,6 +3366,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         report = {}
         with (
             patch('workbuddy_bridge.validate_write_live_binding') as binding,
+            patch('workbuddy_bridge.build_create_board_job', return_value='safe-test-job'),
             patch('workbuddy_bridge.poll_browser_job', return_value={
                 'status': 'created',
                 'writePerformed': True,
@@ -3415,6 +3416,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         }
         with (
             patch('workbuddy_bridge.validate_write_live_binding'),
+            patch('workbuddy_bridge.build_create_board_job', return_value='safe-test-job'),
             patch(
                 'workbuddy_bridge.poll_browser_job',
                 side_effect=[first, RuntimeError('second board preflight failed')],

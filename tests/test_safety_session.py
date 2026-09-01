@@ -184,6 +184,7 @@ class SafetySessionTests(unittest.TestCase):
         report = {"processed": [], "errors": [], "missing_boards": [], "board_counts_before": {}, "board_counts_after": {}}
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch("run_reassign_batch.build_browser_job", return_value="safe-test-job"), \
                 patch("run_reassign_batch.poll_browser_job", side_effect=SafetyHaltedError("SAFETY_BREAKER: 安全验证")) as poll:
             report_path = Path(tmp) / "run_report.json"
             with self.assertRaises(SafetyHaltedError):
@@ -251,6 +252,7 @@ class SafetySessionTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch("run_reassign_batch.build_browser_job", return_value="safe-test-job"), \
                 patch(
                     "run_reassign_batch.poll_browser_job",
                     side_effect=SafetyHaltedError(unsafe_error),
@@ -314,6 +316,7 @@ class SafetySessionTests(unittest.TestCase):
         report = {"processed": [], "errors": [], "missing_boards": [], "board_counts_before": {}, "board_counts_after": {}}
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch("run_reassign_batch.build_browser_job", return_value="safe-test-job"), \
                 patch("run_reassign_batch.poll_browser_job", return_value=result):
             report_path = Path(tmp) / "run_report.json"
             apply_batch(classification, report, self.move_args(max_moves_per_session=1), report_path)
@@ -371,6 +374,7 @@ class SafetySessionTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch("run_reassign_batch.build_browser_job", side_effect=lambda items, _args: json.dumps(items)), \
                 patch("run_reassign_batch.poll_browser_job", return_value=result):
             report_path = Path(tmp) / "run_report.json"
             apply_batch(
@@ -457,6 +461,7 @@ class SafetySessionTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
+                patch("run_reassign_batch.build_browser_job", side_effect=lambda items, _args: json.dumps(items)), \
                 patch("run_reassign_batch.poll_browser_job", return_value=empty_result):
             report_path = Path(tmp) / "run_report.json"
             apply_batch(

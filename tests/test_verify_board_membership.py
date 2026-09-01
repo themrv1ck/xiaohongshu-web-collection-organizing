@@ -122,34 +122,14 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         by_name[target_name]['accessible_unique_count'] += 1
         by_name[target_name]['declared_total'] += 1
 
-    def test_snapshot_job_reuses_exact_resolver_and_is_read_only(self):
-        job = build_snapshot_job(
-            '1' * 24,
-            100,
-            'worker-marker',
-            'https://www.xiaohongshu.com/user/profile/' + '1' * 24 + '?tab=fav',
-        )
-        self.assertIn(LIVE_API_RESOLVER_JS, job)
-        self.assertIn(BOARD_VERIFICATION_JS, job)
-        self.assertIn('req.m', job)
-        self.assertNotIn('req.c', job)
-        self.assertIn("document.createElement('script')", job)
-        self.assertIn("dataset.xhsSkillState = 'pending'", job)
-        self.assertIn('await api.yC({', job)
-        self.assertIn('loadAllBoardsStrict(', job)
-        self.assertIn('await boardSnapshot(readApi, board.id, payload.verifyPages, assertReadContext)', job)
-        self.assertIn('current profile page binding no longer matches', job)
-        self.assertIn('current account no longer matches', job)
-        self.assertIn('live_account_user_id', job)
-        self.assertNotRegex(job, re.compile(r'(?:readApi|fullApi)\.(?:LN|B1|d0)\s*\('))
-        self.assertNotIn('fetch(', job)
-        subprocess.run(
-            ['node', '-e', 'new Function(process.argv[1]);', job],
-            cwd=str(ROOT),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
+    def test_snapshot_job_is_disabled_before_browser_execution(self):
+        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+            build_snapshot_job(
+                '1' * 24,
+                100,
+                'worker-marker',
+                'https://www.xiaohongshu.com/user/profile/' + '1' * 24 + '?tab=fav',
+            )
 
     def test_arc_requires_all_four_locators(self):
         args = argparse.Namespace(
@@ -220,6 +200,7 @@ class VerifyBoardMembershipTests(unittest.TestCase):
             }
             with (
                 patch('capture_board_snapshot.ensure_active_session'),
+                patch('capture_board_snapshot.build_snapshot_job', return_value='safe-test-job'),
                 patch('capture_board_snapshot.BrowserRunner') as runner,
                 patch('capture_board_snapshot.parse_browser_job_id', return_value='run-1'),
                 patch('capture_board_snapshot.poll_browser_job', return_value={}),

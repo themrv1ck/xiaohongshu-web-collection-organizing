@@ -6,7 +6,11 @@
 
 不适合：未登录小红书网页端、想绕过浏览器授权、想无确认批量改账号数据的人。
 
-## 当前能力
+## 2.2.2 安全状态
+
+读取专辑成员、创建专辑和移动笔记当前全部停用，并会在浏览器启动前报错。旧实现对小红书网页内部模块的探测与自动化会话进入安全验证错误页高度相关，因此已从可执行代码删除。离线分类、既有数据报告和单篇笔记研究仍可使用；完整专辑整理要等新的非注入式读写方案完成真实页面验证后再恢复。
+
+## 历史能力合同（当前专辑读写不可执行）
 
 - 可被 Hermes Agent 安装和识别。
 - 可作为 WorkBuddy Plugin 安装；Windows 固定使用插件独立 profile 的 Edge，macOS/Linux 使用插件独立 Chromium，不依赖 Safari Automation，也不接管用户日常浏览器目录。
@@ -21,7 +25,7 @@
 - 支持已有专辑排除清单，默认不移动用户决定保留的已有专辑内容。
 - 支持 `--source collection|liked|custom` 标记来源；支持 `--append-existing` 合并收藏和点赞，按 note id 去重，并保留 `source_lists`。
 - 默认低风险采集：一次只读取当前已显示卡片、每段最多 200 条；不自动滚动、刷新、点击、导航或进入下一段。
-- 支持真实批量移动收藏：默认不执行，必须显式传 `--execute --max-moves-per-session <1–200>`。
+- 真实读取专辑、创建专辑和批量移动已安全停用；相关命令不会打开浏览器。
 - 执行清单生成前先做全部专辑成员关系核对：不在任何专辑的条目处于 `first_archive_pending`，可以完成首次归档；当前已属于专辑的条目视为首次归档已确认并零写入保护。
 - 真实移动后会用 `U_` + `Ks` 查询目标专辑，确认 note id 已出现后才记为 `success` 并转为 `first_archive_confirmed`；`d0` 的空返回、dry-run、失败或未回读状态都不会提前触发保护。
 - 视频内容分类是可选开关：Video Transcript Extractor 优先获取平台字幕，无字幕时用 MiMo-V2.5-ASR-MLX 本地转写。
@@ -87,7 +91,7 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
-若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.2.1` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.2.2` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
 
 在 WorkBuddy 对话中执行：
 
@@ -103,7 +107,7 @@
 
 `capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.2.1`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.2.2`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 

@@ -286,7 +286,8 @@ noteId => {
   const bodyText = (document.body && document.body.innerText) || '';
   const securityText = `${window.location.origin}${window.location.pathname}\n${bodyText}`.toLowerCase();
   const securityMarkers = [
-    '安全验证', '异常访问', '访问异常', '访问过于频繁', '操作过于频繁',
+    '安全验证', '异常访问', '访问异常', '当前请求异常', '300031', 'website-login/error',
+    '访问过于频繁', '操作过于频繁',
     '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
     '拖动滑块', 'captcha', 'security verification', 'abnormal access',
     'too many requests'

@@ -1,6 +1,6 @@
 # Safari 小红书：专辑移动历史取证（不可执行）
 
-> 本文仅保留历史页面结构和前端接口取证，不是回退路径，也不得直接运行其中的 JS、点击 UI 或调用接口。当前所有真实移动只能通过 `scripts/run_reassign_batch.py --execute --max-moves-per-session <1–200>`，让统一安全状态、逐条落盘和停机规则生效。
+> 本文仅保留历史页面结构取证，不是回退路径，也不得直接运行其中的 JS、点击 UI 或调用接口。读取专辑成员、创建专辑和移动笔记当前全部安全停用。
 
 ## 历史观察
 Safari 网页端曾出现以下现象：
@@ -28,12 +28,9 @@ const boards = state.board.boardListData[key].boards
 
 在该会话里，`hermes` 专辑已能从这里直接读到，且包含真实 `boardId` 与初始条数。
 
-## webpack runtime 历史观察
-先暴露运行时：
-```js
-let req
-window.webpackChunkxhs_pc_web.push([[Math.random()], {}, function(__webpack_require__){ req = __webpack_require__ }])
-```
+## 已废止的运行时探测
+
+旧版本曾向网页打包运行时注册自定义模块。该方式与自动化会话进入安全验证错误页高度相关，已从可执行代码和本文示例中删除，禁止恢复。
 
 本次会话再次验证到 API 模块是 `40122`，其中：
 - `yC` → `GET /api/sns/web/v1/board/user`
@@ -56,7 +53,7 @@ ee({ targetBoardId: n, notesId: e.noteId })
 
 ## 当前执行规则
 
-不要把这些历史观察当作直接执行说明。先由统一执行器核验目标专辑与来源关系，再按用户明确的本次上限逐条移动；安全验证、登录、页面绑定变化或状态不确定时立即落盘停机，不发额外请求。
+不要把这些历史观察当作直接执行说明。当前统一执行器会在浏览器启动前停止，不读取专辑、不创建专辑、不移动笔记。
 
 ## 核验原则
 - `note/move` 返回空对象 `{}` 不能直接当失败
@@ -68,4 +65,4 @@ ee({ targetBoardId: n, notesId: e.noteId })
 - 把 `#collected` 图标当成“已进 hermes 专辑”
 - 因同步 `XMLHttpRequest` 直打接口拿到 `500 create invoker failed`，就误判接口不可用
   - 这通常说明没走前端真实异步调用链或上下文不对
-  - 优先复用页面 webpack 模块导出的 API，而不是手搓裸请求
+  - 这类内部调用已经停用，不得换一种方式继续尝试

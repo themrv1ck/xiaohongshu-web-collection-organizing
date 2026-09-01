@@ -1,20 +1,24 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: "Organize a logged-in Xiaohongshu web 收藏 / 点赞 library by classifying and moving notes for their first archive only. A note becomes permanently protected from later classification changes, cross-album moves, and cleanup only after live readback confirms its first album membership; every note already present in the current live album snapshot is treated as first-archive-confirmed. WorkBuddy must use the bundled WorkBuddy Plugin MCP with a dedicated managed browser profile: Edge on Windows and Chromium on macOS/Linux. macOS direct use supports Arc/Chrome/Safari plus Vision OCR, and Windows direct use supports Chrome/Edge plus Tesseract/EasyOCR. It can optionally classify unassigned videos from verified transcripts and full-timeline visual evidence through an explicitly selected analysis provider. Use when the user asks to inspect or organize Xiaohongshu favorites, liked notes, videos, or boards. It defaults to dry-run and requires confirmation before account changes."
+description: "Analyze existing Xiaohongshu collection artifacts offline and generate reports. Version 2.2.2 disables live album-member reads, album creation, and note moves before browser launch because the legacy private-runtime probe was associated with security redirect 300031. Single-note research remains available only with a browser explicitly authorized in the current turn."
 ---
 
 # 小红书工作流 Skill
 
 This is the umbrella for Xiaohongshu web workflows. Use the collection/liked organizing sections only to archive notes that are not in any album; use the single-note research section below for one shared note URL.
 
-## WorkBuddy 固定入口（优先于下面所有浏览器说明）
+## 2.2.2 专辑整理安全停机（最高优先级）
+
+任何宿主和模型都必须遵守：旧版读取专辑成员、创建专辑和移动笔记依赖网页内部模块探测，该动作与自动化会话被重定向到安全验证错误页高度相关，现已删除并停用。收到收藏、点赞或专辑整理请求时，必须在打开浏览器前明确停止；不得调用 `xhs_workbuddy_login`、`xhs_workbuddy_capture`、`capture_board_snapshot.py`、`create_board.py` 或 `run_reassign_batch.py --execute`，不得换用其他私有接口、模块扫描或自定义浏览器脚本。只有不访问小红书账号的离线分类、既有工件报告和下面的单篇笔记研究可以继续。新的非注入式专辑读写实现经过真实页面验证并发布前，本节覆盖下面所有旧流程说明。
+
+## WorkBuddy 历史合同（当前不可执行）
 
 先检查当前工具集中是否同时存在 `xhs_workbuddy_status`、`xhs_workbuddy_setup`、`xhs_workbuddy_login`、`xhs_workbuddy_capture`、`xhs_workbuddy_prepare`、`xhs_workbuddy_execute`。六个工具同时存在，才视为已检测到 WorkBuddy Plugin；不得用进程名、应用标题、环境猜测或模型自述判断宿主。
 
 检测到 WorkBuddy Plugin 后：
 
 1. 浏览器阶段只允许调用上述 `xhs_workbuddy_*` 工具。禁止直接运行 `osascript`、Safari/Arc/Chrome Apple Events、Computer Use、CDP，禁止调用脚本时传 `--browser safari|arc|chrome` 或 `--backend macos-*`。
-2. 先调用 `xhs_workbuddy_status`，并确认返回 `plugin_version=2.2.1`；缺失或版本不同都按第 11 步走官方 Plugin 安装/更新入口，重开 WorkBuddy 后再继续。版本正确但 `install_required=true` 时，先取得一次依赖安装同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)` 并复验 status。Windows 只安装 Python Playwright 并检查系统 Edge，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。
+2. 先调用 `xhs_workbuddy_status`，并确认返回 `plugin_version=2.2.2`；缺失或版本不同都按第 11 步走官方 Plugin 安装/更新入口，重开 WorkBuddy 后再继续。版本正确但 `install_required=true` 时，先取得一次依赖安装同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)` 并复验 status。Windows 只安装 Python Playwright 并检查系统 Edge，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。
 3. 范围和整理深度确定后，WorkBuddy 的 capture 必须显式传唯一档位：快速整理为 `organizing_depth=quick`，轻度整理为 `organizing_depth=light`。轻度或深度整理必须在任何浏览器、采集或内容处理开始前，单独询问一次“整理完成并核验后，是否需要在桌面生成小红书专辑 HTML 报告？”并把回答固定为 `report_requested=true|false`；快速整理不询问并固定为 `false`。当前 WorkBuddy Plugin 尚未接入视频语音与完整时轴画面证据，也尚未在 capture 前接入 `archived_notes_registry.json`。若用户选择深度整理，或明确要求“已有收藏夹成员不再读取/识别/分类”，必须在打开浏览器前停止，不得把视频元数据冒充深度结果，也不得先 capture 全集再晚排除；只有用户另行授权非 WorkBuddy 的具体浏览器后，才可改走下面支持预分析归档排除的直接路径。其他快速或轻度场景确定后，只询问一次是否允许打开 WorkBuddy 专用浏览器完成本轮只读整理。WorkBuddy 固定每组 200 条、非末组间隔 3 分钟，这两个参数不暴露给模型或普通用户修改，也不得重复询问。用户同意后，这次授权覆盖本轮 `login → capture（轻度含同会话登录态详情补齐与本地 OCR）→ prepare` 三个只读阶段。
 4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的 WorkBuddy 专用浏览器完成登录：Windows 使用系统 Edge 程序和插件独立 profile，macOS/Linux 使用插件独立 Chromium。插件必须自动识别当前账号、进入所选范围、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放；不得要求用户打开目标页、关闭窗口或复制 URL。
    调用 capture 时还必须显式传 `generate_report=true|false`，且与第 3 步记录的回答一致；不得在整理结束后临时改变选择。
@@ -42,7 +46,7 @@ Workflow:
 
 See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
-## 用户目标口径
+## 专辑整理历史合同（当前不可执行）
 
 当用户要求整理“小红书收藏 / 点赞 / 我的收藏 / 专辑分类”且本轮尚未明确范围时，先显示首次使用欢迎卡片，说明 Skill 能读取用户选择的收藏/点赞范围、根据实际内容生成专辑分类建议，并在用户再次明确授权后执行移动；随后让用户回复“收藏”“点赞”或“我全都要”。用户回答“收藏”就只整理收藏里的笔记；回答“点赞”就只整理点赞里的笔记；回答“我全都要 / 全部 / 都要”就把点赞和收藏合并去重后一起整理。**首次归档锁定规则：当前不属于任何专辑的笔记处于 `first_archive_pending`，允许完成一次首次归档；只有移动成功且实时回读确认已进入目标专辑后，才转为 `first_archive_confirmed` 并永久保护。当前快照中已属于任一专辑的笔记视为首次归档已经完成，以用户现有整理结果为准，禁止重新分类、跨专辑移动、清理或模型纠错。dry-run、失败、中止或未回读确认都不能提前触发保护。该规则不提供开关。**采集按本地保存的 200 条被动分段进行：用户手动停在目标列表位置，Skill 只读取已显示卡片，不自动翻页、点击、刷新或进入下一段；全部已保存分段在本地合并、分类，再由用户明确开启写入会话。只有用户明确把范围改为“当前可访问的 N 条真实笔记”时，直接路径可使用受审计的 `collection_scope.json`；它不是“收藏”的静默降级。
 
@@ -333,11 +337,11 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - 执行批处理时按单条提交给浏览器运行时；每条返回后立即 `merge_report_chunk` 并写回 `run_report.json`，避免长批次中断后丢失进度。
 - 中途终止后只从未成功条目继续，不从头跑。
 
-## 最低回归链路
+## 最低离线回归链路
 - 修改脚本后先跑 `python3 -m compileall -q .`。
 - 跑 `python3 -m unittest discover -s tests -p 'test_*.py'`，当前核心用例应覆盖 resume 过滤、报告 chunk 合并、抓取 manifest 写盘。
 - 再跑无副作用 smoke：`python3 scripts/classify_items.py examples/visible_items.example.json /tmp/xhs-classification-smoke.json --skip-ocr` 和 `python3 scripts/run_reassign_batch.py /tmp/xhs-classification-smoke.json /tmp/xhs-run-report-smoke.json`；后者必须得到 `mode=classification_preview`、`ready_for_execute=false`，不能得到 `planned`。
-- 最后做真实网页登录态只读探针与硬闸门 dry-run：抓取到 `/tmp/xhs-visible-probe.json`，分类到 `/tmp/xhs-classification-probe.json`，只读生成 `/tmp/xhs-board-snapshot-probe.json` 与 `/tmp/xhs-created-boards-probe.json`，再生成 `/tmp/xhs-run-report-probe.json`；只有报告 `ready_for_execute=true` 才算通过。没有用户明确授权前不得加 `--execute`。
+- 不做真实网页登录态探针，不生成新的专辑快照，不创建专辑，不执行移动。发布验收只能验证这些入口在浏览器启动前安全停止。
 
 ## 核验方式
 1. 首次归档保护核验：必须先建立本轮排除清单；`classification.json` 中已有成员只能是 `existing_board_member_protected + first_archive_confirmed`，`run_report.json` 不得出现这些笔记的移动事件；专辑外收藏必须是 `not_in_any_board + first_archive_pending` 才能处理。
@@ -351,7 +355,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 ## 明确禁止事项
 - 不要把 `.collect-wrapper` 当成直接入专辑入口。
 - 不要把 `#collect -> #collected` 图标变化当成“已加入目标专辑”；它只说明笔记被收藏/取消收藏。
-- 不要再笼统禁止 `POST /api/sns/web/v1/note/move`；禁止的是“盲猜 payload”。在已追到真实前端调用后，应复用真实调用形状 `{targetBoardId, notesId}`。
+- 禁止调用或恢复任何小红书私有专辑读写接口，包括网页内部的移动接口；不得以已知参数形状为理由重新启用。
 - 不要在未完成全专辑成员关系核对时执行；任何已属于专辑、带 `source_board_id`、成员状态无法证明为 `not_in_any_board`，或生命周期状态不是 `first_archive_pending` 的条目都禁止调用 `d0`。
 - 禁止 `--include-existing-boards`、跨专辑事务、取消收藏后重收、模型纠正用户已归档结果，以及删除/重命名/清理现有专辑。
 - 不要把 `GET /api/sns/web/v2/note/collect/page` 的 `code=-9109 参数错误` 直接判定为未登录；它也可能是页面上下文或参数不完整。
@@ -401,7 +405,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 3. 检查 diff，尤其是 `SKILL.md`、`README.md`、`references/`、`scripts/`；如果新增 reference 被 `SKILL.md` 引用，必须确保文件也被同步。
 4. 在 clone 中跑发布前验证：`python3 -m compileall -q .`、`python3 -m unittest discover -s tests -p 'test_*.py'`、`check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` 分类预览、`build_retry_queue.py`、`summarize_run_report.py`，并用临时 `HERMES_HOME` 验证 `hermes skills list` 能识别；无浏览器证据的报告必须是 `classification_preview`、`ready_for_execute=false`。
 5. 提交并推送 main 后，不要立即宣布完成；重新 `git clone --depth 1` 和下载 `main.zip`，再比较新下载版与本机 skill 目录是否无差异，并重复关键 smoke。
-6. 最终回复必须给出 commit hash、验证项目和公开发布口径；仍要提醒真实移动收藏需要用户已登录并显式 `--execute`。
+6. 最终回复必须给出 commit hash、验证项目和公开发布口径；明确说明专辑读取、创建和移动当前已停用，不得建议用户传 `--execute`。
 
 详细审计标准见 `references/distribution-readiness-audit.md`。
 

@@ -135,7 +135,7 @@ return {boards: Array.from({length: 100}, (_, index) => boardAt(index))};
 ''')
         self.assertIn('boardCount must be a non-negative integer', error)
 
-    def test_read_create_and_move_jobs_share_the_strict_paginator(self):
+    def test_live_read_create_and_move_jobs_are_disabled(self):
         create_args = argparse.Namespace(
             name='其他', desc='', privacy=0, execute=False,
             user_id=self.USER_ID, verify_pages=10,
@@ -150,25 +150,19 @@ return {boards: Array.from({length: 100}, (_, index) => boardAt(index))};
             expected_url_substring='',
             arc_expected_url_substring='',
         )
-        jobs = {
-            'read': build_snapshot_job(
+        builders = {
+            'read': lambda: build_snapshot_job(
                 self.USER_ID, 10, '', '/user/profile/'
             ),
-            'create': build_create_board_job(create_args),
-            'move': build_browser_job([], move_args),
+            'create': lambda: build_create_board_job(create_args),
+            'move': lambda: build_browser_job([], move_args),
         }
-        for label, job in jobs.items():
-            with self.subTest(path=label):
-                self.assertIn(BOARD_LIST_PAGINATION_JS, job)
-                self.assertIn('loadAllBoardsStrict(', job)
-                self.assertNotIn('boardsFromInitialState', job)
-                subprocess.run(
-                    ['node', '-e', 'new Function(process.argv[1]);', job],
-                    cwd=str(ROOT),
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+        for label, builder in builders.items():
+            with self.subTest(path=label), self.assertRaisesRegex(
+                RuntimeError,
+                '内部模块探测已禁用',
+            ):
+                builder()
 
 
 if __name__ == '__main__':
