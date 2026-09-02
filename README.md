@@ -6,11 +6,13 @@
 
 不适合：未登录小红书网页端、想绕过浏览器授权、想无确认批量改账号数据的人。
 
-## 2.2.2 安全状态
+## 2.3.0 Arc 可见页面状态
 
-读取专辑成员、创建专辑和移动笔记当前全部停用，并会在浏览器启动前报错。旧实现对小红书网页内部模块的探测与自动化会话进入安全验证错误页高度相关，因此已从可执行代码删除。离线分类、既有数据报告和单篇笔记研究仍可使用；完整专辑整理要等新的非注入式读写方案完成真实页面验证后再恢复。
+直接 Arc 路径已重写为只使用小红书正式页面可见控件：可读取完整专辑卡片/成员卡片，可通过“创建专辑”表单创建已批准的空专辑，也可在新笔记尚未收藏时点击“收藏 → 加入专辑”完成首次归档。页面数量、id、名称或成员集不完整时直接报错停止。本次操作前已收藏的笔记永久保护，不取消、不重新收藏、不移动。旧的内部模块和私有 API 路径仍被禁止。
 
-## 历史能力合同（当前专辑读写不可执行）
+WorkBuddy Plugin 尚未接入这个 Arc 适配器，所以 WorkBuddy 的账号读写仍停用；插件发布号与 Skill 统一为 `2.3.0`。
+
+## 能力边界
 
 - 可被 Hermes Agent 安装和识别。
 - 可作为 WorkBuddy Plugin 安装；Windows 固定使用插件独立 profile 的 Edge，macOS/Linux 使用插件独立 Chromium，不依赖 Safari Automation，也不接管用户日常浏览器目录。
@@ -25,9 +27,9 @@
 - 支持已有专辑排除清单，默认不移动用户决定保留的已有专辑内容。
 - 支持 `--source collection|liked|custom` 标记来源；支持 `--append-existing` 合并收藏和点赞，按 note id 去重，并保留 `source_lists`。
 - 默认低风险采集：一次只读取当前已显示卡片、每段最多 200 条；不自动滚动、刷新、点击、导航或进入下一段。
-- 真实读取专辑、创建专辑和批量移动已安全停用；相关命令不会打开浏览器。
+- 直接 Arc 路径支持可见专辑读取、可见表单创建和新笔记首次归档；WorkBuddy 账号读写和历史已收藏笔记移动仍安全停用。
 - 执行清单生成前先做全部专辑成员关系核对：不在任何专辑的条目处于 `first_archive_pending`，可以完成首次归档；当前已属于专辑的条目视为首次归档已确认并零写入保护。
-- 真实移动后会用 `U_` + `Ks` 查询目标专辑，确认 note id 已出现后才记为 `success` 并转为 `first_archive_confirmed`；`d0` 的空返回、dry-run、失败或未回读状态都不会提前触发保护。
+- 新笔记首次归档后会重新读取目标专辑可见成员；只有“成员数精确 +1，旧成员全部保留，新 note id 唯一出现”时才记为 `success`。
 - 视频内容分类是可选开关：Video Transcript Extractor 优先获取平台字幕，无字幕时用 MiMo-V2.5-ASR-MLX 本地转写。
 - 视觉模块开启后，用户明确选择的每段视频都用 ffmpeg + macOS Vision + 所选 provider 分析完整时轴真实帧；所有本地分段完成后才可宣称覆盖全部视频。未开启视觉模块时只能标为 `transcript_only`。
 - analysis provider 三选一：`codex-cli`、本地 `mimo-vl-mlx`、`command`/宿主 Agent 适配器。这个 Skill 不强制使用 Codex CLI。
@@ -75,6 +77,8 @@
 │   ├── classify_items.py
 │   ├── build_existing_boards_inventory.py
 │   ├── capture_board_snapshot.py
+│   ├── create_board.py
+│   ├── collect_new_note.py
 │   ├── build_created_boards.py
 │   ├── run_reassign_batch.py
 │   ├── workbuddy_runtime.py
@@ -91,7 +95,7 @@
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
-若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.2.2` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.3.0` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
 
 在 WorkBuddy 对话中执行：
 
@@ -107,7 +111,7 @@
 
 `capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.2.2`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.3.0`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 

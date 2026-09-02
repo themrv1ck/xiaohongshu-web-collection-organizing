@@ -135,12 +135,13 @@ return {boards: Array.from({length: 100}, (_, index) => boardAt(index))};
 ''')
         self.assertIn('boardCount must be a non-negative integer', error)
 
-    def test_live_read_create_and_move_jobs_are_disabled(self):
+    def test_live_read_and_create_use_visible_ui_while_historical_move_is_disabled(self):
         create_args = argparse.Namespace(
             name='其他', desc='', privacy=0, execute=False,
             user_id=self.USER_ID, verify_pages=10,
             arc_tab_marker='marker',
             arc_expected_url_substring='/user/profile/',
+            arc_window_id='window', arc_tab_id='tab', timeout_sec=30,
         )
         move_args = argparse.Namespace(
             allow_low_confidence=False,
@@ -150,19 +151,16 @@ return {boards: Array.from({length: 100}, (_, index) => boardAt(index))};
             expected_url_substring='',
             arc_expected_url_substring='',
         )
-        builders = {
-            'read': lambda: build_snapshot_job(
-                self.USER_ID, 10, '', '/user/profile/'
-            ),
-            'create': lambda: build_create_board_job(create_args),
-            'move': lambda: build_browser_job([], move_args),
+        jobs = {
+            'read': build_snapshot_job(self.USER_ID, 10, 'marker', '/user/profile/'),
+            'create': build_create_board_job(create_args),
         }
-        for label, builder in builders.items():
-            with self.subTest(path=label), self.assertRaisesRegex(
-                RuntimeError,
-                '内部模块探测已禁用',
-            ):
-                builder()
+        for label, job in jobs.items():
+            with self.subTest(path=label):
+                self.assertNotIn('/api/sns/web/v1/board', job)
+                self.assertNotIn('req.m', job)
+        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+            build_browser_job([], move_args)
 
 
 if __name__ == '__main__':

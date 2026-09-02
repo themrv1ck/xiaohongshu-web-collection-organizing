@@ -85,8 +85,7 @@ def _skillhub_skill_text(text, version):
     release_fields = [
         'version: "{}"'.format(version),
         'license: MIT',
-        'compatibility: "Album organizing is offline-only in 2.2.2; live '
-        'album reads, creation, and moves are disabled before browser launch."',
+        'compatibility: "Direct Arc album reads and visible-form creation require current-turn Arc authorization; historical collected notes and WorkBuddy account writes remain protected."',
     ]
     return '\n'.join(lines[:end] + release_fields + lines[end:]) + '\n'
 

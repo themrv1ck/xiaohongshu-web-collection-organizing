@@ -1,15 +1,23 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: "Analyze existing Xiaohongshu collection artifacts offline and generate reports. Version 2.2.2 disables live album-member reads, album creation, and note moves before browser launch because the legacy private-runtime probe was associated with security redirect 300031. Single-note research remains available only with a browser explicitly authorized in the current turn."
+description: "Organize Xiaohongshu collections with strict first-archive protection. Version 2.3.0 reads album cards and members through visible Arc pages, creates albums through the visible form, and can archive only a currently-uncollected new note through the visible Collect then Add to album flow. Historical collected notes are never uncollected, re-collected, or moved."
 ---
 
 # 小红书工作流 Skill
 
 This is the umbrella for Xiaohongshu web workflows. Use the collection/liked organizing sections only to archive notes that are not in any album; use the single-note research section below for one shared note URL.
 
-## 2.2.2 专辑整理安全停机（最高优先级）
+## 2.3.0 Arc 可见页面合同（最高优先级）
 
-任何宿主和模型都必须遵守：旧版读取专辑成员、创建专辑和移动笔记依赖网页内部模块探测，该动作与自动化会话被重定向到安全验证错误页高度相关，现已删除并停用。收到收藏、点赞或专辑整理请求时，必须在打开浏览器前明确停止；不得调用 `xhs_workbuddy_login`、`xhs_workbuddy_capture`、`capture_board_snapshot.py`、`create_board.py` 或 `run_reassign_batch.py --execute`，不得换用其他私有接口、模块扫描或自定义浏览器脚本。只有不访问小红书账号的离线分类、既有工件报告和下面的单篇笔记研究可以继续。新的非注入式专辑读写实现经过真实页面验证并发布前，本节覆盖下面所有旧流程说明。
+只有用户在当前回合明确授权 Arc 时，才可绑定已打开的唯一 Arc 标签页；不启动、切换或接管 Chrome、Edge、Safari 或 Playwright 浏览器。
+
+- `capture_board_snapshot.py` 只读正式页面可见的专辑卡片和笔记卡片；专辑总数、成员总数、id 和名称必须完整一致。缺页、重复、数量变化或身份变化立即报错停止，不允许猜测。
+- `create_board.py` 只可通过正式页面的“创建专辑”表单建立一个已明确批准的专辑；提交前后都要回读专辑清单，并确认总数精确增加 1、名称唯一、隐私一致、新专辑为空。
+- `collect_new_note.py` 只处理“本次操作前尚未收藏”的新笔记：点击可见的收藏按钮，等待“加入专辑”，选择可见的唯一目标专辑，再回读目标成员必须精确等于原集合加该笔记。
+- 只要笔记在本次操作前已经收藏，无论它是否已在专辑中，都不得取消收藏、重新收藏或移动。`run_reassign_batch.py --execute` 继续硬停。这是“第一次归档之后永久保护”的实现边界。
+- 所有当前能生成或下发的页面任务禁止 `webpackChunkxhs_pc_web`、`req.m`、`/api/sns/web/v1/board`、`/api/sns/web/v1/note/move` 及任何同类私有模块/接口。历史离线合同代码不得进入浏览器。出现 300031、安全验证、登录页或页面绑定丢失时立即持久化停机。
+
+WorkBuddy Plugin 2.3.0 没有接入上述 Arc 可见页面适配器，因此其 `login/capture/prepare/execute` 仍不可执行；不得把 Arc 直接路径冒充为 WorkBuddy 功能。下面的 WorkBuddy 和历史合同仅供数据结构参考，冲突时以本节为准。
 
 ## WorkBuddy 历史合同（当前不可执行）
 
@@ -18,7 +26,7 @@ This is the umbrella for Xiaohongshu web workflows. Use the collection/liked org
 检测到 WorkBuddy Plugin 后：
 
 1. 浏览器阶段只允许调用上述 `xhs_workbuddy_*` 工具。禁止直接运行 `osascript`、Safari/Arc/Chrome Apple Events、Computer Use、CDP，禁止调用脚本时传 `--browser safari|arc|chrome` 或 `--backend macos-*`。
-2. 先调用 `xhs_workbuddy_status`，并确认返回 `plugin_version=2.2.2`；缺失或版本不同都按第 11 步走官方 Plugin 安装/更新入口，重开 WorkBuddy 后再继续。版本正确但 `install_required=true` 时，先取得一次依赖安装同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)` 并复验 status。Windows 只安装 Python Playwright 并检查系统 Edge，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。
+2. 先调用 `xhs_workbuddy_status`，并确认返回 `plugin_version=2.3.0`；缺失或版本不同都按第 11 步走官方 Plugin 安装/更新入口，重开 WorkBuddy 后再继续。版本正确但 `install_required=true` 时，先取得一次依赖安装同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)` 并复验 status。Windows 只安装 Python Playwright 并检查系统 Edge，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。
 3. 范围和整理深度确定后，WorkBuddy 的 capture 必须显式传唯一档位：快速整理为 `organizing_depth=quick`，轻度整理为 `organizing_depth=light`。轻度或深度整理必须在任何浏览器、采集或内容处理开始前，单独询问一次“整理完成并核验后，是否需要在桌面生成小红书专辑 HTML 报告？”并把回答固定为 `report_requested=true|false`；快速整理不询问并固定为 `false`。当前 WorkBuddy Plugin 尚未接入视频语音与完整时轴画面证据，也尚未在 capture 前接入 `archived_notes_registry.json`。若用户选择深度整理，或明确要求“已有收藏夹成员不再读取/识别/分类”，必须在打开浏览器前停止，不得把视频元数据冒充深度结果，也不得先 capture 全集再晚排除；只有用户另行授权非 WorkBuddy 的具体浏览器后，才可改走下面支持预分析归档排除的直接路径。其他快速或轻度场景确定后，只询问一次是否允许打开 WorkBuddy 专用浏览器完成本轮只读整理。WorkBuddy 固定每组 200 条、非末组间隔 3 分钟，这两个参数不暴露给模型或普通用户修改，也不得重复询问。用户同意后，这次授权覆盖本轮 `login → capture（轻度含同会话登录态详情补齐与本地 OCR）→ prepare` 三个只读阶段。
 4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的 WorkBuddy 专用浏览器完成登录：Windows 使用系统 Edge 程序和插件独立 profile，macOS/Linux 使用插件独立 Chromium。插件必须自动识别当前账号、进入所选范围、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放；不得要求用户打开目标页、关闭窗口或复制 URL。
    调用 capture 时还必须显式传 `generate_report=true|false`，且与第 3 步记录的回答一致；不得在整理结束后临时改变选择。
@@ -52,12 +60,12 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
 允许的动作：
 - 可核对目标专辑是否已存在，并把缺失专辑写入 `created_boards.json`；只可在用户明确授权后创建新专辑，删除、重命名、合并或清理现有专辑不属于本整理流程。
-- 可通过 `capture_board_snapshot.py` 调用当前小红书前端的 `yC + U_ + Ks`，只读生成完整 `board_snapshot.json`；该文件是执行 dry-run 的强制证据。
-- 可通过前端真实 API `note/move` 路径把专辑外笔记首次加入目标专辑；真实执行必须显式传 `--execute`。
+- 可通过 `capture_board_snapshot.py` 只读 Arc 正式页面可见的专辑卡片和成员卡片，完整一致时生成 `board_snapshot.json`。
+- 可通过 `collect_new_note.py` 把尚未收藏的新笔记收藏后立即加入既有专辑；已收藏笔记一律拒绝写入。
 - 只要下一步明确，就持续推进到全量完成、失败项入队、最终核验，不要在中间阶段只做总结就停止。
 
 硬性边界：
-- 所有收藏笔记不允许删除或取消收藏；整理器只允许对专辑外笔记调用一次 `note/move`，不得调用取消收藏/重新收藏路径。
+- 所有已收藏笔记都不允许删除、取消收藏、重新收藏或移动；可见页面写入只允许处理本次操作前尚未收藏的新笔记。
 - 选择“点赞”或“我全都要”时，不得取消点赞、删除互动记录或把点赞来源静默丢弃；抓取和报告中必须保留 `source_lists` / `source_primary`，能区分笔记来自收藏、点赞或二者都有。
 - 不得把未分类、抓取失败或移动失败的笔记静默丢弃；必须写入 `retry_queue.json` / `run_report.json`。
 - 没有 `board_snapshot.json` 和 `created_boards.json` 时，`run_reassign_batch.py` 只会生成 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`；不得把分类预览称为 dry-run，不得用 `missing_boards=null` 或空值声称目标专辑已存在。

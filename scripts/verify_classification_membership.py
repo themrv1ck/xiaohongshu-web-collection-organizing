@@ -6,18 +6,14 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from verify_board_membership import (
-    BrowserRunner,
     MembershipContractError,
-    build_snapshot_job,
     load_json,
-    normalize_live_snapshot,
-    parse_browser_job_id,
-    poll_browser_job,
     require_note_id,
     utc_now,
     validate_arc_locator,
     write_json,
 )
+from xhs_visible_ui import ArcVisibleUiSession, capture_visible_album_snapshot
 from xhs_safety import (
     SafetyHaltedError,
     classify_safety_error,
@@ -165,24 +161,24 @@ def execute_verification(args: argparse.Namespace) -> Dict[str, Any]:
         safety_state,
         stage='classification_verification',
         policy={
-            'auto_scroll': False,
-            'auto_navigation': False,
+            'browser': 'Arc',
+            'visible_ui_only': True,
+            'auto_scroll': True,
+            'auto_navigation': True,
             'auto_retry': False,
             'read_only': True,
         },
     )
     scope = build_classification_scope(load_json(classification_path))
 
-    runner = BrowserRunner('arc', args)
     try:
-        job = build_snapshot_job(
-            args.user_id,
-            args.verify_pages,
+        session = ArcVisibleUiSession(
+            args.arc_window_id,
+            args.arc_tab_id,
             args.arc_tab_marker,
-            args.arc_expected_url_substring,
+            args.user_id,
         )
-        run_id = parse_browser_job_id(runner.run_javascript(job))
-        result = poll_browser_job(runner, run_id, args.timeout_sec)
+        snapshot = capture_visible_album_snapshot(session)
     except Exception as exc:
         classified = classify_safety_error(exc)
         if isinstance(exc, SafetyHaltedError) or classified:
@@ -205,10 +201,7 @@ def execute_verification(args: argparse.Namespace) -> Dict[str, Any]:
             'safety_state': str(safety_state),
         })
         raise
-    finally:
-        runner.close()
-
-    snapshot = normalize_live_snapshot(result, args)
+    snapshot['generated_at'] = utc_now()
     snapshot['inputs'] = {'classification': str(classification_path)}
     write_json(snapshot_path, snapshot)
 

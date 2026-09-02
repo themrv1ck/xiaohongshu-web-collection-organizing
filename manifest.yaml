@@ -1,5 +1,5 @@
 name: xiaohongshu-web-collection-organizing
-version: 2.2.2
-description: "小红书收藏与点赞离线分析 Skill；2.2.2 已安全停用专辑读取、创建和移动，等待非注入式实现。"
+version: 2.3.0
+description: "小红书收藏与点赞整理 Skill；直接 Arc 路径只使用正式页面可见控件，严格保护历史已收藏笔记。"
 category: productivity
 author: themrv1ck

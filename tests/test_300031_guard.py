@@ -40,12 +40,13 @@ class Security300031RegressionTests(unittest.TestCase):
                 self.assertIsNotNone(classified)
                 self.assertEqual(classified[0], 'security_challenge')
 
-    def test_private_runtime_jobs_are_disabled_before_browser_execution(self):
+    def test_read_and_create_jobs_are_visible_ui_and_historical_move_stays_disabled(self):
         create_args = argparse.Namespace(
             name='无法确定', desc='', privacy=0, execute=True,
             user_id='1' * 24, verify_pages=100,
             arc_tab_marker='marker',
             arc_expected_url_substring='/user/profile/',
+            arc_window_id='window', arc_tab_id='tab', timeout_sec=30,
         )
         move_args = argparse.Namespace(
             allow_low_confidence=False,
@@ -55,19 +56,15 @@ class Security300031RegressionTests(unittest.TestCase):
             expected_url_substring='/user/profile/',
             arc_expected_url_substring='',
         )
-        builders = (
-            lambda: build_snapshot_job(
-                '1' * 24, 100, '', '/user/profile/'
-            ),
-            lambda: build_create_board_job(create_args),
-            lambda: build_browser_job([], move_args),
+        jobs = (
+            build_snapshot_job('1' * 24, 100, 'marker', '/user/profile/'),
+            build_create_board_job(create_args),
         )
-        for builder in builders:
-            with self.subTest(builder=builder), self.assertRaisesRegex(
-                RuntimeError,
-                '内部模块探测已禁用',
-            ):
-                builder()
+        for job in jobs:
+            for forbidden in ('webpackChunkxhs_pc_web', '/api/sns/web/v1/board', 'req.m'):
+                self.assertNotIn(forbidden, job)
+        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+            build_browser_job([], move_args)
 
     def test_account_operations_stop_before_browser_constructor(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,19 +105,15 @@ class Security300031RegressionTests(unittest.TestCase):
                 'board_counts_before': {}, 'board_counts_after': {},
             }
 
-            operations = (
-                ('capture', 'capture_board_snapshot.BrowserRunner',
-                 lambda: capture_snapshot(capture_args)),
-                ('create', 'create_board.BrowserRunner',
-                 lambda: execute_create_board(create_args)),
-                ('move', 'run_reassign_batch.BrowserRunner',
-                 lambda: apply_batch(move_rows, report, move_args, root / 'move.json')),
-            )
-            for label, target, operation in operations:
-                with self.subTest(operation=label), patch(target) as browser:
-                    with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
-                        operation()
-                    browser.assert_not_called()
+            with patch('capture_board_snapshot.ArcVisibleUiSession') as arc:
+                with self.assertRaisesRegex(RuntimeError, '只支持.*Arc'):
+                    capture_snapshot(capture_args)
+                arc.assert_not_called()
+
+            with patch('run_reassign_batch.BrowserRunner') as browser:
+                with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+                    apply_batch(move_rows, report, move_args, root / 'move.json')
+                browser.assert_not_called()
 
 
 if __name__ == '__main__':

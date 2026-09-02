@@ -5,19 +5,16 @@ import sys
 from pathlib import Path
 
 from run_reassign_batch import (
-    BrowserRunner,
     choose_backend,
-    parse_browser_job_id,
-    poll_browser_job,
+    utc_now,
     write_json,
 )
 from verify_board_membership import (
     MembershipContractError,
-    build_snapshot_job,
-    normalize_live_snapshot,
     require_note_id,
     validate_arc_locator,
 )
+from xhs_visible_ui import ArcVisibleUiSession, capture_visible_album_snapshot
 from xhs_safety import (
     SafetyHaltedError,
     classify_safety_error,
@@ -44,12 +41,10 @@ def validate_args(args: argparse.Namespace) -> str:
 
 def capture_snapshot(args: argparse.Namespace) -> dict:
     backend = validate_args(args)
-    job = build_snapshot_job(
-        args.user_id,
-        args.verify_pages,
-        args.arc_tab_marker if backend == 'arc' else '',
-        args.expected_url_substring,
-    )
+    if backend != 'arc':
+        raise MembershipContractError(
+            '当前非注入式专辑成员读取只支持本轮明确授权的 Arc；不会自动改用其他浏览器。'
+        )
     output_path = Path(args.output)
     safety_state = resolve_safety_state_path(
         args.safety_state,
@@ -59,16 +54,22 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
         safety_state,
         stage='board_snapshot',
         policy={
-            'auto_scroll': False,
-            'auto_navigation': False,
+            'browser': 'Arc',
+            'visible_ui_only': True,
+            'auto_scroll': True,
+            'auto_navigation': True,
             'auto_retry': False,
             'read_only': True,
         },
     )
-    runner = BrowserRunner(backend, args)
     try:
-        run_id = parse_browser_job_id(runner.run_javascript(job))
-        result = poll_browser_job(runner, run_id, args.timeout_sec)
+        session = ArcVisibleUiSession(
+            args.arc_window_id,
+            args.arc_tab_id,
+            args.arc_tab_marker,
+            args.user_id,
+        )
+        snapshot = capture_visible_album_snapshot(session)
     except Exception as exc:
         classified = classify_safety_error(exc)
         if isinstance(exc, SafetyHaltedError) or classified:
@@ -80,10 +81,8 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
                 message=message,
             )
         raise
-    finally:
-        runner.close()
 
-    snapshot = normalize_live_snapshot(result, args)
+    snapshot['generated_at'] = utc_now()
     snapshot['source'].update({
         'browser': backend,
         'user_id': args.user_id,
@@ -91,25 +90,13 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
         'verify_pages': args.verify_pages,
         'safety_state': str(safety_state),
     })
-    count_mismatch_boards = [
-        board['name']
-        for board in snapshot['boards']
-        if board['declared_vs_accessible_delta'] != 0
-    ]
-    snapshot['validation']['count_mismatch_boards'] = count_mismatch_boards
-    snapshot['validation']['display_count_consistent'] = not count_mismatch_boards
-    snapshot['validation']['full_membership_complete'] = all([
-        snapshot['validation']['pagination_cursor_invariants_passed'],
-        not snapshot['validation']['within_board_duplicates'],
-        snapshot['validation']['display_count_consistent'],
-    ])
     write_json(output_path, snapshot)
     return snapshot
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='专辑成员读取已安全停用；命令会在打开浏览器前停止。'
+        description='通过 Arc 正式页面可见专辑卡片和笔记卡片读取完整专辑成员。'
     )
     parser.add_argument('output', help='board_snapshot.json 输出路径')
     parser.add_argument('--browser', required=True, choices=['arc', 'chrome', 'safari', 'playwright'])

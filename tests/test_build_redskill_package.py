@@ -19,6 +19,29 @@ from build_redskill_package import (  # noqa: E402
 
 
 class BuildRedSkillPackageTests(unittest.TestCase):
+    def test_release_version_is_consistent_across_skill_and_plugin(self):
+        manifest_version = next(
+            line.split(':', 1)[1].strip()
+            for line in (ROOT / 'manifest.yaml').read_text(encoding='utf-8').splitlines()
+            if line.startswith('version:')
+        )
+        plugin = json.loads((ROOT / '.codebuddy-plugin/plugin.json').read_text(encoding='utf-8'))
+        marketplace = json.loads((ROOT / '.codebuddy-plugin/marketplace.json').read_text(encoding='utf-8'))
+        package = json.loads((ROOT / 'workbuddy-plugin-src/package.json').read_text(encoding='utf-8'))
+        package_lock = json.loads((ROOT / 'workbuddy-plugin-src/package-lock.json').read_text(encoding='utf-8'))
+        self.assertEqual(manifest_version, '2.3.0')
+        self.assertEqual(plugin['version'], manifest_version)
+        self.assertEqual(marketplace['plugins'][0]['version'], manifest_version)
+        self.assertEqual(package['version'], manifest_version)
+        self.assertEqual(package_lock['version'], manifest_version)
+        self.assertEqual(package_lock['packages']['']['version'], manifest_version)
+        self.assertIn(f"const PLUGIN_VERSION = '{manifest_version}'", (
+            ROOT / 'workbuddy-plugin-src/server.mjs'
+        ).read_text(encoding='utf-8'))
+        self.assertIn(f'var PLUGIN_VERSION = "{manifest_version}"', (
+            ROOT / 'server/xhs-workbuddy-mcp.mjs'
+        ).read_text(encoding='utf-8'))
+
     def test_builds_redskill_archive_as_transparent_bootstrap_skill(self):
         if not (ROOT / '.git').exists():
             self.skipTest('打包器只在 Git 源码仓库中构建发布包')
@@ -28,7 +51,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             archive_path = Path(result['archive_path'])
             self.assertTrue(archive_path.is_file())
             self.assertEqual(result['skill_name'], 'xiaohongshu-web-collection-organizing')
-            self.assertEqual(result['version'], '2.2.2')
+            self.assertEqual(result['version'], '2.3.0')
             self.assertEqual(result['channel'], 'redskill')
             self.assertLessEqual(result['packaged_file_count'], 100)
             self.assertEqual(result['validation_errors'], [])
@@ -44,7 +67,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 root + 'LICENSE.txt',
                 root + 'scripts/enable_workbuddy_mcp.py',
             })
-            self.assertIn('发布版本：`2.2.2`', skill_text)
+            self.assertIn('发布版本：`2.3.0`', skill_text)
             self.assertIn('不自动运营账号', skill_text)
             self.assertIn('不读取系统浏览器 Cookie', skill_text)
             self.assertIn(
@@ -60,7 +83,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 ROOT, Path(tmp), channel='skillhub'
             )
             self.assertTrue(
-                result['archive_path'].endswith('-skillhub-2.2.2.zip')
+                result['archive_path'].endswith('-skillhub-2.3.0.zip')
             )
             self.assertEqual(result['validation_errors'], [])
 
@@ -83,9 +106,9 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             self.assertNotIn(root + 'scripts/workbuddy_bridge.py', names)
             self.assertNotIn(root + 'README.md', names)
             self.assertNotIn(root + 'manifest.yaml', names)
-            self.assertIn('version: "2.2.2"', skill_text)
+            self.assertIn('version: "2.3.0"', skill_text)
             self.assertIn('license: MIT', skill_text)
-            self.assertIn('compatibility: "Album organizing is offline-only in 2.2.2', skill_text)
+            self.assertIn('compatibility: "Direct Arc album reads and visible-form creation', skill_text)
             validation = subprocess.run(
                 [
                     sys.executable,
@@ -185,7 +208,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             root = 'xiaohongshu-web-collection-organizing/'
             source = ROOT / 'templates' / 'redskill.SKILL.md'
             skill_text = source.read_text(encoding='utf-8').replace(
-                '{{VERSION}}', '2.2.2'
+                '{{VERSION}}', '2.3.0'
             )
             files = {
                 'SKILL.md': skill_text,

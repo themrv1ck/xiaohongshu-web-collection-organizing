@@ -9,12 +9,6 @@ from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
 
 from run_reassign_batch import (
-    BOARD_LIST_PAGINATION_JS,
-    BOARD_VERIFICATION_JS,
-    LIVE_API_RESOLVER_JS,
-    BrowserRunner,
-    parse_browser_job_id,
-    poll_browser_job,
     utc_now,
     write_json,
 )
@@ -23,8 +17,12 @@ from xhs_safety import (
     classify_safety_error,
     ensure_active_session,
     mark_security_halted,
-    reject_unsafe_private_runtime,
     resolve_safety_state_path,
+)
+from xhs_visible_ui import (
+    ArcVisibleUiSession,
+    build_album_list_snapshot_js,
+    capture_visible_album_snapshot,
 )
 
 
@@ -219,169 +217,15 @@ def validate_input_contract(
 
 
 def build_snapshot_job(user_id: str, verify_pages: int, expected_tab_marker: str, expected_url_substring: str) -> str:
-    reject_unsafe_private_runtime('读取专辑及成员')
-    parsed_expected = urlparse(str(expected_url_substring or '').strip())
-    expected_match = re.fullmatch(
-        r'/user/profile/([0-9a-fA-F]{24})/?',
-        parsed_expected.path,
-    )
-    expected_tab = (
-        parse_qs(parsed_expected.query).get('tab') or ['']
-    )[0].strip().lower()
-    strict_binding = None
-    if (
-        parsed_expected.scheme == 'https'
-        and expected_match
-        and expected_match.group(1).lower() == str(user_id).strip().lower()
-        and expected_tab in {'fav', 'liked', 'like'}
-    ):
-        strict_binding = {
-            'origin': f'{parsed_expected.scheme}://{parsed_expected.netloc}',
-            'path': parsed_expected.path.rstrip('/'),
-            'tab': expected_tab,
-            'userId': str(user_id).strip().lower(),
-        }
-    payload = {
-        'userId': user_id,
-        'verifyPages': verify_pages,
-        'expectedTabMarker': expected_tab_marker,
-        'expectedUrlSubstring': expected_url_substring,
-        'strictBinding': strict_binding,
-    }
-    job = r'''
-(function() {
-  const runId = 'xhs_skill_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
-  const payload = PAYLOAD_JSON;
-  const stateNode = document.createElement('div');
-  stateNode.id = 'xhs-skill-run-state-' + runId;
-  stateNode.hidden = true;
-  stateNode.dataset.xhsSkillState = 'pending';
-  stateNode.textContent = JSON.stringify({ done: false });
-  document.documentElement.appendChild(stateNode);
-
-  const mainWorldJob = function(runId, stateNodeId, payload) {
-  function publish(state) {
-    const node = document.getElementById(stateNodeId);
-    if (!node) throw new Error('Xiaohongshu snapshot state bridge is missing');
-    node.dataset.xhsSkillState = state.done ? (state.ok ? 'ok' : 'error') : 'pending';
-    node.textContent = JSON.stringify(state);
-  }
-
-  const securityMarkers = [
-    '安全验证', '异常访问', '访问异常', '当前请求异常', '300031', 'website-login/error',
-    '访问过于频繁', '操作过于频繁',
-    '请求过于频繁', '网络环境存在风险', '当前环境存在风险', '请完成验证',
-    '拖动滑块', 'captcha', 'security verification', 'abnormal access', 'too many requests'
-  ];
-
-  function assertReadContext(error) {
-    const location = String(window.location.href || '');
-    const bodyText = (document.body && document.body.innerText) || '';
-    const errorText = error && (error.message || error) ? String(error.message || error) : '';
-    const haystack = (location + '\n' + bodyText + '\n' + errorText).toLowerCase();
-    const marker = securityMarkers.find((value) => haystack.includes(value.toLowerCase()));
-    if (marker) throw new Error('SAFETY_BREAKER: Xiaohongshu security challenge detected: ' + marker);
-    if (!location.includes('xiaohongshu.com')) throw new Error('current page is not xiaohongshu.com');
-    if (payload.expectedTabMarker && window.name !== payload.expectedTabMarker) {
-      throw new Error('Arc worker runtime marker no longer matches');
-    }
-    if (payload.strictBinding) {
-      const current = new URL(location);
-      const tab = String(current.searchParams.get('tab') || '').trim().toLowerCase();
-      if (
-        current.origin !== payload.strictBinding.origin
-        || current.pathname.replace(/\/$/, '') !== payload.strictBinding.path
-        || tab !== payload.strictBinding.tab
-      ) throw new Error('current profile page binding no longer matches');
-      const own = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'))
-        .find(link => (link.textContent || '').trim() === '我');
-      if (!own) throw new Error('current account cannot be verified');
-      const ownUrl = new URL(own.getAttribute('href') || '', window.location.origin);
-      const ownMatch = ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
-      if (!ownMatch || ownMatch[1].toLowerCase() !== payload.strictBinding.userId) {
-        throw new Error('current account no longer matches');
-      }
-    } else if (payload.expectedUrlSubstring && !location.includes(payload.expectedUrlSubstring)) {
-      throw new Error('Arc worker expected URL no longer matches');
-    }
-    if (/手机号登录|登录后推荐|马上登录即可|扫码登录|验证码登录/.test(bodyText)) {
-      throw new Error('current Xiaohongshu page looks logged out');
-    }
-  }
-
-  function privateRuntimeAccessDisabled() {
-    throw new Error('private Xiaohongshu runtime access is disabled');
-  }
-
-  LIVE_API_RESOLVER_JS
-
-  BOARD_LIST_PAGINATION_JS
-
-  BOARD_VERIFICATION_JS
-
-  async function run() {
-    assertReadContext();
-    const fullApi = findApi(privateRuntimeAccessDisabled());
-    const readApi = Object.freeze({ yC: fullApi.yC, U_: fullApi.U_, Ks: fullApi.Ks });
-    assertReadContext();
-    const boardInventory = await loadAllBoardsStrict(
-      readApi, payload.userId, assertReadContext
-    );
-    const boards = boardInventory.boards;
-    const rows = [];
-    for (const board of boards) {
-      assertReadContext();
-      const snapshot = await boardSnapshot(readApi, board.id, payload.verifyPages, assertReadContext);
-      assertReadContext();
-      rows.push({
-        id: board.id,
-        name: board.name,
-        privacy: board.privacy,
-        declared_total: snapshot.declaredTotal,
-        accessible_unique_count: snapshot.accessibleTotal,
-        declared_vs_accessible_delta: snapshot.declaredTotal - snapshot.accessibleTotal,
-        page_count: snapshot.pageCount,
-        note_ids: snapshot.noteIds
-      });
-    }
-    const current = new URL(window.location.href);
-    const currentTab = String(current.searchParams.get('tab') || '').trim().toLowerCase();
-    const own = Array.from(document.querySelectorAll('a[href*="/user/profile/"]'))
-      .find(link => (link.textContent || '').trim() === '我');
-    const ownUrl = own ? new URL(own.getAttribute('href') || '', window.location.origin) : null;
-    const ownMatch = ownUrl && ownUrl.pathname.match(/^\/user\/profile\/([0-9a-fA-F]{24})\/?$/);
-    return {
-      board_count: boardInventory.boardCount,
-      board_list_page_count: boardInventory.pageCount,
-      boards: rows,
-      live_page_binding: `${current.origin}${current.pathname}?tab=${currentTab}`,
-      live_account_user_id: ownMatch ? ownMatch[1].toLowerCase() : ''
-    };
-  }
-
-  Promise.resolve().then(run).then((result) => {
-    publish({ done: true, ok: true, result });
-  }).catch((error) => {
-    publish({ done: true, ok: false, error: error && error.message ? error.message : String(error) });
-  });
-  };
-
-  const injectedScript = document.createElement('script');
-  injectedScript.textContent = '(' + mainWorldJob.toString() + ')(' +
-    JSON.stringify(runId) + ',' + JSON.stringify(stateNode.id) + ',' + JSON.stringify(payload) + ');';
-  document.documentElement.appendChild(injectedScript);
-  injectedScript.remove();
-  return runId;
-})()
-'''
-    return (
-        job
-        .replace('LIVE_API_RESOLVER_JS', LIVE_API_RESOLVER_JS)
-        .replace('BOARD_LIST_PAGINATION_JS', BOARD_LIST_PAGINATION_JS)
-        .replace('BOARD_VERIFICATION_JS', BOARD_VERIFICATION_JS)
-        .replace('PAYLOAD_JSON', json.dumps(payload, ensure_ascii=False))
-    )
-
+    """Build one visible-album DOM snapshot expression for compatibility callers."""
+    require_note_id(user_id, 'user_id')
+    if not isinstance(verify_pages, int) or isinstance(verify_pages, bool) or verify_pages < 1:
+        raise MembershipContractError('verify_pages must be a positive integer')
+    if not str(expected_tab_marker or '').strip():
+        raise MembershipContractError('expected_tab_marker must be non-empty')
+    if not str(expected_url_substring or '').strip():
+        raise MembershipContractError('expected_url_substring must be non-empty')
+    return build_album_list_snapshot_js(user_id, expected_tab_marker)
 
 def normalize_live_snapshot(result: Any, args: argparse.Namespace) -> Dict[str, Any]:
     if not isinstance(result, dict):
@@ -639,12 +483,6 @@ def validate_arc_locator(args: argparse.Namespace) -> None:
 
 def execute_snapshot_verification(args: argparse.Namespace) -> Dict[str, Any]:
     validate_arc_locator(args)
-    job = build_snapshot_job(
-        args.user_id,
-        args.verify_pages,
-        args.arc_tab_marker,
-        args.arc_expected_url_substring,
-    )
     safe_path = Path(args.safe160)
     cross_path = Path(args.cross38)
     baseline_path = Path(args.baseline)
@@ -659,8 +497,10 @@ def execute_snapshot_verification(args: argparse.Namespace) -> Dict[str, Any]:
         safety_state,
         stage='board_verification',
         policy={
-            'auto_scroll': False,
-            'auto_navigation': False,
+            'browser': 'Arc',
+            'visible_ui_only': True,
+            'auto_scroll': True,
+            'auto_navigation': True,
             'auto_retry': False,
             'read_only': True,
         },
@@ -671,10 +511,14 @@ def execute_snapshot_verification(args: argparse.Namespace) -> Dict[str, Any]:
     baseline_sha256 = sha256_file(baseline_path)
     contract = validate_input_contract(safe_rows, cross_rows, baseline, baseline_sha256)
 
-    runner = BrowserRunner('arc', args)
     try:
-        run_id = parse_browser_job_id(runner.run_javascript(job))
-        result = poll_browser_job(runner, run_id, args.timeout_sec)
+        session = ArcVisibleUiSession(
+            args.arc_window_id,
+            args.arc_tab_id,
+            args.arc_tab_marker,
+            args.user_id,
+        )
+        snapshot = capture_visible_album_snapshot(session)
     except Exception as exc:
         classified = classify_safety_error(exc)
         if isinstance(exc, SafetyHaltedError) or classified:
@@ -695,10 +539,7 @@ def execute_snapshot_verification(args: argparse.Namespace) -> Dict[str, Any]:
         }
         write_json(report_path, failure_report)
         raise
-    finally:
-        runner.close()
-
-    snapshot = normalize_live_snapshot(result, args)
+    snapshot['generated_at'] = utc_now()
     snapshot['inputs'] = {
         'safe160': str(safe_path),
         'cross38': str(cross_path),

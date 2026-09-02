@@ -4,7 +4,7 @@
 
 WorkBuddy 不再通过宿主进程向 Safari 发送 Apple Events，也不依赖 macOS“自动化”开关。插件把 Skill、MCP 服务器、固定工作流桥接器和浏览器策略一起分发；模型只负责填写明确参数，浏览器选择和写入闸门由代码执行。
 
-## 2.2.2 安全停机
+## 2.3.0 安全停机
 
 专辑读取、创建和移动当前全部停用。模型必须在打开浏览器前停止，不调用 login、capture、prepare 或 execute。旧版网页内部模块探测与自动化会话进入安全验证错误页高度相关，现已删除；下面的浏览器与工具合同只作为未来非注入式实现的约束记录，不代表当前可执行。
 
@@ -45,7 +45,7 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 
 ## 工具顺序
 
-1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.2.2`、独立 profile、平台 channel 和依赖状态；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
+1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.3.0`、独立 profile、平台 channel 和依赖状态；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
 2. `xhs_workbuddy_setup`：仅在用户明确同意后调用；在 `${CODEBUDDY_PLUGIN_DATA}/python-venv` 安装 `requirements-workbuddy.txt`。Windows 只检查系统 Edge，不下载 Chromium；macOS/Linux 安装独立 Chromium。
 3. `xhs_workbuddy_login`：仅在用户当前回合明确授权打开浏览器后调用，并传入已选择的 `source=collection|liked`。用户只需完成登录；工具自动从前端“我”入口取得当前账号、进入所选范围、返回无敏感参数的 `target_page_url`，随后关闭自己的浏览器并等待 profile 锁释放。禁止要求用户关窗口或复制 URL。
    轻度整理调用 capture 前必须已经询问是否需要最终桌面 HTML，并显式传 `generate_report=true|false`；快速整理固定传 `false`。该选择写入抓取 manifest 并随证据哈希绑定。

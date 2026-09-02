@@ -32,7 +32,7 @@ let evidenceLedger;
 
 const RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
 const APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-const PLUGIN_VERSION = '2.2.2';
+const PLUGIN_VERSION = '2.3.0';
 const MCP_LAUNCH_KEY_FD = 3;
 const MCP_EXECUTE_READY_FD = 4;
 const MCP_EXECUTE_COMMIT_FD = 5;
@@ -343,8 +343,8 @@ const server = new McpServer(
   },
   {
     instructions:
-      '2.2.2 已安全停用专辑读取、创建和移动；不得调用 login、capture、prepare 或 execute，且不得打开浏览器。' +
-      '只允许 status、setup 和离线既有工件处理，等待新的非注入式专辑读写实现。' +
+      '2.3.0 已安全停用 WorkBuddy 专辑读取、创建和移动；不得调用 login、capture、prepare 或 execute，且不得打开浏览器。' +
+      '只允许 status、setup 和离线既有工件处理，等待 WorkBuddy 单独接入已验证的可见页面适配器。' +
       '历史合同如下，仅供恢复后参考：在 WorkBuddy 中只能调用本服务器管理小红书浏览器阶段。' +
       '先 status；缺依赖时经用户同意后 setup；首次登录用 login；' +
       '抓取在同一浏览器会话中自动翻页，默认每 200 条一组、组间暂停 3 分钟；' +

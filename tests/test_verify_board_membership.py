@@ -122,14 +122,16 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         by_name[target_name]['accessible_unique_count'] += 1
         by_name[target_name]['declared_total'] += 1
 
-    def test_snapshot_job_is_disabled_before_browser_execution(self):
-        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
-            build_snapshot_job(
-                '1' * 24,
-                100,
-                'worker-marker',
-                'https://www.xiaohongshu.com/user/profile/' + '1' * 24 + '?tab=fav',
-            )
+    def test_snapshot_job_reads_only_visible_album_cards(self):
+        job = build_snapshot_job(
+            '1' * 24,
+            100,
+            'worker-marker',
+            'https://www.xiaohongshu.com/user/profile/' + '1' * 24 + '?tab=fav',
+        )
+        self.assertIn('a[href*="/board/"]', job)
+        for forbidden in ('webpackChunkxhs_pc_web', '/api/sns/web/v1/board', 'req.m'):
+            self.assertNotIn(forbidden, job)
 
     def test_arc_requires_all_four_locators(self):
         args = argparse.Namespace(
@@ -168,53 +170,29 @@ class VerifyBoardMembershipTests(unittest.TestCase):
         with self.assertRaisesRegex(MembershipContractError, '24-character'):
             validate_snapshot_capture_args(invalid_user)
 
-    def test_snapshot_count_mismatch_makes_full_membership_incomplete(self):
+    def test_snapshot_count_mismatch_hard_stops_capture(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'board_snapshot.json'
             args = argparse.Namespace(
                 output=str(output),
-                browser='playwright',
+                browser='arc',
                 user_id='1' * 24,
                 expected_url_substring='/user/profile/',
                 verify_pages=100,
                 timeout_sec=300,
                 safety_state=str(Path(tmp) / 'xhs_safety_state.json'),
-                arc_window_id='',
-                arc_tab_id='',
-                arc_tab_marker='',
-                arc_expected_url_substring='',
+                arc_window_id='window',
+                arc_tab_id='tab',
+                arc_tab_marker='marker',
+                arc_expected_url_substring='/user/profile/',
             )
-            normalized = {
-                'mode': 'read_only',
-                'source': {'writes_performed': False},
-                'boards': [{
-                    'id': 'a' * 24,
-                    'name': '专辑A',
-                    'declared_vs_accessible_delta': 1,
-                    'note_ids': ['2' * 24],
-                }],
-                'validation': {
-                    'pagination_cursor_invariants_passed': True,
-                    'within_board_duplicates': [],
-                },
-            }
             with (
                 patch('capture_board_snapshot.ensure_active_session'),
-                patch('capture_board_snapshot.build_snapshot_job', return_value='safe-test-job'),
-                patch('capture_board_snapshot.BrowserRunner') as runner,
-                patch('capture_board_snapshot.parse_browser_job_id', return_value='run-1'),
-                patch('capture_board_snapshot.poll_browser_job', return_value={}),
-                patch(
-                    'capture_board_snapshot.normalize_live_snapshot',
-                    return_value=copy.deepcopy(normalized),
-                ),
+                patch('capture_board_snapshot.ArcVisibleUiSession'),
+                patch('capture_board_snapshot.capture_visible_album_snapshot', side_effect=RuntimeError('专辑成员缺页：声明 2，只读取到 1')),
             ):
-                runner.return_value.run_javascript.return_value = '{}'
-                snapshot = capture_snapshot(args)
-
-            self.assertFalse(snapshot['validation']['display_count_consistent'])
-            self.assertFalse(snapshot['validation']['full_membership_complete'])
-            self.assertEqual(snapshot['validation']['count_mismatch_boards'], ['专辑A'])
+                with self.assertRaisesRegex(RuntimeError, '专辑成员缺页'):
+                    capture_snapshot(args)
 
     def test_strict_success_is_160_target_38_source_absent_and_no_duplicates(self):
         contract, result, args = self.fixture()

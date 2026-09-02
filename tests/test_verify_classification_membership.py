@@ -12,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import verify_board_membership as board_verifier  # noqa: E402
 import verify_classification_membership as classification_verifier  # noqa: E402
+import xhs_visible_ui as visible_ui  # noqa: E402
 
 
 class VerifyClassificationMembershipTests(unittest.TestCase):
@@ -109,9 +110,8 @@ class VerifyClassificationMembershipTests(unittest.TestCase):
         return board_verifier.normalize_live_snapshot(result or self.browser_result(), self.args())
 
     def test_reuses_existing_snapshot_stack_without_copying_browser_javascript(self):
-        self.assertIs(classification_verifier.build_snapshot_job, board_verifier.build_snapshot_job)
-        self.assertIs(classification_verifier.normalize_live_snapshot, board_verifier.normalize_live_snapshot)
-        self.assertIs(classification_verifier.BrowserRunner, board_verifier.BrowserRunner)
+        self.assertIs(classification_verifier.capture_visible_album_snapshot, visible_ui.capture_visible_album_snapshot)
+        self.assertIs(classification_verifier.ArcVisibleUiSession, visible_ui.ArcVisibleUiSession)
         source = (SCRIPTS / 'verify_classification_membership.py').read_text(encoding='utf-8')
         self.assertNotIn('LIVE_API_RESOLVER_JS', source)
         self.assertNotIn('BOARD_VERIFICATION_JS', source)
