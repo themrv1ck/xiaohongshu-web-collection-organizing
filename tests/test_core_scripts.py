@@ -12,89 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-from run_reassign_batch import BOARD_TRANSACTION_JS, BOARD_VERIFICATION_JS, BrowserRunner, LIVE_API_RESOLVER_JS, apply_batch, build_browser_job, build_write_binding_probe, choose_backend, filter_classification_for_resume, is_ready_move, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_write_preflight, write_binding_blockers  # noqa: E402
+from run_reassign_batch import BrowserRunner, apply_batch, build_browser_job, build_write_binding_probe, choose_backend, filter_classification_for_resume, is_ready_move, merge_report_chunk, parse_browser_job_id, parse_js_json, poll_browser_job, prepare_write_preflight, write_binding_blockers  # noqa: E402
 from extract_visible_items import arc_js_macos, extract_with_js, read_stable_items_snapshot  # noqa: E402
 from xhs_ocr_common import detect_ocr_provider, infer_board, load_taxonomy, run_tesseract_ocr  # noqa: E402
 
 
 class CoreScriptTests(unittest.TestCase):
-    TRANSACTION_MODEL_JS = r'''
-function createTransactionModel(options) {
-  options = options || {};
-  const noteId = 'note-1';
-  const sourceBoardId = 'source-board';
-  const targetBoardId = 'target-board';
-  const source = new Set(options.sourceNoteIds === undefined ? [noteId] : options.sourceNoteIds);
-  const target = new Set(options.targetNoteIds || []);
-  const calls = [];
-  const writes = [];
-  let collected = true;
-  let b1CallCount = 0;
-
-  function notesFor(boardId) {
-    return boardId === sourceBoardId ? source : target;
-  }
-
-  const api = {
-    U_: async function(request) {
-      const boardId = request.resourceParams.boardId;
-      calls.push({method: 'U_', boardId});
-      return {id: boardId, total: notesFor(boardId).size};
-    },
-    Ks: async function(request) {
-      const boardId = request.params.boardId;
-      calls.push({method: 'Ks', boardId});
-      return {
-        notes: Array.from(notesFor(boardId), function(id) { return {noteId: id}; }),
-        cursor: '',
-        hasMore: false
-      };
-    },
-    LN: async function(payload) {
-      calls.push({method: 'LN', payload});
-      writes.push({method: 'LN', payload});
-      collected = false;
-      source.delete(payload.noteIds);
-      target.delete(payload.noteIds);
-      if (options.lnFailure) throw new Error(options.lnFailure);
-      return {};
-    },
-    B1: async function(payload) {
-      calls.push({method: 'B1', payload});
-      writes.push({method: 'B1', payload});
-      b1CallCount += 1;
-      if (b1CallCount <= Number(options.b1FailureCount || 0)) {
-        throw new Error(options.b1Failure || 'collect failed');
-      }
-      collected = true;
-      return {};
-    },
-    d0: async function(payload) {
-      calls.push({method: 'd0', payload});
-      writes.push({method: 'd0', payload});
-      if (payload.targetBoardId === targetBoardId) {
-        if (options.targetMoveFailure) throw new Error(options.targetMoveFailure);
-        if (!options.targetMoveNoop && collected) {
-          source.delete(payload.notesId);
-          target.add(payload.notesId);
-        }
-      } else if (payload.targetBoardId === sourceBoardId) {
-        if (options.sourceMoveFailure) throw new Error(options.sourceMoveFailure);
-        if (!options.sourceMoveNoop && collected) {
-          target.delete(payload.notesId);
-          source.add(payload.notesId);
-        }
-      }
-      return {};
-    }
-  };
-
-  return {
-    api, calls, writes, source, target,
-    noteId, sourceBoardId, targetBoardId
-  };
-}
-'''
 
     def test_stable_snapshot_rejects_declared_total_change(self):
         snapshots = iter([
@@ -153,40 +76,6 @@ function createTransactionModel(options) {
             capture_output=True,
             check=True,
         )
-
-    def run_live_api_resolver_js(self, scenario):
-        proc = subprocess.run(
-            ['node', '-e', LIVE_API_RESOLVER_JS + '\n' + scenario],
-            cwd=str(ROOT),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        return json.loads(proc.stdout)
-
-    def run_board_verification_js(self, scenario):
-        proc = subprocess.run(
-            ['node', '-e', BOARD_VERIFICATION_JS + '\n' + scenario],
-            cwd=str(ROOT),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        return json.loads(proc.stdout)
-
-    def run_board_transaction_js(self, scenario):
-        proc = subprocess.run(
-            [
-                'node', '-e',
-                BOARD_VERIFICATION_JS + '\n' + BOARD_TRANSACTION_JS + '\n' +
-                self.TRANSACTION_MODEL_JS + '\n' + scenario,
-            ],
-            cwd=str(ROOT),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        return json.loads(proc.stdout)
 
     def test_runtime_taxonomy_is_empty_until_real_user_topics_are_supplied(self):
         boards = load_taxonomy(None)
@@ -316,11 +205,11 @@ function createTransactionModel(options) {
             self.run_script('build_existing_boards_inventory.py', str(src), str(out))
             data = json.loads(out.read_text(encoding='utf-8'))
             self.assertEqual(data['boards'], ['滑雪', '穿搭发型与品味'])
-            self.assertEqual(data['excluded_note_ids'], ['note-1'])
+            self.assertEqual(data['located_note_ids'], ['note-1'])
             self.assertEqual(data['note_to_board'], {'note-1': '滑雪'})
             self.assertIn('generated_at', data)
 
-    def test_classify_excludes_existing_board_items(self):
+    def test_classify_uses_existing_inventory_as_location_not_protection(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             visible = tmp_path / 'visible_items.json'
@@ -332,7 +221,7 @@ function createTransactionModel(options) {
             ], ensure_ascii=False), encoding='utf-8')
             inventory.write_text(json.dumps({
                 'boards': ['滑雪'],
-                'excluded_note_ids': ['note-1'],
+                'located_note_ids': ['note-1'],
                 'note_to_board': {'note-1': '滑雪'},
                 'generated_at': '2026-05-09T00:00:00Z',
             }, ensure_ascii=False), encoding='utf-8')
@@ -345,11 +234,9 @@ function createTransactionModel(options) {
                 str(inventory),
             )
             data = json.loads(classification.read_text(encoding='utf-8'))
-            self.assertTrue(data[0]['excluded'])
-            self.assertEqual(data[0]['exclude_reason'], 'existing_board_member_protected')
+            self.assertNotIn('excluded', data[0])
             self.assertEqual(data[0]['source_board'], '滑雪')
-            self.assertEqual(data[0]['target_board'], '')
-            self.assertEqual(data[0]['archive_lifecycle_state'], 'first_archive_confirmed')
+            self.assertEqual(data[0]['archive_lifecycle_state'], 'first_archive_pending')
             self.assertNotIn('excluded', data[1])
             self.assertEqual(data[1]['archive_lifecycle_state'], 'first_archive_pending')
             override = subprocess.run(
@@ -382,7 +269,7 @@ function createTransactionModel(options) {
                     'target_board': '滑雪',
                     'confidence': 'high',
                     'excluded': True,
-                    'exclude_reason': 'existing_board_member_protected',
+                    'exclude_reason': 'skill_archived_board_member_protected',
                     'source_board': '滑雪',
                 }
             ], ensure_ascii=False), encoding='utf-8')
@@ -412,7 +299,7 @@ function createTransactionModel(options) {
                     failed,
                     dict(failed),
                     {'id': 'note-2', 'title': '复核项', 'target_board': '', 'status': 'needs_review', 'error': 'missing target_board'},
-                    {'id': 'note-3', 'title': '跳过项', 'target_board': '', 'status': 'skipped', 'error': 'existing_board_member_protected'},
+                    {'id': 'note-3', 'title': '跳过项', 'target_board': '', 'status': 'skipped', 'error': 'skill_archived_board_member_protected'},
                     {'id': 'note-4', 'title': '核验失败', 'target_board': '穿搭发型与品味', 'status': 'verification_failed', 'events': ['verify:note_missing'], 'error': ''},
                 ],
                 'errors': [dict(failed)],
@@ -471,7 +358,7 @@ function createTransactionModel(options) {
             self.assertEqual(data['missing'], ['体态纠正与康复'])
             self.assertNotIn('不应成为专辑名', data['missing'])
 
-    def test_verified_dry_run_resolves_membership_and_is_ready(self):
+    def test_verified_dry_run_keeps_unregistered_album_members_actionable(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             classification = tmp_path / 'classification.json'
@@ -553,12 +440,12 @@ function createTransactionModel(options) {
             self.assertEqual(data['board_validation_status'], 'verified')
             self.assertEqual(data['membership_validation_status'], 'verified')
             rows = {row['id']: row for row in data['processed']}
-            self.assertEqual(rows[already_id]['status'], 'skipped')
-            self.assertEqual(rows[already_id]['membership_state'], 'existing_board_member_protected')
-            self.assertEqual(rows[already_id]['archive_lifecycle_state'], 'first_archive_confirmed')
-            self.assertEqual(rows[cross_id]['status'], 'skipped')
-            self.assertEqual(rows[cross_id]['membership_state'], 'existing_board_member_protected')
-            self.assertEqual(rows[cross_id]['archive_lifecycle_state'], 'first_archive_confirmed')
+            self.assertEqual(rows[already_id]['status'], 'planned')
+            self.assertEqual(rows[already_id]['membership_state'], 'unarchived_board_member')
+            self.assertEqual(rows[already_id]['archive_lifecycle_state'], 'first_archive_pending')
+            self.assertEqual(rows[cross_id]['status'], 'planned')
+            self.assertEqual(rows[cross_id]['membership_state'], 'unarchived_board_member')
+            self.assertEqual(rows[cross_id]['archive_lifecycle_state'], 'first_archive_pending')
             self.assertEqual(rows[cross_id]['source_board_id'], target_a)
             self.assertEqual(rows[unassigned_id]['status'], 'planned')
             self.assertEqual(rows[unassigned_id]['membership_state'], 'not_in_any_board')
@@ -619,7 +506,7 @@ function createTransactionModel(options) {
             self.assertEqual(data['missing_boards'], ['不存在的专辑'])
             self.assertIn('missing_target_board:不存在的专辑', data['blockers'])
 
-    def test_existing_board_member_is_protected_before_target_validation(self):
+    def test_unregistered_album_member_is_not_protected_before_target_validation(self):
         note_id = '1' * 24
         source_board_id = 'a' * 24
         result = prepare_write_preflight(
@@ -649,17 +536,16 @@ function createTransactionModel(options) {
             {'confirmed': ['用户手动专辑'], 'missing': []},
             allow_low_confidence=False,
         )
-        self.assertTrue(result['ready_for_execute'])
-        self.assertEqual(result['missing_boards'], [])
+        self.assertFalse(result['ready_for_execute'])
+        self.assertEqual(result['missing_boards'], ['模型误判出的不存在专辑'])
         self.assertEqual(result['required_target_boards'], [])
         row = result['resolved_items'][0]
-        self.assertTrue(row['excluded'])
-        self.assertEqual(row['exclude_reason'], 'existing_board_member_protected')
-        self.assertEqual(row['membership_state'], 'existing_board_member_protected')
-        self.assertEqual(row['archive_lifecycle_state'], 'first_archive_confirmed')
+        self.assertFalse(row.get('excluded', False))
+        self.assertEqual(row['membership_state'], 'unarchived_board_member')
+        self.assertEqual(row['archive_lifecycle_state'], 'first_archive_pending')
         self.assertEqual(row['source_board_id'], source_board_id)
 
-    def test_preflight_protects_multi_board_membership_without_cross_board_move(self):
+    def test_preflight_blocks_unregistered_multi_board_membership(self):
         note_id = '1' * 24
         board_a = 'a' * 24
         board_b = 'b' * 24
@@ -698,16 +584,8 @@ function createTransactionModel(options) {
             allow_low_confidence=False,
         )
         self.assertFalse(result['ready_for_execute'])
-        self.assertNotIn(f'ambiguous_membership:{note_id}', result['blockers'])
-        self.assertEqual(
-            result['resolved_items'][0]['membership_state'],
-            'existing_board_member_protected',
-        )
-        self.assertEqual(
-            result['resolved_items'][0]['archive_lifecycle_state'],
-            'first_archive_confirmed',
-        )
-        self.assertTrue(result['resolved_items'][0]['excluded'])
+        self.assertIn(f'unarchived_note_in_multiple_boards:{note_id}', result['blockers'])
+        self.assertFalse(result['resolved_items'][0].get('excluded', False))
         self.assertEqual(result['resolved_items'][0]['source_board_id'], '')
 
     def test_preflight_blocks_declared_board_count_mismatch(self):
@@ -752,11 +630,11 @@ function createTransactionModel(options) {
         self.assertEqual(result['board_validation_status'], 'blocked')
         self.assertEqual(
             result['resolved_items'][0]['membership_state'],
-            'existing_board_member_protected',
+            'unarchived_board_member',
         )
         self.assertEqual(
             result['resolved_items'][0]['archive_lifecycle_state'],
-            'first_archive_confirmed',
+            'first_archive_pending',
         )
 
     def test_preflight_accepts_empty_inventory_only_for_bound_planned_boards(self):
@@ -1040,14 +918,18 @@ function createTransactionModel(options) {
         runner.assert_not_called()
 
     def test_execute_batch_waits_fixed_delay_between_items(self):
+        user_id = 'f' * 24
         args = type('Args', (), {
             'browser': 'safari',
             'arc_tab_marker': '',
+            'expected_url_substring': f'https://www.xiaohongshu.com/user/profile/{user_id}?tab=fav',
+            'arc_expected_url_substring': '',
             'inter_item_delay_sec': 2.5,
             'max_moves_per_session': 2,
             'allow_low_confidence': False,
+            'allow_recollect': True,
             'verify_pages': 1,
-            'user_id': '',
+            'user_id': user_id,
             'timeout_sec': 10,
         })()
         runner = type('Runner', (), {
@@ -1056,27 +938,36 @@ function createTransactionModel(options) {
         })()
         report = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}}
         classification = [
-            {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
-            {'id': 'note-2', 'title': '二', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
+            {'id': '1' * 24, 'title': '一', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': '', 'source_primary': '收藏'},
+            {'id': '2' * 24, 'title': '二', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': '', 'source_primary': '收藏'},
         ]
-        result = {'processed': [], 'errors': [], 'missing_boards': [], 'board_counts_before': {}, 'board_counts_after': {}}
+        def success(item, *_args):
+            return {'processed': [{'id': item['id'], 'target_board': '滑雪', 'status': 'success', 'verified': True}], 'errors': []}
         with tempfile.TemporaryDirectory() as tmp, \
                 patch('run_reassign_batch.BrowserRunner', return_value=runner), \
-                patch('run_reassign_batch.build_browser_job', return_value='safe-test-job'), \
-                patch('run_reassign_batch.poll_browser_job', return_value=result), \
+                patch('run_reassign_batch.validate_write_live_binding'), \
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch('run_reassign_batch.read_target_board_state', return_value=({'boards': []}, {'note_ids': []})), \
+                patch('run_reassign_batch.open_exact_source_note', return_value={'collected': True}), \
+                patch('run_reassign_batch.poll_browser_job', return_value={}), \
+                patch('run_reassign_batch.successful_visible_assignment_chunk', side_effect=success), \
                 patch('run_reassign_batch.time.sleep') as sleep:
             apply_batch(classification, report, args, Path(tmp) / 'report.json')
         sleep.assert_called_once_with(2.5)
 
     def test_execute_batch_creates_confirmed_boards_after_commit_before_moves(self):
+        user_id = 'f' * 24
         args = type('Args', (), {
             'browser': 'safari',
             'arc_tab_marker': '',
+            'expected_url_substring': f'https://www.xiaohongshu.com/user/profile/{user_id}?tab=fav',
+            'arc_expected_url_substring': '',
             'inter_item_delay_sec': 0,
             'max_moves_per_session': 1,
             'allow_low_confidence': False,
+            'allow_recollect': True,
             'verify_pages': 1,
-            'user_id': '',
+            'user_id': user_id,
             'timeout_sec': 10,
         })()
         events = []
@@ -1094,11 +985,12 @@ function createTransactionModel(options) {
             'board_counts_before': {}, 'board_counts_after': {},
         }
         classification = [{
-            'id': 'note-1', 'title': '一', 'target_board': '阅读',
+            'id': '1' * 24, 'title': '一', 'target_board': '阅读',
             'confidence': 'high',
             'membership_state': 'not_in_any_board',
             'archive_lifecycle_state': 'first_archive_pending',
             'source_board_id': '',
+            'source_primary': '收藏',
         }]
         result = {
             'processed': [], 'errors': [], 'missing_boards': [],
@@ -1108,7 +1000,11 @@ function createTransactionModel(options) {
                 patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
                 patch('run_reassign_batch.build_browser_job', return_value='safe-test-job'), \
                 patch('run_reassign_batch.validate_write_live_binding'), \
-                patch('run_reassign_batch.poll_browser_job', return_value=result):
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch('run_reassign_batch.read_target_board_state', return_value=({'boards': []}, {'note_ids': []})), \
+                patch('run_reassign_batch.open_exact_source_note', return_value={'collected': True}), \
+                patch('run_reassign_batch.poll_browser_job', return_value=result), \
+                patch('run_reassign_batch.successful_visible_assignment_chunk', return_value=result):
             apply_batch(
                 classification,
                 report,
@@ -1120,14 +1016,18 @@ function createTransactionModel(options) {
         self.assertEqual(events, ['commit', 'create', 'move', 'close'])
 
     def test_execute_batch_persists_first_error_then_stops_before_next_item(self):
+        user_id = 'f' * 24
         args = type('Args', (), {
             'browser': 'safari',
             'arc_tab_marker': '',
+            'expected_url_substring': f'https://www.xiaohongshu.com/user/profile/{user_id}?tab=fav',
+            'arc_expected_url_substring': '',
             'inter_item_delay_sec': 0,
             'max_moves_per_session': 2,
             'allow_low_confidence': False,
+            'allow_recollect': True,
             'verify_pages': 10,
-            'user_id': '',
+            'user_id': user_id,
             'timeout_sec': 10,
         })()
         calls = {'eval': 0, 'closed': False}
@@ -1141,7 +1041,7 @@ function createTransactionModel(options) {
                 calls['closed'] = True
 
         failed_row = {
-            'id': 'note-1', 'title': '一', 'target_board': '滑雪',
+            'id': '1' * 24, 'title': '一', 'target_board': '滑雪',
             'status': 'verification_failed', 'events': ['note_move:CALLED', 'verify:note_missing'],
             'error': 'note not found in target board after move',
         }
@@ -1154,13 +1054,17 @@ function createTransactionModel(options) {
             'board_counts_before': {}, 'board_counts_after': {},
         }
         classification = [
-            {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
-            {'id': 'note-2', 'title': '二', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': ''},
+            {'id': '1' * 24, 'title': '一', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': '', 'source_primary': '收藏'},
+            {'id': '2' * 24, 'title': '二', 'target_board': '滑雪', 'confidence': 'high', 'membership_state': 'not_in_any_board', 'archive_lifecycle_state': 'first_archive_pending', 'source_board_id': '', 'source_primary': '收藏'},
         ]
         with tempfile.TemporaryDirectory() as tmp, \
                 patch('run_reassign_batch.BrowserRunner', return_value=Runner()), \
-                patch('run_reassign_batch.build_browser_job', return_value='safe-test-job'), \
-                patch('run_reassign_batch.poll_browser_job', return_value=result) as poll:
+                patch('run_reassign_batch.validate_write_live_binding'), \
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch('run_reassign_batch.read_target_board_state', return_value=({'boards': []}, {'note_ids': []})), \
+                patch('run_reassign_batch.open_exact_source_note', return_value={'collected': True}), \
+                patch('run_reassign_batch.poll_browser_job', return_value={}) as poll, \
+                patch('run_reassign_batch.successful_visible_assignment_chunk', return_value=result):
             report_path = Path(tmp) / 'report.json'
             with self.assertRaisesRegex(RuntimeError, '已先写入报告'):
                 apply_batch(classification, report, args, report_path)
@@ -1171,16 +1075,24 @@ function createTransactionModel(options) {
         self.assertEqual(persisted['processed'], [failed_row])
         self.assertEqual(persisted['errors'], [failed_row])
 
-    def test_browser_job_is_disabled_before_any_write(self):
+    def test_browser_job_uses_visible_exact_note_assignment(self):
         args = type('Args', (), {
             'allow_low_confidence': False,
+            'allow_recollect': True,
             'verify_pages': 1,
-            'user_id': '',
+            'user_id': 'f' * 24,
+            'arc_tab_marker': '',
         })()
-        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
-            build_browser_job([
-                {'id': 'note-1', 'title': '一', 'target_board': '滑雪', 'confidence': 'high'},
-            ], args)
+        job = build_browser_job([{
+            'id': '1' * 24, 'title': '一', 'target_board': '滑雪', 'confidence': 'high',
+            'membership_state': 'not_in_any_board',
+            'archive_lifecycle_state': 'first_archive_pending',
+            'source_primary': '收藏',
+        }], args)
+        self.assertIn('exact_note_id_only', job)
+        self.assertIn('1' * 24, job)
+        for forbidden in ('req.m', 'webpackChunkxhs_pc_web', '/api/sns/web/v1/', 'search'):
+            self.assertNotIn(forbidden, job)
 
     def test_first_archive_requires_pending_state_and_confirmed_state_is_locked(self):
         item = {
@@ -1209,458 +1121,14 @@ function createTransactionModel(options) {
             allow_low_confidence=False,
         ))
 
-    def test_live_api_resolver_accepts_one_exact_factory_and_renamed_exports(self):
-        result = self.run_live_api_resolver_js(r'''
-function strictFactory(module, exports, req) {
-  function uncollect(payload) { return req.http.post("/api/sns/web/v1/note/uncollect", payload); }
-  function collect(payload) { return req.http.post("/api/sns/web/v1/note/collect", payload); }
-  function move(payload) { return req.http.post("/api/sns/web/v1/note/move", payload); }
-  function boardNotes(params) { return req.http.get("/api/sns/web/v1/board/note", params); }
-  function userBoards(params) { return req.http.get("/api/sns/web/v1/board/user", params); }
-  function boardDetail(params) { return req.http.get("/api/sns/web/v1/board/{boardId}", params); }
-  exports.renamedUncollect = uncollect;
-  exports.renamedCollect = collect;
-  exports.renamedMove = move;
-  exports.renamedBoardNotes = boardNotes;
-  exports.renamedUserBoards = userBoards;
-  exports.renamedBoardDetail = boardDetail;
-}
-const factories = {currentBuildModule: strictFactory};
-function req(id) {
-  const module = {exports: {}};
-  factories[id](module, module.exports, req);
-  return module.exports;
-}
-req.m = factories;
-req.c = {};
-const api = findApi(req);
-console.log(JSON.stringify({d0: api.d0.name, Ks: api.Ks.name, yC: api.yC.name, U_: api.U_.name}));
-''')
-        self.assertEqual(result, {
-            'd0': 'move', 'Ks': 'boardNotes',
-            'yC': 'userBoards', 'U_': 'boardDetail',
-        })
-
-    def test_live_api_resolver_rejects_zero_factory_matches_without_legacy_cache_fallback(self):
-        result = self.run_live_api_resolver_js(r'''
-const factories = {unrelated: function(module, exports) { exports.value = 1; }};
-function req(id) { return factories[id]({exports: {}}, {}, req); }
-req.m = factories;
-req.c = {
-  40122: {exports: {LN: function LN() {}, B1: function B1() {}, d0: function d0() {}, Ks: function Ks() {}, yC: function yC() {}, U_: function U_() {}}}
-};
-try {
-  findApi(req);
-  console.log(JSON.stringify({error: ''}));
-} catch (error) {
-  console.log(JSON.stringify({error: error.message}));
-}
-''')
-        self.assertIn('factory match count must be 1; found 0', result['error'])
-        self.assertNotIn('req.c', LIVE_API_RESOLVER_JS)
-        self.assertNotIn('40122', LIVE_API_RESOLVER_JS)
-
-    def test_live_api_resolver_rejects_multiple_factory_matches_before_require(self):
-        result = self.run_live_api_resolver_js(r'''
-function strictFactory(module, exports, req) {
-  function uncollect(payload) { return req.http.post("/api/sns/web/v1/note/uncollect", payload); }
-  function collect(payload) { return req.http.post("/api/sns/web/v1/note/collect", payload); }
-  function move(payload) { return req.http.post("/api/sns/web/v1/note/move", payload); }
-  function boardNotes(params) { return req.http.get("/api/sns/web/v1/board/note", params); }
-  function userBoards(params) { return req.http.get("/api/sns/web/v1/board/user", params); }
-  function boardDetail(params) { return req.http.get("/api/sns/web/v1/board/{boardId}", params); }
-  exports.ln = uncollect; exports.b1 = collect;
-  exports.a = move; exports.b = boardNotes; exports.c = userBoards; exports.d = boardDetail;
-}
-const factories = {first: strictFactory, second: strictFactory};
-let requireCalls = 0;
-function req(id) { requireCalls += 1; return {}; }
-req.m = factories;
-try {
-  findApi(req);
-  console.log(JSON.stringify({error: '', requireCalls}));
-} catch (error) {
-  console.log(JSON.stringify({error: error.message, requireCalls}));
-}
-''')
-        self.assertIn('factory match count must be 1; found 2', result['error'])
-        self.assertEqual(result['requireCalls'], 0)
-
-    def test_live_api_resolver_rejects_zero_or_multiple_matching_export_functions(self):
-        result = self.run_live_api_resolver_js(r'''
-function missingExportFactory(module, exports, req) {
-  function uncollect(payload) { return req.http.post("/api/sns/web/v1/note/uncollect", payload); }
-  function collect(payload) { return req.http.post("/api/sns/web/v1/note/collect", payload); }
-  function move(payload) { return req.http.post("/api/sns/web/v1/note/move", payload); }
-  function boardNotes(params) { return req.http.get("/api/sns/web/v1/board/note", params); }
-  function userBoards(params) { return req.http.get("/api/sns/web/v1/board/user", params); }
-  function boardDetail(params) { return req.http.get("/api/sns/web/v1/board/{boardId}", params); }
-  exports.ln = uncollect; exports.b1 = collect;
-  exports.a = move; exports.b = boardNotes; exports.d = boardDetail;
-}
-function duplicateExportFactory(module, exports, req) {
-  function uncollect(payload) { return req.http.post("/api/sns/web/v1/note/uncollect", payload); }
-  function collect(payload) { return req.http.post("/api/sns/web/v1/note/collect", payload); }
-  function move(payload) { return req.http.post("/api/sns/web/v1/note/move", payload); }
-  function moveAgain(payload) { return req.http.post("/api/sns/web/v1/note/move", payload); }
-  function boardNotes(params) { return req.http.get("/api/sns/web/v1/board/note", params); }
-  function userBoards(params) { return req.http.get("/api/sns/web/v1/board/user", params); }
-  function boardDetail(params) { return req.http.get("/api/sns/web/v1/board/{boardId}", params); }
-  exports.ln = uncollect; exports.b1 = collect;
-  exports.a = move; exports.a2 = moveAgain; exports.b = boardNotes; exports.c = userBoards; exports.d = boardDetail;
-}
-function resolve(factory) {
-  const factories = {only: factory};
-  function req(id) {
-    const module = {exports: {}};
-    factories[id](module, module.exports, req);
-    return module.exports;
-  }
-  req.m = factories;
-  try { findApi(req); return ''; } catch (error) { return error.message; }
-}
-console.log(JSON.stringify({zero: resolve(missingExportFactory), multiple: resolve(duplicateExportFactory)}));
-''')
-        self.assertIn('yC export match count must be 1; found 0', result['zero'])
-        self.assertIn('d0 export match count must be 1; found 2', result['multiple'])
-
-    def test_board_snapshot_uses_direct_contract_and_reads_every_page_with_exact_ui_params(self):
-        result = self.run_board_verification_js(r'''
-(async function() {
-  const calls = [];
-  const api = {
-    U_: async function(options) {
-      calls.push({method: 'U_', options});
-      return {id: 'board-1', total: 3};
-    },
-    Ks: async function(options) {
-      calls.push({method: 'Ks', options});
-      if (options.params.cursor === '') {
-        return {notes: [{noteId: 'note-1'}, {noteId: 'note-2'}], cursor: 'note-2', hasMore: true};
-      }
-      return {notes: [{noteId: 'note-3'}], cursor: '', hasMore: false};
-    }
-  };
-  const snapshot = await boardSnapshot(api, 'board-1', 10);
-  console.log(JSON.stringify({snapshot, calls}));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual(result['snapshot'], {
-            'noteIds': ['note-1', 'note-2', 'note-3'],
-            'declaredTotal': 3,
-            'accessibleTotal': 3,
-            'countMismatch': False,
-            'pageCount': 2,
-        })
-        self.assertEqual(result['calls'], [
-            {
-                'method': 'U_',
-                'options': {
-                    'params': {'imageFormats': 'jpg,webp,avif'},
-                    'resourceParams': {'boardId': 'board-1'},
-                },
-            },
-            {
-                'method': 'Ks',
-                'options': {
-                    'params': {
-                        'boardId': 'board-1', 'num': 30, 'cursor': '',
-                        'imageFormats': 'jpg,webp,avif',
-                    },
-                },
-            },
-            {
-                'method': 'Ks',
-                'options': {
-                    'params': {
-                        'boardId': 'board-1', 'num': 30, 'cursor': 'note-2',
-                        'imageFormats': 'jpg,webp,avif',
-                    },
-                },
-            },
-        ])
-
-    def test_board_snapshot_rejects_empty_or_repeated_cursor_while_has_more(self):
-        result = self.run_board_verification_js(r'''
-async function failureFor(pages) {
-  let index = 0;
-  const api = {
-    U_: async function() { return {id: 'board-1', total: 0}; },
-    Ks: async function() { return pages[index++]; }
-  };
-  try { await boardSnapshot(api, 'board-1', 10); return ''; }
-  catch (error) { return error.message; }
-}
-(async function() {
-  const empty = await failureFor([{notes: [], cursor: '', hasMore: true}]);
-  const repeated = await failureFor([
-    {notes: [], cursor: 'cursor-1', hasMore: true},
-    {notes: [], cursor: 'cursor-1', hasMore: true}
-  ]);
-  console.log(JSON.stringify({empty, repeated}));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertIn('hasMore=true with an empty cursor', result['empty'])
-        self.assertIn('hasMore=true with a repeated cursor', result['repeated'])
-
-    def test_board_snapshot_rejects_wrapped_payload_and_incomplete_budget_but_records_count_mismatch(self):
-        result = self.run_board_verification_js(r'''
-async function run(api, maxPages) {
-  try { await boardSnapshot(api, 'board-1', maxPages); return ''; }
-  catch (error) { return error.message; }
-}
-(async function() {
-  const wrapped = await run({
-    U_: async function() { return {id: 'board-1', total: 1}; },
-    Ks: async function() { return {data: {notes: [{noteId: 'note-1'}], cursor: '', hasMore: false}}; }
-  }, 10);
-  const wrongNoteId = await run({
-    U_: async function() { return {id: 'board-1', total: 1}; },
-    Ks: async function() { return {notes: [{id: 'note-1'}], cursor: '', hasMore: false}; }
-  }, 10);
-  const mismatch = await boardSnapshot({
-    U_: async function() { return {id: 'board-1', total: 2}; },
-    Ks: async function() { return {notes: [{noteId: 'note-1'}], cursor: '', hasMore: false}; }
-  }, 'board-1', 10);
-  const incomplete = await run({
-    U_: async function() { return {id: 'board-1', total: 2}; },
-    Ks: async function() { return {notes: [{noteId: 'note-1'}], cursor: 'note-1', hasMore: true}; }
-  }, 1);
-  console.log(JSON.stringify({wrapped, wrongNoteId, mismatch, incomplete}));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertIn('response.notes must be an array', result['wrapped'])
-        self.assertIn('notes[0].noteId must be a non-empty string', result['wrongNoteId'])
-        self.assertEqual(result['mismatch'], {
-            'noteIds': ['note-1'],
-            'declaredTotal': 2,
-            'accessibleTotal': 1,
-            'countMismatch': True,
-            'pageCount': 1,
-        })
-        self.assertIn('exceeded maxPages before completion', result['incomplete'])
-
-    def test_cross_board_transaction_succeeds_with_adjacent_uncollect_and_recollect(self):
-        result = self.run_board_transaction_js(r'''
-(async function() {
-  const model = createTransactionModel();
-  const events = [];
-  const transaction = await moveAcrossBoardsTransaction(
-    model.api, model.noteId, model.sourceBoardId, model.targetBoardId,
-    10, events, function() {}
-  );
-  console.log(JSON.stringify({
-    writes: model.writes,
-    callMethods: model.calls.map(function(call) { return call.method; }),
-    events,
-    source: Array.from(model.source),
-    target: Array.from(model.target),
-    targetSnapshot: transaction.targetSnapshot
-  }));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual(result['writes'], [
-            {'method': 'LN', 'payload': {'noteIds': 'note-1'}},
-            {'method': 'B1', 'payload': {'noteId': 'note-1'}},
-            {'method': 'd0', 'payload': {'targetBoardId': 'target-board', 'notesId': 'note-1'}},
-        ])
-        self.assertIn(['LN', 'B1'], [
-            result['callMethods'][index:index + 2]
-            for index in range(len(result['callMethods']) - 1)
-        ])
-        self.assertEqual(result['source'], [])
-        self.assertEqual(result['target'], ['note-1'])
-        self.assertEqual(result['targetSnapshot']['noteIds'], ['note-1'])
-        self.assertIn('transaction:target_verified', result['events'])
-
-    def test_cross_board_transaction_preflight_failure_has_zero_writes(self):
-        result = self.run_board_transaction_js(r'''
-async function attempt(options) {
-  const model = createTransactionModel(options);
-  const events = [];
-  let error = '';
-  try {
-    await moveAcrossBoardsTransaction(
-      model.api, model.noteId, model.sourceBoardId, model.targetBoardId,
-      10, events, function() {}
-    );
-  } catch (caught) {
-    error = caught.message;
-  }
-  return {writes: model.writes, events, error};
-}
-(async function() {
-  const sourceMissing = await attempt({sourceNoteIds: []});
-  const targetPresent = await attempt({targetNoteIds: ['note-1']});
-  console.log(JSON.stringify({sourceMissing, targetPresent}));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual(result['sourceMissing']['writes'], [])
-        self.assertIn('source board', result['sourceMissing']['error'])
-        self.assertIn('transaction:preflight:source_missing', result['sourceMissing']['events'])
-        self.assertEqual(result['targetPresent']['writes'], [])
-        self.assertIn('target board', result['targetPresent']['error'])
-        self.assertIn('transaction:preflight:target_present', result['targetPresent']['events'])
-
-    def test_cross_board_target_failure_rolls_back_and_still_fails_item(self):
-        result = self.run_board_transaction_js(r'''
-(async function() {
-  const model = createTransactionModel({targetMoveNoop: true});
-  const events = [];
-  let error = {};
-  try {
-    await moveAcrossBoardsTransaction(
-      model.api, model.noteId, model.sourceBoardId, model.targetBoardId,
-      10, events, function() {}
-    );
-  } catch (caught) {
-    error = {name: caught.name, message: caught.message};
-  }
-  console.log(JSON.stringify({
-    writes: model.writes,
-    events,
-    error,
-    source: Array.from(model.source),
-    target: Array.from(model.target)
-  }));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual([call['method'] for call in result['writes']], [
-            'LN', 'B1', 'd0', 'LN', 'B1', 'd0',
-        ])
-        self.assertEqual(result['writes'][3:5], [
-            {'method': 'LN', 'payload': {'noteIds': 'note-1'}},
-            {'method': 'B1', 'payload': {'noteId': 'note-1'}},
-        ])
-        self.assertEqual(result['writes'][-1]['payload']['targetBoardId'], 'source-board')
-        self.assertEqual(result['error']['name'], 'CrossBoardTransactionError')
-        self.assertIn('source rollback verified', result['error']['message'])
-        self.assertIn('transaction:rollback:succeeded', result['events'])
-        self.assertEqual(result['source'], ['note-1'])
-        self.assertEqual(result['target'], [])
-
-    def test_cross_board_first_recollect_failure_does_not_retry_then_rolls_back(self):
-        result = self.run_board_transaction_js(r'''
-(async function() {
-  const model = createTransactionModel({b1FailureCount: 1});
-  const events = [];
-  let error = {};
-  try {
-    await moveAcrossBoardsTransaction(
-      model.api, model.noteId, model.sourceBoardId, model.targetBoardId,
-      10, events, function() {}
-    );
-  } catch (caught) {
-    error = {name: caught.name, message: caught.message};
-  }
-  console.log(JSON.stringify({
-    writes: model.writes,
-    events,
-    error,
-    source: Array.from(model.source),
-    target: Array.from(model.target)
-  }));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual([call['method'] for call in result['writes']], [
-            'LN', 'B1', 'LN', 'B1', 'd0',
-        ])
-        self.assertIn('transaction:recollect_failed', result['events'])
-        self.assertNotIn('transaction:recollect_retry', result['events'])
-        self.assertIn('transaction:rollback:succeeded', result['events'])
-        self.assertEqual(result['error']['name'], 'CrossBoardTransactionError')
-        self.assertEqual(result['source'], ['note-1'])
-        self.assertEqual(result['target'], [])
-
-    def test_cross_board_rollback_verification_failure_is_explicit_high_risk(self):
-        result = self.run_board_transaction_js(r'''
-(async function() {
-  const model = createTransactionModel({targetMoveNoop: true, sourceMoveNoop: true});
-  const events = [];
-  let error = {};
-  try {
-    await moveAcrossBoardsTransaction(
-      model.api, model.noteId, model.sourceBoardId, model.targetBoardId,
-      10, events, function() {}
-    );
-  } catch (caught) {
-    error = {name: caught.name, message: caught.message};
-  }
-  console.log(JSON.stringify({writes: model.writes, events, error}));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual(result['error']['name'], 'HighRiskStateUncertainError')
-        self.assertTrue(result['error']['message'].startswith('HIGH_RISK_STATE_UNCERTAIN:'))
-        self.assertIn('transaction:rollback:failed', result['events'])
-        self.assertIn('transaction:high_risk_state_uncertain', result['events'])
-
-    def test_cross_board_security_failure_after_writes_never_starts_rollback(self):
-        result = self.run_board_transaction_js(r'''
-(async function() {
-  const model = createTransactionModel({targetMoveFailure: 'security verification'});
-  const events = [];
-  let error = {};
-  function guard(cause) {
-    if (cause && String(cause.message || cause).includes('security')) {
-      const securityError = new Error('SAFETY_BREAKER: security verification');
-      securityError.name = 'SecurityChallengeError';
-      throw securityError;
-    }
-  }
-  try {
-    await moveAcrossBoardsTransaction(
-      model.api, model.noteId, model.sourceBoardId, model.targetBoardId,
-      10, events, guard
-    );
-  } catch (caught) {
-    error = {name: caught.name, message: caught.message};
-  }
-  console.log(JSON.stringify({writes: model.writes, events, error}));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual([call['method'] for call in result['writes']], ['LN', 'B1', 'd0'])
-        self.assertNotIn('transaction:rollback', result['events'])
-        self.assertEqual(result['error']['name'], 'HighRiskStateUncertainError')
-        self.assertTrue(result['error']['message'].startswith('HIGH_RISK_STATE_UNCERTAIN:'))
-
-    def test_cross_board_page_binding_guard_failure_after_writes_never_rolls_back(self):
-        result = self.run_board_transaction_js(r'''
-(async function() {
-  const model = createTransactionModel();
-  const events = [];
-  let error = {};
-  let guardCalls = 0;
-  function guard() {
-    guardCalls += 1;
-    if (guardCalls === 5) {
-      const bindingError = new Error('Arc worker runtime marker no longer matches');
-      bindingError.name = 'ExecutePageBindingError';
-      throw bindingError;
-    }
-  }
-  try {
-    await moveAcrossBoardsTransaction(
-      model.api, model.noteId, model.sourceBoardId, model.targetBoardId,
-      10, events, guard
-    );
-  } catch (caught) {
-    error = {name: caught.name, message: caught.message};
-  }
-  console.log(JSON.stringify({writes: model.writes, events, error, guardCalls}));
-})().catch(function(error) { console.error(error); process.exit(1); });
-''')
-        self.assertEqual([call['method'] for call in result['writes']], [])
-        self.assertNotIn('transaction:rollback', result['events'])
-        self.assertEqual(result['error']['name'], 'ExecutePageBindingError')
-        self.assertIn('Arc worker runtime marker no longer matches', result['error']['message'])
-
-    def test_browser_job_does_not_generate_main_world_script(self):
+    def test_browser_job_rejects_empty_batch(self):
         args = type('Args', (), {
             'allow_low_confidence': False,
+            'allow_recollect': True,
             'verify_pages': 1,
             'user_id': '',
         })()
-        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
+        with self.assertRaisesRegex(RuntimeError, '每次必须且只能处理一条'):
             build_browser_job([], args)
 
     def test_poll_browser_job_reads_and_cleans_dom_state_bridge(self):

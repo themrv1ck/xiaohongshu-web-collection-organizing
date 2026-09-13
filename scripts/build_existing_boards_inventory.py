@@ -68,7 +68,7 @@ def build_inventory(data: Any) -> Dict[str, Any]:
     boards, note_to_board = extract_boards(data)
     return {
         'boards': boards,
-        'excluded_note_ids': list(note_to_board.keys()),
+        'located_note_ids': list(note_to_board.keys()),
         'note_to_board': note_to_board,
         'generated_at': utc_now(),
     }
@@ -85,7 +85,7 @@ def main() -> None:
     write_json(out, inventory)
     print(json.dumps({
         'board_count': len(inventory['boards']),
-        'excluded_note_count': len(inventory['excluded_note_ids']),
+        'located_note_count': len(inventory['located_note_ids']),
         'output': str(out),
     }, ensure_ascii=False, indent=2))
 

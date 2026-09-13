@@ -5,7 +5,7 @@ from pathlib import Path
 
 from video_content_common import normalize_content_type
 from collection_scope import validate_scope_input
-from archive_exclusion import combine_archived_note_maps
+from archive_exclusion import combine_live_protected_note_maps
 from xhs_ocr_common import load_json, perform_ocr_for_items
 
 
@@ -19,7 +19,8 @@ def main():
     parser.add_argument('--provider', choices=['auto', 'swift', 'tesseract', 'easyocr'], default='auto', help='OCR 后端：macOS 默认 Swift Vision；Windows 默认 Tesseract')
     parser.add_argument('--tesseract-lang', default='chi_sim', help='Tesseract 语言包；默认使用已检测的 chi_sim，可显式传 chi_sim+eng')
     parser.add_argument('--collection-scope', default='', help='可选 collection_scope.json；提供时强制校验完整 note ID 范围')
-    parser.add_argument('--archive-registry', action='append', default=[], help='已确认归档基线或 existing boards inventory；可重复传入，命中 ID 不执行 OCR')
+    parser.add_argument('--archive-registry', action='append', default=[], help='Skill 完成回读后生成的 v2 归档登记；可重复传入')
+    parser.add_argument('--board-snapshot', default='', help='使用归档登记时必填：本轮完整专辑成员快照，用于排除登记专辑的实时成员')
     args = parser.parse_args()
 
     src = Path(args.src)
@@ -31,8 +32,9 @@ def main():
     if str(args.collection_scope or '').strip():
         scope = validate_scope_input(args.collection_scope, items, stage='OCR 输入')
         scope_user_id = str((scope.get('page_binding') or {}).get('user_id') or '')
-    archived_note_map = combine_archived_note_maps(
+    archived_note_map = combine_live_protected_note_maps(
         args.archive_registry,
+        board_snapshot_path=args.board_snapshot,
         expected_user_id=scope_user_id or None,
     )
     archived_input_ids = {

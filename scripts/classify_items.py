@@ -7,14 +7,35 @@ from xhs_ocr_common import infer_board, load_json, load_taxonomy, perform_ocr_fo
 from collection_scope import validate_scope_input
 from analyze_video_transcripts import validate_analysis
 from video_content_common import normalize_content_type
-from archive_exclusion import combine_archived_note_maps, load_archived_note_map
+from archive_exclusion import combine_live_protected_note_maps
 from archive_rules import apply_uncertain_assignment
 
 
 def load_existing_inventory(path):
     if not path:
         return {}
-    return load_archived_note_map(path)
+    payload = load_json(Path(path))
+    if not isinstance(payload, dict):
+        raise ValueError('existing_boards_inventory.json 必须是对象')
+    boards = payload.get('boards')
+    note_to_board = payload.get('note_to_board')
+    located_note_ids = payload.get('located_note_ids')
+    if not isinstance(boards, list) or not all(isinstance(name, str) and name.strip() for name in boards):
+        raise ValueError('existing_boards_inventory.boards 必须是非空专辑名数组')
+    if len(boards) != len(set(boards)):
+        raise ValueError('existing_boards_inventory.boards 包含重复专辑名')
+    if not isinstance(note_to_board, dict):
+        raise ValueError('existing_boards_inventory.note_to_board 必须是对象')
+    normalized = {}
+    for note_id_value, board_value in note_to_board.items():
+        note_id = str(note_id_value or '').strip()
+        board = str(board_value or '').strip()
+        if not note_id or not board or board not in boards:
+            raise ValueError('existing_boards_inventory.note_to_board 包含无效 ID 或未知专辑')
+        normalized[note_id] = board
+    if not isinstance(located_note_ids, list) or set(located_note_ids) != set(normalized):
+        raise ValueError('existing_boards_inventory.located_note_ids 与 note_to_board 不一致')
+    return normalized
 
 
 def load_video_analysis(path):
@@ -44,8 +65,9 @@ def main():
     parser.add_argument('--ocr-timeout-sec', type=int, default=20, help='OCR 图片下载超时时间')
     parser.add_argument('--skip-ocr', action='store_true', help='跳过 OCR，只使用已有元数据做分类')
     parser.add_argument('--force-ocr', action='store_true', help='忽略已有 OCR 结果，强制重跑')
-    parser.add_argument('--existing-boards-inventory', default=None, help='existing_boards_inventory.json 路径；其中所有已有专辑成员永久排除，不能覆盖')
-    parser.add_argument('--archive-registry', action='append', default=[], help='持久归档基线；可重复传入，默认在 OCR/视频分类前排除已确认归档 ID')
+    parser.add_argument('--existing-boards-inventory', default=None, help='existing_boards_inventory.json 路径；只提供本轮当前专辑位置，不代表已归档或受保护')
+    parser.add_argument('--archive-registry', action='append', default=[], help='Skill 完成回读后生成的 v2 归档登记；可重复传入')
+    parser.add_argument('--board-snapshot', default='', help='使用归档登记时必填：本轮正式页面完整专辑成员快照，用于计算登记专辑的实时成员')
     parser.add_argument('--classify-video-by-content', action='store_true', help='视频只采用合格转写和用户选择的分析 provider，不使用简介兜底')
     parser.add_argument('--video-analysis', help='video_analysis.json 路径；开启视频内容分类时必须提供')
     parser.add_argument('--require-visual-analysis', action='store_true', help='要求每条成功视频均已完成完整时轴画面分析')
@@ -67,12 +89,12 @@ def main():
         scope_user_id = str((scope.get('page_binding') or {}).get('user_id') or '')
     boards = load_taxonomy(Path(args.taxonomy)) if args.taxonomy else load_taxonomy(None)
     existing_note_to_board = load_existing_inventory(args.existing_boards_inventory)
-    registry_note_to_board = combine_archived_note_maps(
+    registry_note_to_board = combine_live_protected_note_maps(
         args.archive_registry,
+        board_snapshot_path=args.board_snapshot,
         expected_user_id=scope_user_id or None,
     )
     excluded_note_to_board = dict(registry_note_to_board)
-    excluded_note_to_board.update(existing_note_to_board)
     video_analysis_map = load_video_analysis(args.video_analysis)
     if args.classify_video_by_content:
         video_ids = {
@@ -149,8 +171,9 @@ def main():
         analysis_provider = ''
         analysis_model = ''
         analysis_provider_version = ''
-        source_board = excluded_note_to_board.get(str(item_id), '')
-        if source_board:
+        protected_board = excluded_note_to_board.get(str(item_id), '')
+        current_board = existing_note_to_board.get(str(item_id), '')
+        if protected_board:
             classification_basis = 'archive_excluded'
             board = ''
             confidence = 'low'
@@ -204,7 +227,7 @@ def main():
                 board, confidence, reason, review_state = infer_board(item, ocr_entry, boards)
         else:
             board, confidence, reason, review_state = infer_board(item, None, boards)
-        if source_board:
+        if protected_board:
             ocr_status = 'skipped_archived'
         elif args.skip_ocr or content_type != 'image':
             ocr_status = 'skipped'
@@ -258,22 +281,20 @@ def main():
             'source_primary': item.get('source_primary') or ((item.get('source_lists') or [''])[0] if isinstance(item.get('source_lists'), list) and item.get('source_lists') else ''),
             'archive_lifecycle_state': (
                 'first_archive_confirmed'
-                if source_board
+                if protected_board
                 else 'first_archive_pending'
                 if args.existing_boards_inventory
                 else 'not_checked'
             ),
         }
-        if not source_board:
+        if not protected_board:
             row = apply_uncertain_assignment(row)
-        if source_board:
+        if current_board:
+            row['source_board'] = current_board
+        if protected_board:
             row['excluded'] = True
-            row['exclude_reason'] = (
-                'existing_board_member_protected'
-                if str(item_id) in existing_note_to_board
-                else 'confirmed_archived_registry'
-            )
-            row['source_board'] = source_board
+            row['exclude_reason'] = 'skill_archived_board_member'
+            row['source_board'] = protected_board
             row['target_board'] = ''
         result.append(row)
 

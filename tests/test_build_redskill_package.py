@@ -29,7 +29,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
         marketplace = json.loads((ROOT / '.codebuddy-plugin/marketplace.json').read_text(encoding='utf-8'))
         package = json.loads((ROOT / 'workbuddy-plugin-src/package.json').read_text(encoding='utf-8'))
         package_lock = json.loads((ROOT / 'workbuddy-plugin-src/package-lock.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest_version, '2.3.0')
+        self.assertEqual(manifest_version, '2.3.1')
         self.assertEqual(plugin['version'], manifest_version)
         self.assertEqual(marketplace['plugins'][0]['version'], manifest_version)
         self.assertEqual(package['version'], manifest_version)
@@ -51,7 +51,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             archive_path = Path(result['archive_path'])
             self.assertTrue(archive_path.is_file())
             self.assertEqual(result['skill_name'], 'xiaohongshu-web-collection-organizing')
-            self.assertEqual(result['version'], '2.3.0')
+            self.assertEqual(result['version'], '2.3.1')
             self.assertEqual(result['channel'], 'redskill')
             self.assertLessEqual(result['packaged_file_count'], 100)
             self.assertEqual(result['validation_errors'], [])
@@ -67,7 +67,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 root + 'LICENSE.txt',
                 root + 'scripts/enable_workbuddy_mcp.py',
             })
-            self.assertIn('发布版本：`2.3.0`', skill_text)
+            self.assertIn('发布版本：`2.3.1`', skill_text)
             self.assertIn('不自动运营账号', skill_text)
             self.assertIn('不读取系统浏览器 Cookie', skill_text)
             self.assertIn(
@@ -83,7 +83,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
                 ROOT, Path(tmp), channel='skillhub'
             )
             self.assertTrue(
-                result['archive_path'].endswith('-skillhub-2.3.0.zip')
+                result['archive_path'].endswith('-skillhub-2.3.1.zip')
             )
             self.assertEqual(result['validation_errors'], [])
 
@@ -99,6 +99,8 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             self.assertIn(root + 'SKILL.md', names)
             self.assertIn(root + 'scripts/enable_workbuddy_mcp.py', names)
             self.assertIn(root + 'scripts/workbuddy_runtime.py', names)
+            self.assertIn(root + 'scripts/xhs_album_assignment.js', names)
+            self.assertIn(root + 'references/visible-collection-entry.md', names)
             self.assertNotIn(root + '.mcp.json', names)
             self.assertNotIn(root + '.codebuddy-plugin/plugin.json', names)
             self.assertNotIn(root + 'bin/run-node.sh', names)
@@ -106,9 +108,9 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             self.assertNotIn(root + 'scripts/workbuddy_bridge.py', names)
             self.assertNotIn(root + 'README.md', names)
             self.assertNotIn(root + 'manifest.yaml', names)
-            self.assertIn('version: "2.3.0"', skill_text)
+            self.assertIn('version: "2.3.1"', skill_text)
             self.assertIn('license: MIT', skill_text)
-            self.assertIn('compatibility: "Direct Arc album reads and visible-form creation', skill_text)
+            self.assertIn('compatibility: "Visible-page account operations require current-turn browser authorization', skill_text)
             validation = subprocess.run(
                 [
                     sys.executable,
@@ -208,7 +210,7 @@ class BuildRedSkillPackageTests(unittest.TestCase):
             root = 'xiaohongshu-web-collection-organizing/'
             source = ROOT / 'templates' / 'redskill.SKILL.md'
             skill_text = source.read_text(encoding='utf-8').replace(
-                '{{VERSION}}', '2.3.0'
+                '{{VERSION}}', '2.3.1'
             )
             files = {
                 'SKILL.md': skill_text,

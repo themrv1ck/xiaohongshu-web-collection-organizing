@@ -47,14 +47,18 @@ class SafetySessionTests(unittest.TestCase):
         }
 
     def move_args(self, **overrides):
+        user_id = "f" * 24
         values = {
             "browser": "safari",
             "arc_tab_marker": "",
+            "expected_url_substring": f"https://www.xiaohongshu.com/user/profile/{user_id}?tab=fav",
+            "arc_expected_url_substring": "",
             "inter_item_delay_sec": 0,
             "max_moves_per_session": 2,
             "allow_low_confidence": False,
+            'allow_recollect': True,
             "verify_pages": 1,
-            "user_id": "",
+            "user_id": user_id,
             "timeout_sec": 10,
             "safety_state": "",
         }
@@ -185,6 +189,11 @@ class SafetySessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.build_browser_job", return_value="safe-test-job"), \
+                patch("run_reassign_batch.validate_write_live_binding"), \
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch("run_reassign_batch.read_target_board_state", return_value=({"boards": []}, {"note_ids": []})), \
+                patch("run_reassign_batch.open_exact_source_note", return_value={"collected": True}), \
+                patch("run_reassign_batch.source_tab_for_item", return_value="fav"), \
                 patch("run_reassign_batch.poll_browser_job", side_effect=SafetyHaltedError("SAFETY_BREAKER: 安全验证")) as poll:
             report_path = Path(tmp) / "run_report.json"
             with self.assertRaises(SafetyHaltedError):
@@ -253,6 +262,11 @@ class SafetySessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.build_browser_job", return_value="safe-test-job"), \
+                patch("run_reassign_batch.validate_write_live_binding"), \
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch("run_reassign_batch.read_target_board_state", return_value=({"boards": []}, {"note_ids": []})), \
+                patch("run_reassign_batch.open_exact_source_note", return_value={"collected": True}), \
+                patch("run_reassign_batch.source_tab_for_item", return_value="fav"), \
                 patch(
                     "run_reassign_batch.poll_browser_job",
                     side_effect=SafetyHaltedError(unsafe_error),
@@ -317,7 +331,13 @@ class SafetySessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.build_browser_job", return_value="safe-test-job"), \
-                patch("run_reassign_batch.poll_browser_job", return_value=result):
+                patch("run_reassign_batch.validate_write_live_binding"), \
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch("run_reassign_batch.read_target_board_state", return_value=({"boards": []}, {"note_ids": []})), \
+                patch("run_reassign_batch.open_exact_source_note", return_value={"collected": True}), \
+                patch("run_reassign_batch.source_tab_for_item", return_value="fav"), \
+                patch("run_reassign_batch.poll_browser_job", return_value={}), \
+                patch("run_reassign_batch.successful_visible_assignment_chunk", return_value=result):
             report_path = Path(tmp) / "run_report.json"
             apply_batch(classification, report, self.move_args(max_moves_per_session=1), report_path)
             saved = json.loads(report_path.read_text(encoding="utf-8"))
@@ -351,8 +371,8 @@ class SafetySessionTests(unittest.TestCase):
                 "target_board": "阅读",
                 "confidence": "high",
                 "excluded": True,
-                "exclude_reason": "existing_board_member_protected",
-                "membership_state": "existing_board_member_protected",
+                "exclude_reason": "skill_archived_board_member_protected",
+                "membership_state": "skill_archived_board_member_protected",
                 "archive_lifecycle_state": "first_archive_confirmed",
             },
             {
@@ -375,7 +395,13 @@ class SafetySessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.build_browser_job", side_effect=lambda items, _args: json.dumps(items)), \
-                patch("run_reassign_batch.poll_browser_job", return_value=result):
+                patch("run_reassign_batch.validate_write_live_binding"), \
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch("run_reassign_batch.read_target_board_state", return_value=({"boards": []}, {"note_ids": []})), \
+                patch("run_reassign_batch.open_exact_source_note", return_value={"collected": True}), \
+                patch("run_reassign_batch.source_tab_for_item", return_value="fav"), \
+                patch("run_reassign_batch.poll_browser_job", return_value={}), \
+                patch("run_reassign_batch.successful_visible_assignment_chunk", return_value=result):
             report_path = Path(tmp) / "run_report.json"
             apply_batch(
                 classification,
@@ -415,8 +441,8 @@ class SafetySessionTests(unittest.TestCase):
                 "target_board": "阅读",
                 "confidence": "high",
                 "excluded": True,
-                "exclude_reason": "existing_board_member_protected",
-                "membership_state": "existing_board_member_protected",
+                "exclude_reason": "skill_archived_board_member_protected",
+                "membership_state": "skill_archived_board_member_protected",
                 "archive_lifecycle_state": "first_archive_confirmed",
             },
             {
@@ -462,7 +488,13 @@ class SafetySessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch("run_reassign_batch.BrowserRunner", return_value=Runner()), \
                 patch("run_reassign_batch.build_browser_job", side_effect=lambda items, _args: json.dumps(items)), \
-                patch("run_reassign_batch.poll_browser_job", return_value=empty_result):
+                patch("run_reassign_batch.validate_write_live_binding"), \
+                patch('run_reassign_batch.validate_live_assignment_membership'), \
+                patch("run_reassign_batch.read_target_board_state", return_value=({"boards": []}, {"note_ids": []})), \
+                patch("run_reassign_batch.open_exact_source_note", return_value={"collected": True}), \
+                patch("run_reassign_batch.source_tab_for_item", return_value="fav"), \
+                patch("run_reassign_batch.poll_browser_job", return_value={}), \
+                patch("run_reassign_batch.successful_visible_assignment_chunk", return_value=empty_result):
             report_path = Path(tmp) / "run_report.json"
             apply_batch(
                 classification,

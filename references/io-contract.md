@@ -102,7 +102,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 ```json
 {
   "boards": ["示例主题A"],
-  "excluded_note_ids": ["694d3390000000002203ae33"],
+  "located_note_ids": ["694d3390000000002203ae33"],
   "note_to_board": {
     "694d3390000000002203ae33": "示例主题A"
   },
@@ -281,14 +281,15 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 `source_lists` / `source_primary` 从输入条目透传，用于区分收藏、点赞或二者都有。图文 OCR 关闭时，普通条目必须使用 `classification_basis=metadata_only` 和 `ocr_status=skipped`；开启且完整图片集合逐张 OCR 成功时为 `metadata_and_ocr`。图片集合不完整、任一图片失败或其他证据无法可靠选定目标时，不得使用部分证据或猜测；最终分类机械写为 `target_board=无法确定`、`confidence=low`、`review_state=manual_reclassification_required`、`uncertain_assignment=true`，同时保留真实失败状态和原因。成功图文行从 `ocr_results.json` 透传同一个非空 `ocr_run_fingerprint`；非图文、跳过或没有成功 OCR 的行该字段为空。视频开关开启后，视频行必须使用 `classification_basis=video_content`，并从 `video_analysis.json` 透传 `video_analysis_basis`、`visual_status` 和 provider identity。转写或所选 analysis provider 失败时不得根据简介/OCR 补分类。
 
-真实 dry-run 和 execute 前必须先用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 生成完整 `board_snapshot.json`，再生成 `created_boards.json`。两份证据必须同时传给 `run_reassign_batch.py`；否则只能得到 `classification_preview`、`ready_for_execute=false`、`missing_boards=null`。成员关系判定必须早于目标专辑校验。硬闸门通过后，执行清单字段必须满足：
+真实 dry-run 和 execute 前必须先用 `capture_board_snapshot.py` 通过正式页面可见专辑卡片和成员卡片生成完整 `board_snapshot.json`，再生成 `created_boards.json`，并绑定同账号最新的 `xhs-skill-archive-registry-v2`。成员关系判定必须早于目标专辑校验。硬闸门通过后，执行清单字段必须满足：
 
-- 已属于任一专辑：当前实时成员关系视为首次归档已确认，统一保留 `excluded=true`、`exclude_reason=existing_board_member_protected`、`membership_state=existing_board_member_protected`、`archive_lifecycle_state=first_archive_confirmed`，确保零写入；模型目标不同或不存在也不能改变该结果。
-- 不在任何专辑：`membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending`，且 `source_board`、`source_board_id` 都为空，执行器才可使用直接 `d0` 完成首次归档。
+- v2 登记专辑的本轮实时成员：保留 `excluded=true`、`exclude_reason=skill_archived_board_member_protected`、`membership_state=skill_archived_board_member_protected`、`archive_lifecycle_state=first_archive_confirmed`，确保零写入。
+- 未登记专辑成员：`membership_state=unarchived_board_member`、`archive_lifecycle_state=first_archive_pending`。目标等于当前专辑时只核验后登记；目标不同时允许在确认后通过可见“加入专辑”迁移，并核验原专辑减一、目标专辑加一。
+- 不在任何专辑：`membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending`，允许通过可见“加入专辑”完成首次归档。
 - 未归档且无法可靠选定目标：固定进入“无法确定”；该专辑不存在时必须作为明确待创建项进入用户确认。它是唯一允许在未传通用 `--allow-low-confidence` 时执行的低置信度目标，用户以后自行调整。
-- 同时属于多个专辑：视为首次归档已经完成并永久保护，`source_board` 可记录多个名称，禁止选择来源或执行迁移。
-- `d0` 调用、dry-run、失败、中止或未核验都不能改变生命周期；只有 `U_` + `Ks` 回读确认 note id 已进入目标专辑后，才把成功行改为 `first_archive_confirmed`。
-- `Ks` 分页不完整、账号/页面绑定变化或无法证明不在任何专辑：不得进入 execute。
+- 未登记条目同时属于多个专辑：属于成员关系异常，直接停止，不猜来源。
+- dry-run、失败、中止或未核验都不能改变生命周期；只有可见成员卡片回读确认后，才把成功行改为 `first_archive_confirmed`。
+- 可见成员读取不完整、账号/页面绑定变化或归档登记不一致：不得进入 execute。
 
 ```json
 [
@@ -341,8 +342,8 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "title": "听CASI考官详细拆解什么固定器角度适合你？",
     "target_board": "",
     "confidence": "low",
-    "reason": ["existing_board_member_protected"],
-    "review_state": "existing_board_member_protected",
+    "reason": ["skill_archived_board_member_protected"],
+    "review_state": "skill_archived_board_member_protected",
     "content_type": "video",
     "classification_basis": "archive_excluded",
     "video_analysis_status": "",
@@ -362,7 +363,7 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "source_board_id": "board-source-001",
     "archive_lifecycle_state": "first_archive_confirmed",
     "excluded": true,
-    "exclude_reason": "existing_board_member_protected",
+    "exclude_reason": "skill_archived_board_member_protected",
     "source_lists": ["点赞"],
     "source_primary": "点赞"
   },
@@ -381,13 +382,13 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
     "ocr_image_set_complete": false,
     "ocr_image_evidence": [],
     "excluded": true,
-    "exclude_reason": "existing_board_member_protected",
+    "exclude_reason": "skill_archived_board_member_protected",
     "source_board": "示例主题A"
   }
 ]
 ```
 
-不要把直接 `d0` 交给任何已有专辑成员、带 `source_board_id`、成员状态不是 `not_in_any_board`，或生命周期状态不是 `first_archive_pending` 的条目。即使 `d0` 返回 `{}` 也不能算成功，必须以 `U_` + `Ks` 中确实出现 note id 为唯一成功依据；确认后才转为 `first_archive_confirmed` 并永久保护。
+execute 不得调用私有移动接口，也不得按标题搜索。它必须按 note id 点击来源列表中的真实卡片，再用可见“加入专辑”完成写入；成功只以目标专辑可见成员精确增加该 ID 为准。跨未登记专辑时还必须验证原专辑精确减少该 ID。整批最终回读通过并写入新 v2 登记后，保护才生效。
 
 ### `created_boards.json`
 ```json
@@ -396,14 +397,14 @@ Skill 直接执行用户提供的 argv，不经 shell。每次调用向 stdin �
 
 ### `board_snapshot.json`
 
-由 `capture_board_snapshot.py` 通过当前授权的小红书前端只读生成。专辑清单本身必须用 `yC` 按 `num=100` 连续读取 `page=1..N`，其中 `N=max(1,ceil(boardCount/100))`；100、101、181、200、201 个专辑分别必须读取 1、2、2、2、3 页。每页都必须返回同一个权威 `boardCount`，并满足该页精确应有数量；缺页、跨页重复 id/名称、总数变化或缺少 `boardCount` 时立即失败，不得只保留第一页。`mode` 必须是 `read_only`、`source.writes_performed=false`、`validation.full_membership_complete=true`；每个专辑必须包含真实 id、声明数量、完整分页数量和 `note_ids`。任一分页未完成、数量不一致或成员重复都会阻止 dry-run。
+由 `capture_board_snapshot.py` 通过当前回合明确授权的小红书正式页面只读生成。程序必须持续滚动并累积可见专辑卡片，直到读取数量与页面声明总数精确相等；100、101、181、200、201 个专辑都必须完整取得对应数量，不能因为首批出现 100 个就停止。每次滚动都必须保持同一个声明总数及同一组已出现专辑的 id/名称绑定；缺页、重复 id/名称、总数变化、专辑消失或缺少声明总数时立即失败。随后每个专辑都要把成员卡片完整滚动读完。`mode` 必须是 `read_only`、`source.writes_performed=false`、`validation.full_membership_complete=true`；每个专辑必须包含真实 id、声明数量、完整读取数量和 `note_ids`。任一成员缺页、数量不一致或重复都会阻止 dry-run。
 
 ### `run_report.json`
 
-没有两份专辑证据时，报告必须是 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，所有可分类项只能是 `preview_only`，不能是 `planned`。真实 dry-run 只有同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才可提交用户确认。未归档成功项应出现 `note_move:CALLED`、`verify:note_present`；已有专辑成员只能出现保护跳过事件，不得出现任何写入事件。Python 每次只提交一条，首个错误行先写入报告再停止整批。安全验证或页面绑定失效后立即停写。
+没有两份专辑证据时，报告必须是 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`，所有可分类项只能是 `preview_only`，不能是 `planned`。真实 dry-run 只有同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 才可提交用户确认。首次归档成功项应出现可见“加入专辑”确认与 `verify:exact_member_append`；跨未登记专辑还要记录原专辑精确减少。只有 v2 登记专辑的实时成员能出现保护跳过事件，普通收藏和未登记专辑成员不能被误跳过。Python 每次只提交一条，首个错误行先写入报告再停止整批。安全验证或页面绑定失效后立即停写。
 
 ```json
-{"started_at":"2026-04-17T01:17:03Z","mode":"execute","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4个技能直接出活","target_board":"示例主题A","status":"success","attempt":1,"events":["board:FOUND:示例主题A","note_move:CALLED","verify:note_present"],"error":"","verified":true}],"errors":[],"missing_boards":[],"board_counts_before":{"示例主题A":76},"board_counts_after":{"示例主题A":77}}
+{"started_at":"2026-04-17T01:17:03Z","mode":"execute","visible_count":11,"processed":[{"id":"69538be3000000001e028205","title":"《技能练反脚》不用从头练！4个技能直接出活","target_board":"示例主题A","status":"success","attempt":1,"events":["ui:join_album_clicked","ui:join_confirmed","verify:exact_member_append"],"error":"","verified":true}],"errors":[],"missing_boards":[],"board_counts_before":{"示例主题A":76},"board_counts_after":{"示例主题A":77}}
 ```
 
 ### 专辑 HTML 报告

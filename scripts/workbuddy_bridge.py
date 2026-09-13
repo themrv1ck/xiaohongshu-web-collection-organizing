@@ -13,6 +13,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -28,21 +29,18 @@ from extract_visible_items import (
     read_stable_items_snapshot,
     validate_capture_page,
 )
-from create_board import (
-    build_create_board_job,
-    validate_result as validate_create_board_result,
-)
 from run_reassign_batch import (
     BrowserRunner,
+    BrowserVisibleUiSession,
     apply_batch,
     write_binding_blockers,
     initial_report,
     normalize_classification,
-    parse_browser_job_id,
-    poll_browser_job,
     prepare_write_preflight,
     validate_write_live_binding,
 )
+from create_board import validate_result as validate_create_board_result
+from xhs_visible_ui import create_visible_board
 from video_content_common import (
     normalize_content_type,
     redact_sensitive_text as redact_content_secret,
@@ -78,6 +76,9 @@ from archive_rules import (
     UNCERTAIN_BOARD_NAME,
     apply_uncertain_assignment,
 )
+from archive_exclusion import protected_note_map_from_snapshot
+from build_archived_notes_registry import build_registry
+from xhs_visible_ui import capture_visible_album_snapshot
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -426,16 +427,53 @@ def run_dir_for(run_id: str, *, create: bool = False) -> Path:
     return directory
 
 
+def archive_dir_for(user_id: str) -> Path:
+    clean_user_id = str(user_id or '').strip().lower()
+    if not NOTE_ID_RE.fullmatch(clean_user_id):
+        raise RuntimeError('归档登记账号 id 无效。')
+    directory = plugin_data_dir() / 'archives' / clean_user_id
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def latest_archive_registry(user_id: str) -> Optional[Path]:
+    candidates = sorted(archive_dir_for(user_id).glob('registry-*.json'))
+    return candidates[-1] if candidates else None
+
+
+def empty_archive_registry(user_id: str) -> Dict[str, Any]:
+    return {
+        'contract': 'xhs-skill-archive-registry-v2',
+        'user_id': str(user_id).strip().lower(),
+        'generated_at': utc_now(),
+        'archived_board_count': 0,
+        'archived_boards': [],
+        'confirmed_archived_count': 0,
+        'completed_run_item_count': 0,
+    }
+
+
+def bind_archive_registry(directory: Path, user_id: str) -> Dict[str, Any]:
+    destination = directory / 'archive_registry_input.json'
+    latest = latest_archive_registry(user_id)
+    if latest is None:
+        payload = empty_archive_registry(user_id)
+        write_private_json(destination, payload)
+        return payload
+    shutil.copyfile(latest, destination)
+    return load_json(destination)
+
+
 def trusted_artifact_names(stage: str, organizing_depth: str) -> List[str]:
     names = [
         'visible_items.json',
         'crawl_manifest.json',
         'xhs_safety_state.json',
+        'board_snapshot.json',
+        'archive_registry_input.json',
     ]
     if organizing_depth == 'light':
         names.extend(['image_items.json', 'ocr_results.json'])
-    if stage in {'inventory', 'plan'}:
-        names.append('board_snapshot.json')
     if stage == 'plan':
         names.extend([
             'classification.json',
@@ -1878,26 +1916,15 @@ def execute_planned_board_creations(
     for planned in planned_boards:
         raw_result: Any = None
         try:
-            validate_write_live_binding(runner, execute_args)
-            create_args = argparse.Namespace(
+            session = BrowserVisibleUiSession(runner, execute_args.user_id)
+            raw_result = create_visible_board(
+                session,
                 name=planned['name'],
-                desc='',
+                description='',
                 privacy=planned['privacy'],
                 execute=True,
-                user_id=execute_args.user_id,
-                verify_pages=execute_args.verify_pages,
-                timeout_sec=execute_args.timeout_sec,
-                arc_tab_marker='',
-                arc_expected_url_substring=execute_args.expected_url_substring,
-            )
-            run_id = parse_browser_job_id(
-                runner.run_javascript(build_create_board_job(create_args))
-            )
-            raw_result = poll_browser_job(
-                runner, run_id, execute_args.timeout_sec
             )
             result = validate_create_board_result(raw_result, True)
-            validate_write_live_binding(runner, execute_args)
         except Exception as exc:
             prior_or_current_write = bool(results) or bool(
                 isinstance(raw_result, dict)
@@ -1919,6 +1946,61 @@ def execute_planned_board_creations(
         })
         report['board_creations'] = list(results)
     report['board_creations'] = results
+
+
+def archive_completed_workbuddy_run(
+    session: BrowserVisibleUiSession,
+    report: Dict[str, Any],
+    *,
+    directory: Path,
+    user_id: str,
+    expected_url: str,
+    verify_pages: int,
+) -> None:
+    """Persist protection only after this Skill's final complete live readback."""
+    snapshot = capture_visible_album_snapshot(session)
+    snapshot['generated_at'] = utc_now()
+    snapshot['source'].update({
+        'browser': 'playwright',
+        'user_id': user_id,
+        'expected_url_substring': expected_url,
+        'verify_pages': verify_pages,
+        'writes_performed': False,
+    })
+    post_path = directory / 'post_board_snapshot.json'
+    write_private_json(post_path, snapshot)
+    input_registry_path = directory / 'archive_registry_input.json'
+    previous = load_json(input_registry_path) if input_registry_path.is_file() else None
+    registry = build_registry(
+        report,
+        snapshot,
+        user_id=user_id,
+        previous=previous,
+    )
+    archive_name = (
+        'registry-'
+        + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+        + '-'
+        + directory.name
+        + '.json'
+    )
+    archive_path = archive_dir_for(user_id) / archive_name
+    if archive_path.exists():
+        raise RuntimeError('归档登记目标已存在，拒绝覆盖。')
+    registry['source_sha256'] = {
+        'run_report_before_registry': hashlib.sha256(
+            canonical_json(report).encode('utf-8')
+        ).hexdigest(),
+        'post_board_snapshot': file_sha256(post_path),
+        'previous_registry': file_sha256(input_registry_path) if input_registry_path.is_file() else '',
+    }
+    write_private_json(archive_path, registry)
+    report['post_board_snapshot'] = str(post_path)
+    report['post_board_snapshot_sha256'] = file_sha256(post_path)
+    report['archive_registry'] = str(archive_path)
+    report['archive_registry_sha256'] = file_sha256(archive_path)
+    report['archived_board_count'] = registry['archived_board_count']
+    report['confirmed_archived_count'] = registry['confirmed_archived_count']
 
 
 def run_command(args: List[str], *, allow_failure: bool = False) -> subprocess.CompletedProcess:
@@ -2151,6 +2233,34 @@ def login_action(timeout_sec: int, source: str) -> Dict[str, Any]:
     return result
 
 
+def capture_workbuddy_archive_protection(
+    runner: BrowserRunner,
+    directory: Path,
+    *,
+    user_id: str,
+    expected_url: str,
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Read protection before any detail, OCR, transcript, or model analysis."""
+    session = BrowserVisibleUiSession(runner, user_id)
+    snapshot = capture_visible_album_snapshot(session)
+    snapshot['generated_at'] = utc_now()
+    snapshot['source'].update({
+        'browser': 'playwright',
+        'user_id': user_id,
+        'expected_url_substring': expected_url,
+        'verify_pages': 100,
+        'writes_performed': False,
+    })
+    write_private_json(directory / 'board_snapshot.json', snapshot)
+    registry = bind_archive_registry(directory, user_id)
+    protected = protected_note_map_from_snapshot(
+        snapshot,
+        registry,
+        expected_user_id=user_id,
+    )
+    return snapshot, protected
+
+
 def capture_action(
     run_id: str,
     source: str,
@@ -2195,6 +2305,7 @@ def capture_action(
     }
     capture_ready_for_classification = False
     capture_blockers: List[str] = []
+    protected_note_to_board: Dict[str, str] = {}
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     def cancel_capture(_signum, _frame):
@@ -2252,16 +2363,42 @@ def capture_action(
                 '抓取到了笔记 ID，但标题、作者和卡片文字全部为空；'
                 '页面结构已变化，已停止分类，不能生成空的整理方案。'
             )
-        if image_ocr_enabled and capture_ready_for_classification:
-            detail_result = enrich_workbuddy_image_items(
+        if capture_ready_for_classification:
+            _, protected_note_to_board = capture_workbuddy_archive_protection(
                 runner,
-                load_json(visible),
-                detail_hrefs,
-                batch_size,
-                pause_minutes,
-                image_items,
-                safety,
+                directory,
+                user_id=captured_user_id,
+                expected_url=checked_url,
             )
+        if image_ocr_enabled and capture_ready_for_classification:
+            analysis_items = [
+                row for row in load_json(visible)
+                if str(row.get('id') or '').strip() not in protected_note_to_board
+            ]
+            if analysis_items:
+                detail_result = enrich_workbuddy_image_items(
+                    runner,
+                    analysis_items,
+                    {
+                        note_id: href
+                        for note_id, href in detail_hrefs.items()
+                        if note_id not in protected_note_to_board
+                    },
+                    batch_size,
+                    pause_minutes,
+                    image_items,
+                    safety,
+                )
+            else:
+                write_private_json(image_items, [])
+                detail_result = {
+                    'requested': 0,
+                    'succeeded': 0,
+                    'failed': 0,
+                    'detail_group_count': 0,
+                    'ready_for_ocr': True,
+                    'blockers': [],
+                }
     finally:
         detail_hrefs.clear()
         try:
@@ -2291,6 +2428,18 @@ def capture_action(
             'ocr_provider': None,
             'ocr_tesseract_lang': None,
             'ocr_expected_fingerprint': None,
+        }
+    elif image_ocr_enabled and detail_result['ready_for_ocr'] and not load_json(image_items):
+        write_private_json(ocr_results, [])
+        ocr_result = {
+            'ocr_results': str(ocr_results),
+            'ocr_ok': 0,
+            'ocr_failed': 0,
+            'ready_for_classification': True,
+            'blockers': [],
+            'ocr_provider': 'not_required',
+            'ocr_tesseract_lang': 'not_required',
+            'ocr_expected_fingerprint': 'not_required',
         }
     elif image_ocr_enabled and detail_result['ready_for_ocr']:
         ocr_result = run_workbuddy_ocr(directory, image_items)
@@ -2328,6 +2477,7 @@ def capture_action(
         'image_ocr_enabled': bool(image_ocr_enabled),
         'report_requested': report_requested,
         'organizing_depth': organizing_depth,
+        'protected_note_count': len(protected_note_to_board),
         'image_items': (
             str(image_items)
             if image_ocr_enabled and image_items.is_file()
@@ -2392,6 +2542,7 @@ def capture_action(
         'ocr_provider': ocr_result.get('ocr_provider'),
         'ocr_tesseract_lang': ocr_result.get('ocr_tesseract_lang'),
         'ocr_expected_fingerprint': ocr_result.get('ocr_expected_fingerprint'),
+        'protected_note_count': len(protected_note_to_board),
         'ready_for_classification': result['ready_for_classification'],
         'capture_blockers': result['capture_blockers'],
         'image_ocr_blockers': result['image_ocr_blockers'],
@@ -2508,6 +2659,30 @@ def validate_workbuddy_capture_evidence(
         'ocr_by_id': {},
         'image_note_count': 0,
     }
+    snapshot_path = directory / 'board_snapshot.json'
+    archive_registry_path = directory / 'archive_registry_input.json'
+    if not snapshot_path.is_file() or not archive_registry_path.is_file():
+        raise RuntimeError('缺少内容分析前生成的专辑快照或 Skill 归档登记。')
+    protected_note_to_board = protected_note_map_from_snapshot(
+        load_json(snapshot_path),
+        load_json(archive_registry_path),
+        expected_user_id=captured_user_id,
+    )
+    protected_visible_ids = [
+        note_id for note_id in visible_ids if note_id in protected_note_to_board
+    ]
+    unprotected_visible_ids = [
+        note_id for note_id in visible_ids if note_id not in protected_note_to_board
+    ]
+    if manifest.get('protected_note_count') != len(protected_note_to_board):
+        raise RuntimeError('crawl_manifest.json 的受保护成员数量与专辑快照不一致。')
+    evidence.update({
+        'protected_note_to_board': protected_note_to_board,
+        'protected_visible_ids': protected_visible_ids,
+        'unprotected_visible_ids': unprotected_visible_ids,
+        'board_snapshot_sha256': sha256_file(snapshot_path),
+        'archive_registry_sha256': sha256_file(archive_registry_path),
+    })
     if not image_ocr_enabled:
         return evidence
 
@@ -2526,24 +2701,6 @@ def validate_workbuddy_capture_evidence(
         raise RuntimeError('image_items.json 已在抓取完成后发生变化。')
     if manifest.get('ocr_results_sha256') != sha256_file(ocr_results_path):
         raise RuntimeError('ocr_results.json 已在 OCR 完成后发生变化。')
-    ocr_provider = str(manifest.get('ocr_provider') or '').strip()
-    ocr_tesseract_lang = str(manifest.get('ocr_tesseract_lang') or '').strip()
-    expected_fingerprint = str(
-        manifest.get('ocr_expected_fingerprint') or ''
-    ).strip()
-    recomputed_fingerprint = ocr_run_fingerprint(
-        ocr_provider,
-        ocr_tesseract_lang,
-        ROOT / 'scripts' / 'ocr_image.swift.txt',
-    )
-    if (
-        ocr_provider not in {'swift', 'tesseract', 'easyocr'}
-        or not ocr_tesseract_lang
-        or not SHA256_RE.fullmatch(expected_fingerprint)
-        or expected_fingerprint != recomputed_fingerprint
-    ):
-        raise RuntimeError('crawl_manifest.json 的 OCR provider 或运行指纹无效。')
-
     image_rows = load_json(image_items_path)
     ocr_rows = load_json(ocr_results_path)
     if not isinstance(image_rows, list) or any(
@@ -2551,15 +2708,42 @@ def validate_workbuddy_capture_evidence(
     ):
         raise RuntimeError('image_items.json 必须是对象数组。')
     image_ids = [str(row.get('id') or '').strip() for row in image_rows]
-    if image_ids != visible_ids:
-        raise RuntimeError('image_items.json 与本次真实抓取 ID 或顺序不一致。')
+    if image_ids != unprotected_visible_ids:
+        raise RuntimeError('image_items.json 未精确覆盖本轮全部未受保护笔记。')
+
+    ocr_provider = str(manifest.get('ocr_provider') or '').strip()
+    ocr_tesseract_lang = str(manifest.get('ocr_tesseract_lang') or '').strip()
+    expected_fingerprint = str(
+        manifest.get('ocr_expected_fingerprint') or ''
+    ).strip()
+    if image_rows:
+        recomputed_fingerprint = ocr_run_fingerprint(
+            ocr_provider,
+            ocr_tesseract_lang,
+            ROOT / 'scripts' / 'ocr_image.swift.txt',
+        )
+        if (
+            ocr_provider not in {'swift', 'tesseract', 'easyocr'}
+            or not ocr_tesseract_lang
+            or not SHA256_RE.fullmatch(expected_fingerprint)
+            or expected_fingerprint != recomputed_fingerprint
+        ):
+            raise RuntimeError('crawl_manifest.json 的 OCR provider 或运行指纹无效。')
+    elif (
+        ocr_provider != 'not_required'
+        or ocr_tesseract_lang != 'not_required'
+        or expected_fingerprint != 'not_required'
+    ):
+        raise RuntimeError('全部笔记已受保护时不得伪造 OCR provider。')
 
     image_by_id = {str(row.get('id')): row for row in image_rows}
     metadata_keys = (
         'id', 'title', 'user', 'desc', 'tags', 'card_text',
         'source_lists', 'source_primary', 'first_seen', 'page_index',
     )
-    for visible_row, image_row in zip(visible_rows, image_rows):
+    visible_by_id = {str(row.get('id')): row for row in visible_rows}
+    for image_row in image_rows:
+        visible_row = visible_by_id[str(image_row.get('id'))]
         if any(
             visible_row.get(key) != image_row.get(key)
             for key in metadata_keys
@@ -2673,8 +2857,12 @@ def workbuddy_classification_inputs(
     evidence: Dict[str, Any],
     protected_note_ids: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Return only unassigned model inputs, without URLs, paths, or credentials."""
-    protected = protected_note_ids or set()
+    """Return every unprotected model input, without URLs, paths, or credentials."""
+    protected = (
+        set(protected_note_ids)
+        if protected_note_ids is not None
+        else set(evidence.get('protected_visible_ids') or [])
+    )
     safe_keys = (
         'id', 'title', 'user', 'desc', 'tags', 'card_text',
         'source_lists', 'source_primary', 'first_seen', 'page_index',
@@ -2773,6 +2961,13 @@ def validate_proposed_board_plan(
     ]
 
 
+VISIBLE_ASSIGNMENT_CONTRACT = {
+    'version': 'visible-collect-then-join-v1',
+    'existing_collect_operation': 'uncollect_once_recollect_once_then_join',
+    'risk_notice': '待归档的已收藏笔记需要先取消一次再重新收藏，收藏排序会变化；中途失败可能留下未收藏或未归入状态，届时立即停止并报告，不自动重试。已由 Skill 归档保护的笔记不操作。',
+}
+
+
 def approval_basis(
     directory: Path,
     report: Dict[str, Any],
@@ -2826,6 +3021,7 @@ def approval_basis(
         'max_moves_per_session': max_moves,
         'verify_pages': verify_pages,
         'planned': planned,
+        'visible_assignment_contract': dict(VISIBLE_ASSIGNMENT_CONTRACT),
     }
 
 
@@ -3094,10 +3290,10 @@ def write_workbuddy_classification(
             row.update({
                 'target_board': '',
                 'confidence': 'low',
-                'reason': ['existing_board_member_protected'],
-                'review_state': 'existing_board_member_protected',
+                'reason': ['skill_archived_board_member_protected'],
+                'review_state': 'skill_archived_board_member_protected',
                 'excluded': True,
-                'exclude_reason': 'existing_board_member_protected',
+                'exclude_reason': 'skill_archived_board_member_protected',
                 'source_board': protected_source_board,
             })
         normalized.append(row)
@@ -3159,6 +3355,7 @@ def prepare_action(
     report_path = directory / 'run_report.json'
     safety = directory / 'xhs_safety_state.json'
     approval_path = directory / 'approval.json'
+    archive_registry_path = directory / 'archive_registry_input.json'
     approval_path.unlink(missing_ok=True)
     content_evidence = validate_workbuddy_capture_evidence(
         directory,
@@ -3176,18 +3373,10 @@ def prepare_action(
             expected_user_id=user_id,
             expected_page_url=checked_url,
         )
-        require_profile_available()
-        run_command([
-            sys.executable,
-            str(ROOT / 'scripts/capture_board_snapshot.py'),
-            str(snapshot),
-            '--browser', 'playwright',
-            '--user-id', user_id,
-            '--expected-url-substring', expected,
-            '--verify-pages', str(verify_pages),
-            '--safety-state', str(safety),
-            '--url', checked_url,
-        ])
+        if not snapshot.is_file() or not archive_registry_path.is_file():
+            raise RuntimeError(
+                '抓取阶段没有在内容分析前生成完整专辑快照和 Skill 归档登记。'
+            )
         snapshot_payload = load_json(snapshot)
         existing_board_names = validate_workbuddy_snapshot_binding(
             snapshot_payload,
@@ -3195,7 +3384,12 @@ def prepare_action(
             expected,
             verify_pages,
         )
-        protected_note_to_board = snapshot_existing_note_to_board(snapshot_payload)
+        archive_registry = load_json(archive_registry_path)
+        protected_note_to_board = protected_note_map_from_snapshot(
+            snapshot_payload,
+            archive_registry,
+            expected_user_id=user_id,
+        )
         classification_inputs = workbuddy_classification_inputs(
             content_evidence,
             set(protected_note_to_board),
@@ -3234,6 +3428,9 @@ def prepare_action(
             '缺少本次只读专辑清单；必须先调用不带 classification 的 prepare。'
         )
     snapshot_payload = load_json(snapshot)
+    if not archive_registry_path.is_file():
+        raise RuntimeError('缺少本次 prepare 绑定的 Skill 归档登记。')
+    archive_registry = load_json(archive_registry_path)
     existing_board_names = validate_workbuddy_snapshot_binding(
         snapshot_payload,
         user_id,
@@ -3275,7 +3472,11 @@ def prepare_action(
         classification_rows,
         allowed_board_names,
         content_evidence,
-        snapshot_existing_note_to_board(snapshot_payload),
+        protected_note_map_from_snapshot(
+            snapshot_payload,
+            archive_registry,
+            expected_user_id=user_id,
+        ),
     )
     used_targets = set(classification_context['taxonomy'])
     unused_plans = [
@@ -3316,6 +3517,7 @@ def prepare_action(
         str(report_path),
         '--board-snapshot', str(snapshot),
         '--created-boards', str(created),
+        '--archive-registry', str(archive_registry_path),
         '--safety-state', str(safety),
         '--allow-planned-board-creation',
     ], allow_failure=True)
@@ -3358,6 +3560,7 @@ def prepare_action(
         'board_validation_status': report.get('board_validation_status'),
         'membership_validation_status': report.get('membership_validation_status'),
         'planned_move_count': planned_move_count,
+        'visible_assignment_contract': dict(VISIBLE_ASSIGNMENT_CONTRACT),
         'planned_board_creations': planned_boards,
         'max_moves_per_session': max_moves,
         'verify_pages': verify_pages,
@@ -3367,6 +3570,7 @@ def prepare_action(
         'content_evidence': content_summary,
         'next_action': (
             f'向用户展示每条“当前专辑 → 目标专辑”和移动上限 {max_moves}；'
+            '必须同时说明 visible_assignment_contract.risk_notice 中的取消后重收藏动作及风险；'
             '用户明确确认后才能调用 execute，且 execute 必须使用相同上限。'
             if digest
             else (
@@ -3431,6 +3635,7 @@ def execute_action(
     created = directory / 'created_boards.json'
     safety = directory / 'xhs_safety_state.json'
     approval_path = directory / 'approval.json'
+    archive_registry_path = directory / 'archive_registry_input.json'
     validate_workbuddy_capture_evidence(
         directory,
         expected_user_id=str(user_id).strip(),
@@ -3508,6 +3713,11 @@ def execute_action(
         final_evidence,
         'approval.json',
     )
+    archive_registry_payload = load_trusted_json_snapshot(
+        directory,
+        final_evidence,
+        'archive_registry_input.json',
+    )
     if not isinstance(approval_record, dict) or not isinstance(approval_record.get('basis'), dict):
         raise RuntimeError('执行被拒：绑定的 approval.json 格式无效。')
     bound_basis = approval_record['basis']
@@ -3546,6 +3756,8 @@ def execute_action(
     ]
     if bound_basis.get('planned') != expected_planned:
         raise RuntimeError('执行被拒：绑定的逐条移动方案不一致。')
+    if bound_basis.get('visible_assignment_contract') != VISIBLE_ASSIGNMENT_CONTRACT:
+        raise RuntimeError('执行被拒：旧审批未覆盖取消后重新收藏流程；必须重新 prepare 并确认。')
     if (
         not isinstance(report, dict)
         or report.get('mode') != 'dry_run'
@@ -3560,6 +3772,7 @@ def execute_action(
         created_payload,
         allow_low_confidence=False,
         allow_planned_board_creation=True,
+        archive_registry=archive_registry_payload,
     )
     resolved = preflight.pop('resolved_items')
     if preflight.get('ready_for_execute') is not True or preflight.get('blockers') != []:
@@ -3569,6 +3782,8 @@ def execute_action(
     execute_args.user_id = str(user_id).strip()
     execute_args.expected_url_substring = expected
     execute_args.allow_low_confidence = False
+    # This is enabled only after the signed, user-confirmed risk contract matches.
+    execute_args.allow_recollect = True
     execute_args.verify_pages = verify_pages
     execute_args.max_moves_per_session = max_moves
     execute_args.safety_state = str(safety)
@@ -3597,6 +3812,16 @@ def execute_action(
     planned_board_creations = preflight.get('planned_board_creations') or []
     execute_kwargs: Dict[str, Any] = {
         'commit_callback': await_mcp_execute_commit,
+        'completion_callback': (
+            lambda session, current_report: archive_completed_workbuddy_run(
+                session,
+                current_report,
+                directory=directory,
+                user_id=str(user_id).strip(),
+                expected_url=expected,
+                verify_pages=verify_pages,
+            )
+        ),
     }
     if planned_board_creations:
         execute_kwargs['post_commit_callback'] = (
@@ -3622,6 +3847,9 @@ def execute_action(
         'processed': final_report.get('processed'),
         'errors': final_report.get('errors'),
         'board_creations': final_report.get('board_creations', []),
+        'archive_registry': final_report.get('archive_registry'),
+        'archived_board_count': final_report.get('archived_board_count'),
+        'confirmed_archived_count': final_report.get('confirmed_archived_count'),
         'verify_pages': verify_pages,
         'report': str(report_path),
     }

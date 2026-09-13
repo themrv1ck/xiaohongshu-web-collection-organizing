@@ -11,7 +11,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Protocol, Sequence
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from extract_visible_items import arc_js_macos, jxa_osascript, require_macos_app_running
@@ -37,6 +37,15 @@ SECURITY_MARKERS = (
 
 class VisibleUiContractError(RuntimeError):
     """Raised when the visible page cannot prove the requested state."""
+
+
+class VisibleUiSession(Protocol):
+    user_id: str
+    tab_marker: str
+
+    def run_json(self, script: str) -> Any: ...
+    def navigate(self, path: str, query: Mapping[str, str] | None = None) -> None: ...
+    def wait_for(self, script: str, *, timeout_sec: float = 20.0) -> Any: ...
 
 
 def parse_arc_json(raw: Any) -> Any:
@@ -162,6 +171,42 @@ def validate_new_collection_transition(
         raise VisibleUiContractError("写入后的专辑成员不是原集合加新笔记")
 
 
+def indexed_board_members(
+    declared_count: int,
+    snapshots: Sequence[Sequence[Mapping[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Accumulate virtualized cards by their visible, immutable page positions.
+
+    Mirrors the collection reader's bijection: one index per note, one note per
+    index. Repeated observations are allowed; duplicate cards within a window
+    and changing identities are not. Missing positions never count as complete.
+    """
+    if type(declared_count) is not int or declared_count < 0:
+        raise VisibleUiContractError("页面没有提供有效的专辑成员总数")
+    by_position: Dict[int, Dict[str, Any]] = {}
+    by_note: Dict[str, int] = {}
+    for rows in snapshots:
+        window_positions: set[int] = set()
+        window_notes: set[str] = set()
+        for row in rows:
+            note_id = _require_note_id(row.get("id"), "成员 note id")
+            position = row.get("page_index")
+            if type(position) is not int or not 0 <= position < declared_count:
+                raise VisibleUiContractError("专辑成员缺少合法页面位置或位置超过声明总数")
+            if position in window_positions or note_id in window_notes:
+                raise VisibleUiContractError("同屏专辑成员出现重复位置或笔记")
+            window_positions.add(position)
+            window_notes.add(note_id)
+            previous = by_position.get(position)
+            if previous is not None and previous["id"] != note_id:
+                raise VisibleUiContractError("专辑成员页面位置与笔记绑定发生变化")
+            if note_id in by_note and by_note[note_id] != position:
+                raise VisibleUiContractError("同一专辑笔记出现在多个页面位置")
+            by_position[position] = {**row, "id": note_id}
+            by_note[note_id] = position
+    return [by_position[position] for position in sorted(by_position)]
+
+
 VISIBLE_UI_CORE_JS = r"""
 function xhsUiText(value) {
   return value === undefined || value === null ? '' : String(value).trim();
@@ -177,7 +222,7 @@ function xhsUiAssertContext(payload) {
   const marker = xhsUiSecurityMarker(href) || xhsUiSecurityMarker(bodyText);
   if (marker) throw new Error('SAFETY_BREAKER: Xiaohongshu security challenge detected: ' + marker);
   if (window.location.hostname !== 'www.xiaohongshu.com') throw new Error('current page is not Xiaohongshu');
-  if (window.name !== payload.tab_marker) throw new Error('Arc tab runtime marker mismatch');
+  if (payload.tab_marker && window.name !== payload.tab_marker) throw new Error('bound tab runtime marker mismatch');
   if (/手机号登录|登录后推荐|马上登录即可|扫码登录|验证码登录/.test(bodyText)) {
     throw new Error('current Xiaohongshu page looks logged out');
   }
@@ -218,7 +263,7 @@ function xhsUiIdFromPath(value, kind) {
   const url = new URL(value || '', window.location.origin);
   const pattern = kind === 'board'
     ? /^\/board\/([0-9a-fA-F]{24})\/?$/
-    : /\/(?:explore|item)\/([0-9a-fA-F]{24})(?:\/|$)/;
+    : /^\/(?:explore|item|user\/profile\/[0-9a-fA-F]{24})\/([0-9a-fA-F]{24})\/?$/;
   const match = url.pathname.match(pattern);
   return match ? match[1].toLowerCase() : '';
 }
@@ -230,6 +275,101 @@ def _payload(user_id: str, tab_marker: str) -> Dict[str, str]:
         "user_id": _require_note_id(user_id, "user id"),
         "tab_marker": str(tab_marker or "").strip(),
     }
+
+
+def source_tab_for_item(item: Mapping[str, Any]) -> str:
+    """Map one captured source to the exact official profile tab without guessing."""
+    raw_sources = item.get("source_lists")
+    sources = raw_sources if isinstance(raw_sources, list) else []
+    primary = str(item.get("source_primary") or "").strip().lower()
+    normalized = {
+        str(value or "").strip().lower()
+        for value in [*sources, primary]
+        if str(value or "").strip()
+    }
+    collection_labels = {"collection", "收藏", "fav", "favorite", "favorites"}
+    liked_labels = {"liked", "like", "点赞"}
+    if normalized & collection_labels:
+        return "fav"
+    if normalized & liked_labels:
+        return "liked"
+    raise ValueError("笔记来源无法确定；不会猜测收藏或点赞列表")
+
+
+def build_find_and_open_note_card_js(
+    user_id: str,
+    tab_marker: str,
+    *,
+    note_id: str,
+    source_tab: str,
+) -> str:
+    """Click the real visible card whose href contains the exact note id."""
+    clean_tab = str(source_tab or "").strip().lower()
+    if clean_tab not in {"fav", "liked"}:
+        raise VisibleUiContractError("来源 tab 只能是 fav 或 liked")
+    payload = _payload(user_id, tab_marker)
+    payload.update({
+        "note_id": _require_note_id(note_id, "note id"),
+        "source_tab": clean_tab,
+    })
+    return (
+        r"""(() => {
+PAYLOAD_AND_CORE
+  xhsUiAssertContext(payload);
+  const current = new URL(window.location.href);
+  if (
+    current.pathname !== '/user/profile/' + payload.user_id
+    || current.searchParams.get('tab') !== payload.source_tab
+  ) throw new Error('source profile page binding mismatch');
+  const cards = Array.from(document.querySelectorAll(
+    'section.note-item,.note-item,[data-note-id]'
+  ));
+  const exact = cards.filter(card => xhsUiText(card.getAttribute('data-note-id')).toLowerCase() === payload.note_id);
+  if (exact.length > 1) throw new Error('exact note card match count exceeds 1');
+  const root = document.scrollingElement;
+  if (exact.length === 1) {
+    const cover = exact[0].querySelector('a.cover');
+    if (!cover || !xhsUiVisible(cover)) throw new Error('exact note card cover is not visible');
+    if (xhsUiIdFromPath(cover.href, 'note') !== payload.note_id) throw new Error('note card id and cover link disagree');
+    cover.scrollIntoView({block: 'center', inline: 'nearest'});
+    cover.click();
+    return JSON.stringify({found: true, clicked: true, note_id: payload.note_id});
+  }
+  const before = window.scrollY;
+  const atBottom = !!root && before + window.innerHeight >= root.scrollHeight - 2;
+  if (!atBottom) window.scrollTo(0, Math.min(root.scrollHeight, before + Math.max(1, window.innerHeight - 80)));
+  return JSON.stringify({
+    found: false,
+    clicked: false,
+    note_id: payload.note_id,
+    visible_card_count: cards.length,
+    scroll_y_before: before,
+    scroll_y_after: window.scrollY,
+    scroll_height: root ? root.scrollHeight : 0,
+    at_bottom: atBottom
+  });
+})()"""
+        .replace("PAYLOAD_AND_CORE", f"const payload = {json.dumps(payload, ensure_ascii=False)};\n{VISIBLE_UI_CORE_JS}")
+    )
+
+
+def build_source_page_ready_js(user_id: str, tab_marker: str, source_tab: str) -> str:
+    if source_tab not in {"fav", "liked"}:
+        raise VisibleUiContractError("来源 tab 只能是 fav 或 liked")
+    payload = _payload(user_id, tab_marker)
+    payload["source_tab"] = source_tab
+    return (
+        r"""(() => {
+PAYLOAD_AND_CORE
+  xhsUiAssertContext(payload);
+  const current = new URL(window.location.href);
+  if (current.pathname !== '/user/profile/' + payload.user_id || current.searchParams.get('tab') !== payload.source_tab) {
+    throw new Error('source profile page binding mismatch');
+  }
+  return JSON.stringify(Array.from(document.querySelectorAll('section.note-item a.cover')).some(xhsUiVisible));
+})()"""
+        .replace("PAYLOAD_AND_CORE", f"const payload = {json.dumps(payload, ensure_ascii=False)};\n{VISIBLE_UI_CORE_JS}")
+    )
 
 
 def build_open_album_tab_js(user_id: str, tab_marker: str) -> str:
@@ -302,15 +442,17 @@ PAYLOAD_AND_CORE
     )
 
 
-def build_scroll_to_bottom_js(user_id: str, tab_marker: str) -> str:
+def build_scroll_to_bottom_js(user_id: str, tab_marker: str, *, viewport_step: bool = False) -> str:
     payload = _payload(user_id, tab_marker)
+    payload["viewport_step"] = viewport_step
     return (
         r"""(() => {
 PAYLOAD_AND_CORE
   xhsUiAssertContext(payload);
   const root = document.scrollingElement;
   if (!root) throw new Error('page scrolling element is missing');
-  window.scrollTo(0, root.scrollHeight);
+  if (payload.viewport_step) window.scrollBy(0, Math.max(1, window.innerHeight - 80));
+  else window.scrollTo(0, root.scrollHeight);
   return JSON.stringify({scroll_y: window.scrollY, scroll_height: root.scrollHeight});
 })()"""
         .replace("PAYLOAD_AND_CORE", f"const payload = {json.dumps(payload, ensure_ascii=False)};\n{VISIBLE_UI_CORE_JS}")
@@ -338,10 +480,14 @@ PAYLOAD_AND_CORE
       const link = section.querySelector('a[href*="/explore/"],a[href*="/item/"]');
       id = link ? xhsUiIdFromPath(link.href, 'note') : '';
     }
-    if (!id || seen.has(id)) continue;
+    if (!/^[0-9a-f]{24}$/.test(id)) throw new Error('visible board card note id is invalid');
+    if (seen.has(id)) throw new Error('duplicate visible board note id');
     seen.add(id);
+    const indexText = section.getAttribute('data-index');
+    if (!indexText || !/^\d+$/.test(indexText)) throw new Error('visible board card position is missing');
     notes.push({
       id,
+      page_index: Number(indexText),
       title: xhsUiText(section.querySelector('a.title')?.innerText)
     });
   }
@@ -447,140 +593,69 @@ PAYLOAD_AND_CORE
     )
 
 
-def build_collect_into_board_js(
-    user_id: str,
-    tab_marker: str,
-    *,
-    note_id: str,
-    target_board: str,
-    timeout_ms: int = 10000,
+def _build_album_assignment_js(
+    user_id: str, tab_marker: str, *, note_id: str, target_board: str,
+    initial_collected: bool, allow_recollect: bool = False, timeout_ms: int = 10000,
+    preview_only: bool = False,
 ) -> str:
+    from pathlib import Path
     payload = _payload(user_id, tab_marker)
     payload.update({
         "note_id": _require_note_id(note_id, "note id"),
         "target_board": str(target_board or "").strip(),
+        "initial_collected": initial_collected,
+        "allow_recollect": allow_recollect is True,
+        "preview_only": preview_only is True,
         "timeout_ms": int(timeout_ms),
     })
-    if not payload["target_board"]:
-        raise VisibleUiContractError("target board 不能为空")
-    return (
-        r"""(() => {
-PAYLOAD_AND_CORE
-  xhsUiAssertContext(payload);
-  if (window.location.pathname !== '/explore/' + payload.note_id) throw new Error('note page binding mismatch');
-  const collect = document.querySelector('#note-page-collect-board-guide');
-  const icon = collect && collect.querySelector('use');
-  const href = icon && (icon.getAttribute('href') || icon.getAttribute('xlink:href')) || '';
-  if (!href.endsWith('#collect')) {
-    throw new Error('historical collected notes cannot be reassigned through visible UI without uncollecting');
-  }
-  const runId = 'xhs_ui_' + Date.now() + '_' + Math.floor(Math.random() * 1000000);
-  const state = document.createElement('div');
-  state.id = 'xhs-visible-ui-state-' + runId;
-  state.hidden = true;
-  state.textContent = JSON.stringify({done: false, events: []});
-  document.documentElement.appendChild(state);
-  const events = [];
-  const publish = value => { state.textContent = JSON.stringify(value); };
-  let joinClicked = false;
-  let boardClicked = false;
-  let panelSignature = '';
-  let panelStableTicks = 0;
-  let timer = null;
-  const stop = () => {
-    observer.disconnect();
-    if (timer !== null) clearInterval(timer);
-  };
-  const fail = error => {
-    stop();
-    const message = error && error.message ? error.message : String(error);
-    publish({
-      done: true,
-      ok: false,
-      error: joinClicked
-        ? 'HIGH_RISK_STATE_UNCERTAIN: collect may be applied but album assignment was not verified; ' + message
-        : message,
-      events
-    });
-  };
-  const drive = () => {
-    try {
-      xhsUiAssertContext(payload);
-      if (!joinClicked) {
-        const join = Array.from(document.querySelectorAll('.tooltip-container .right-area,.right-area'))
-          .find(element => xhsUiText(element.innerText) === '加入专辑');
-        if (join) {
-          joinClicked = true;
-          events.push('ui:join_album_visible', 'ui:join_album_clicked');
-          xhsUiClick(join);
-        }
-      }
-      if (joinClicked && !boardClicked) {
-        const boards = Array.from(document.querySelectorAll('.board-list .board-item'))
-          .filter(element => xhsUiText(element.innerText) === payload.target_board);
-        if (boards.length > 1) throw new Error('target board visible match count exceeds 1');
-        if (boards.length === 1) {
-          boardClicked = true;
-          events.push('board:FOUND:' + payload.target_board, 'ui:board_clicked');
-          xhsUiClick(boards[0]);
-        } else {
-          const container = document.querySelector('.board-list-container');
-          if (container) {
-            const signature = [
-              container.scrollTop,
-              container.scrollHeight,
-              container.clientHeight,
-              document.querySelectorAll('.board-list .board-item').length
-            ].join(':');
-            panelStableTicks = signature === panelSignature ? panelStableTicks + 1 : 0;
-            panelSignature = signature;
-            if (container.scrollHeight > container.clientHeight) {
-              container.scrollTop = container.scrollHeight;
-              events.push('ui:album_panel_scrolled');
-            } else if (panelStableTicks >= 5) {
-              throw new Error('target board is absent from the complete visible album selector');
-            }
-            if (
-              container.scrollTop + container.clientHeight >= container.scrollHeight - 1
-              && panelStableTicks >= 5
-            ) {
-              throw new Error('album selector reached the end without the prevalidated target board');
-            }
-          }
-        }
-      }
-      if (boardClicked) {
-        const success = Array.from(document.querySelectorAll('.message-container,.msg-container,.left-area'))
-          .find(element => xhsUiText(element.innerText) === '已加入' + payload.target_board);
-        if (success) {
-          stop();
-          events.push('ui:join_confirmed');
-          publish({done: true, ok: true, result: {
-            id: payload.note_id,
-            target_board: payload.target_board,
-            events,
-            visible_confirmation: xhsUiText(success.innerText)
-          }});
-        }
-      }
-    } catch (error) {
-      fail(error);
-    }
-  };
-  const observer = new MutationObserver(drive);
-  observer.observe(document.body, {subtree: true, childList: true, characterData: true, attributes: true});
-  timer = setInterval(drive, 100);
-  setTimeout(() => {
-    const current = JSON.parse(state.textContent || '{}');
-    if (!current.done) {
-      fail(new Error('visible collect-to-album flow timed out'));
-    }
-  }, payload.timeout_ms);
-  events.push('ui:collect_clicked');
-  xhsUiClick(collect);
-  return runId;
-})()"""
-        .replace("PAYLOAD_AND_CORE", f"const payload = {json.dumps(payload, ensure_ascii=False)};\n{VISIBLE_UI_CORE_JS}")
+    if not payload["target_board"] or payload["target_board"] != target_board:
+        raise VisibleUiContractError("target board 不能为空或带首尾空格")
+    if not 1000 <= payload["timeout_ms"] <= 60000:
+        raise VisibleUiContractError("visible assignment timeout must be 1000..60000 ms")
+    template = Path(__file__).with_name("xhs_album_assignment.js").read_text(encoding="utf-8")
+    return template.replace(
+        "PAYLOAD_AND_CORE",
+        f"const payload = {json.dumps(payload, ensure_ascii=False)};\n{VISIBLE_UI_CORE_JS}",
+    )
+
+
+def build_collect_into_board_js(
+    user_id: str, tab_marker: str, *, note_id: str, target_board: str,
+    timeout_ms: int = 10000,
+) -> str:
+    """One new collection, then its transient join entry without navigation."""
+    return _build_album_assignment_js(
+        user_id, tab_marker, note_id=note_id, target_board=target_board,
+        initial_collected=False, timeout_ms=timeout_ms,
+    )
+
+
+def build_assign_collected_note_js(
+    user_id: str, tab_marker: str, *, note_id: str, target_board: str,
+    timeout_ms: int = 10000, allow_recollect: bool = False,
+) -> str:
+    """Exactly one authorized uncollect/recollect sequence; never hover or retry."""
+    return _build_album_assignment_js(
+        user_id, tab_marker, note_id=note_id, target_board=target_board,
+        initial_collected=True, allow_recollect=allow_recollect, timeout_ms=timeout_ms,
+    )
+
+
+def build_album_entry_preview_js(
+    user_id: str, tab_marker: str, *, note_id: str, target_board: str,
+    initial_collected: bool, timeout_ms: int = 10000, allow_recollect: bool = False,
+) -> str:
+    """QA only: changes collection state, but stops before any album selection.
+
+    Requires explicit permission for this exact test note. Not a read-only dry-run
+    and not wired into batch execute; its terminal state is never archive success.
+    """
+    if type(initial_collected) is not bool:
+        raise VisibleUiContractError("initial_collected must be a boolean")
+    return _build_album_assignment_js(
+        user_id, tab_marker, note_id=note_id, target_board=target_board,
+        initial_collected=initial_collected, allow_recollect=allow_recollect,
+        timeout_ms=timeout_ms, preview_only=True,
     )
 
 
@@ -591,7 +666,7 @@ def build_note_collect_probe_js(user_id: str, tab_marker: str, note_id: str) -> 
         r"""(() => {
 PAYLOAD_AND_CORE
   xhsUiAssertContext(payload);
-  if (window.location.pathname !== '/explore/' + payload.note_id) throw new Error('note page binding mismatch');
+  if (xhsUiIdFromPath(window.location.href, 'note') !== payload.note_id) throw new Error('note page binding mismatch');
   const collect = document.querySelector('#note-page-collect-board-guide');
   const icon = collect && collect.querySelector('use');
   const href = icon && (icon.getAttribute('href') || icon.getAttribute('xlink:href')) || '';
@@ -717,7 +792,7 @@ def _validate_prefix(
 
 
 def read_visible_album_list(
-    session: ArcVisibleUiSession,
+    session: VisibleUiSession,
     *,
     progress_timeout_sec: float = 5.0,
     overall_timeout_sec: float = 45.0,
@@ -824,10 +899,9 @@ def read_visible_board(
         if not isinstance(rows, list):
             raise VisibleUiContractError("专辑成员页面返回格式错误")
         snapshots.append([dict(row) for row in rows])
-        _validate_prefix(snapshots, kind="notes")
-        current_count = len(rows)
+        notes = indexed_board_members(declared_count, snapshots)
+        current_count = len(notes)
         if current_count == declared_count:
-            notes = validate_board_note_snapshots(declared_count, snapshots)
             return {
                 "id": board_id,
                 "name": expected_name,
@@ -844,16 +918,18 @@ def read_visible_board(
             progress_deadline = time.monotonic() + progress_timeout_sec
         elif time.monotonic() >= progress_deadline:
             break
-        session.run_json(build_scroll_to_bottom_js(session.user_id, session.tab_marker))
+        session.run_json(
+            build_scroll_to_bottom_js(session.user_id, session.tab_marker, viewport_step=True)
+        )
         time.sleep(0.2)
-    final_count = len(snapshots[-1]) if snapshots else 0
+    final_count = len(indexed_board_members(declared_count, snapshots)) if snapshots else 0
     raise VisibleUiContractError(
         f"专辑成员缺页：{expected_name} 声明 {declared_count}，只读取到 {final_count}"
     )
 
 
-def capture_visible_album_snapshot(session: ArcVisibleUiSession) -> Dict[str, Any]:
-    """Capture all album memberships through visible Arc pages."""
+def capture_visible_album_snapshot(session: VisibleUiSession) -> Dict[str, Any]:
+    """Capture all album memberships through the bound visible browser pages."""
     album_list = read_visible_album_list(session)
     boards = []
     membership: Dict[str, List[Dict[str, str]]] = {}
@@ -873,9 +949,9 @@ def capture_visible_album_snapshot(session: ArcVisibleUiSession) -> Dict[str, An
     return {
         "mode": "read_only",
         "source": {
-            "browser": "Arc",
-            "window_id": session.window_id,
-            "tab_id": session.tab_id,
+            "browser": str(getattr(session, "browser_name", "Arc")),
+            "window_id": str(getattr(session, "window_id", "")),
+            "tab_id": str(getattr(session, "tab_id", "")),
             "tab_marker": session.tab_marker,
             "expected_url_substring": album_list["live_page_binding"],
             "live_page_binding": album_list["live_page_binding"],
@@ -902,7 +978,7 @@ def capture_visible_album_snapshot(session: ArcVisibleUiSession) -> Dict[str, An
     }
 
 
-def wait_create_modal(session: ArcVisibleUiSession, *, timeout_sec: float = 10.0) -> Dict[str, Any]:
+def wait_create_modal(session: VisibleUiSession, *, timeout_sec: float = 10.0) -> Dict[str, Any]:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         probe = session.run_json(build_create_modal_probe_js(session.user_id, session.tab_marker))
@@ -915,7 +991,7 @@ def wait_create_modal(session: ArcVisibleUiSession, *, timeout_sec: float = 10.0
 
 
 def create_visible_board(
-    session: ArcVisibleUiSession,
+    session: VisibleUiSession,
     *,
     name: str,
     description: str,
@@ -1000,7 +1076,7 @@ def create_visible_board(
 
 
 def collect_new_note_into_board(
-    session: ArcVisibleUiSession,
+    session: VisibleUiSession,
     *,
     note_id: str,
     target_board: str,
@@ -1023,7 +1099,7 @@ def collect_new_note_into_board(
     )
     if probe.get("collected") is not False:
         raise VisibleUiContractError(
-            "该笔记在本次操作前已收藏；为保护历史收藏，不会取消后重新收藏"
+            "该笔记在本次操作前已收藏；为避免误取消收藏，不会点击收藏开关"
         )
     if not execute:
         return {
@@ -1067,14 +1143,14 @@ def collect_new_note_into_board(
 
 
 def poll_collect_into_board(
-    session: ArcVisibleUiSession,
+    session: VisibleUiSession,
     run_id: str,
     *,
     timeout_sec: float = 15.0,
 ) -> Dict[str, Any]:
-    if not re.fullmatch(r"xhs_ui_\d+_\d+", str(run_id or "")):
+    if not re.fullmatch(r"xhs_skill_\d+_\d+", str(run_id or "")):
         raise VisibleUiContractError("visible UI job id 无效")
-    state_id = "xhs-visible-ui-state-" + run_id
+    state_id = "xhs-skill-run-state-" + run_id
     poll_js = (
         "(() => {"
         f"const node=document.getElementById({json.dumps(state_id)});"

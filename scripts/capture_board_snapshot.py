@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 from run_reassign_batch import (
+    BrowserRunner,
+    BrowserVisibleUiSession,
     choose_backend,
     utc_now,
     write_json,
@@ -41,10 +43,6 @@ def validate_args(args: argparse.Namespace) -> str:
 
 def capture_snapshot(args: argparse.Namespace) -> dict:
     backend = validate_args(args)
-    if backend != 'arc':
-        raise MembershipContractError(
-            '当前非注入式专辑成员读取只支持本轮明确授权的 Arc；不会自动改用其他浏览器。'
-        )
     output_path = Path(args.output)
     safety_state = resolve_safety_state_path(
         args.safety_state,
@@ -54,7 +52,7 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
         safety_state,
         stage='board_snapshot',
         policy={
-            'browser': 'Arc',
+            'browser': backend,
             'visible_ui_only': True,
             'auto_scroll': True,
             'auto_navigation': True,
@@ -62,13 +60,19 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
             'read_only': True,
         },
     )
+    runner = None
     try:
-        session = ArcVisibleUiSession(
-            args.arc_window_id,
-            args.arc_tab_id,
-            args.arc_tab_marker,
-            args.user_id,
-        )
+        if backend == 'arc':
+            session = ArcVisibleUiSession(
+                args.arc_window_id,
+                args.arc_tab_id,
+                args.arc_tab_marker,
+                args.user_id,
+            )
+        else:
+            runner = BrowserRunner(backend, args)
+            session = BrowserVisibleUiSession(runner, args.user_id)
+            session.browser_name = backend
         snapshot = capture_visible_album_snapshot(session)
     except Exception as exc:
         classified = classify_safety_error(exc)
@@ -81,6 +85,9 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
                 message=message,
             )
         raise
+    finally:
+        if runner is not None:
+            runner.close()
 
     snapshot['generated_at'] = utc_now()
     snapshot['source'].update({
@@ -96,7 +103,7 @@ def capture_snapshot(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='通过 Arc 正式页面可见专辑卡片和笔记卡片读取完整专辑成员。'
+        description='通过本轮明确授权浏览器的正式可见页面读取完整专辑成员。'
     )
     parser.add_argument('output', help='board_snapshot.json 输出路径')
     parser.add_argument('--browser', required=True, choices=['arc', 'chrome', 'safari', 'playwright'])

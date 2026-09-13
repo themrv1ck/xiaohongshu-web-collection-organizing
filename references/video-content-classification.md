@@ -331,7 +331,7 @@ python3 scripts/run_reassign_batch.py classification.json classification_preview
 
 用户没有确认分类和目标专辑时，不得传 `--execute`。确认一次“开启视频内容分类”不等于授权真实移动收藏。
 
-必须在视频下载、转写和视觉分析前，用 `capture_board_snapshot.py` 通过前端 `yC + U_ + Ks` 完整分页生成 `board_snapshot.json`，先排除全部首次归档已确认的现有专辑成员。生成 execute 清单前再刷新快照并运行 `build_created_boards.py classification.json board_snapshot.json created_boards.json`。将两份证据传给 `run_reassign_batch.py` 后，任何已有专辑成员统一标记 `existing_board_member_protected + first_archive_confirmed` 并保持零写入；只有 `not_in_any_board + first_archive_pending` 且空 `source_board_id` 的条目可以执行首次归档。分页不完整或无法证明专辑外状态时硬闸门阻止执行。
+必须在视频下载、转写和视觉分析前，用 `capture_board_snapshot.py` 把正式页面中的专辑卡片和成员卡片完整滚动读完，并载入同账号最新的 `xhs-skill-archive-registry-v2`。只有登记专辑在本轮快照中的实时成员标记为 `skill_archived_board_member_protected + first_archive_confirmed`，在内容分析和写入阶段都保持零操作。未登记专辑成员标记为 `unarchived_board_member + first_archive_pending`；不在任何专辑的条目标记为 `not_in_any_board + first_archive_pending`，两者都属于本轮待整理范围。生成 execute 清单前必须刷新快照并运行 `build_created_boards.py classification.json board_snapshot.json created_boards.json`。缺页、重复、数量变化、登记专辑缺失或改名时硬闸门停止，不能把“已收藏”或“进入任意专辑”当作保护证据。
 
 确认后使用 Arc 真实移动时，还必须先为独立工作标签页取得稳定的 Arc `window id`、`tab id`、预先写入 `window.name` 的稳定 marker，以及预期 URL 片段。执行器通过 `--arc-tab-marker` 核验该 `window.name`；任一缺失或不唯一就中止：
 
@@ -349,8 +349,8 @@ python3 scripts/run_reassign_batch.py classification.json run_report.json \
 ```
 
 `--browser auto` 会拒绝真实执行，防止未经本轮授权自动控制其他浏览器。
-Arc execute 通过隐藏 DOM 状态节点把任务注入页面 main world；前端 API 只从 Rspack `req.m` 按精确 endpoint 唯一解析 `d0/Ks/yC/U_`，匹配为 0 或多个都中止，禁止猜导出名。
+Arc execute 每次只接收一个已确认条目，回到该条真实来源列表，并用抓取时保存的 note id 点击唯一真实卡片。禁止按标题搜索、使用搜索结果替代原条目、扫描网页内部运行时或调用私有接口。
 
-只有 `first_archive_pending` 的未归档条目使用 `d0 -> U_/Ks`。任何已有专辑成员、带 `source_board_id`、成员状态不是 `not_in_any_board` 或生命周期状态不是 `first_archive_pending` 的条目都在 Python 和页面 JavaScript 两层跳过；回读确认后才转为 `first_archive_confirmed`。不提供跨专辑事务，也不调用取消收藏/重新收藏 endpoint。安全验证、异常访问、频繁访问或标签绑定变化时立即停写。
+只有 `first_archive_pending` 条目允许使用正式页面的“加入专辑”。未收藏条目点击一次收藏后立即进入“加入专辑”；已有收藏须明确同意取消一次再重新收藏，不再依靠悬停。授权和风险规则见 `visible-collection-entry.md`。未登记专辑成员的目标不变时只做成员回读并登记，目标变化时必须同时验证原专辑精确减一和目标专辑精确加一。登记专辑的实时成员在 Python 和页面两层保持零写入。安全验证、异常访问、频繁访问或标签绑定变化时立即停写。
 
-条目间默认固定等待 5 秒。Python 每次只提交一条；首个错误行先写入报告再停止整批。`d0` 返回 `{}` 或对已在其他专辑条目产生静默 no-op 都不能算成功，唯一成功依据是 `U_` + `Ks` 中确实存在 note id。
+条目间默认固定等待 5 秒。Python 每次只提交一条；首个错误行先写入报告再停止整批。页面没有报错或出现普通成功提示都不能单独算成功，唯一成功依据是目标专辑完整可见成员回读精确新增该 note id；跨未登记专辑时还必须证明原专辑精确减少。整批最终快照完整且新的 v2 登记写入成功后，本次归档保护才生效。

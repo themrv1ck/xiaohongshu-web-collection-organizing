@@ -7,8 +7,8 @@
     {
       "name": "xiaohongshu-organizer",
       "source": "./",
-      "description": "小红书收藏与点赞离线分析；专辑读取、创建和移动已安全停用。",
-      "version": "2.3.0"
+      "description": "小红书收藏与点赞整理；仅使用正式网页控件，写入前须确认，保护本 Skill 已归档的专辑及成员。",
+      "version": "2.3.1"
     }
   ]
 }

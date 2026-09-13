@@ -32,7 +32,7 @@ let evidenceLedger;
 
 const RECEIPT_PATTERN = /^xhs1\.[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/;
 const APPROVAL_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-const PLUGIN_VERSION = '2.3.0';
+const PLUGIN_VERSION = '2.3.1';
 const MCP_LAUNCH_KEY_FD = 3;
 const MCP_EXECUTE_READY_FD = 4;
 const MCP_EXECUTE_COMMIT_FD = 5;
@@ -52,6 +52,8 @@ function captureArtifactNames(organizingDepth) {
     'visible_items.json',
     'crawl_manifest.json',
     'xhs_safety_state.json',
+    'board_snapshot.json',
+    'archive_registry_input.json',
   ];
   if (organizingDepth === 'light') {
     names.push('image_items.json', 'ocr_results.json');
@@ -61,7 +63,7 @@ function captureArtifactNames(organizingDepth) {
 
 
 function inventoryArtifactNames(organizingDepth) {
-  return [...captureArtifactNames(organizingDepth), 'board_snapshot.json'];
+  return captureArtifactNames(organizingDepth);
 }
 
 
@@ -343,15 +345,18 @@ const server = new McpServer(
   },
   {
     instructions:
-      '2.3.0 已安全停用 WorkBuddy 专辑读取、创建和移动；不得调用 login、capture、prepare 或 execute，且不得打开浏览器。' +
-      '只允许 status、setup 和离线既有工件处理，等待 WorkBuddy 单独接入已验证的可见页面适配器。' +
-      '历史合同如下，仅供恢复后参考：在 WorkBuddy 中只能调用本服务器管理小红书浏览器阶段。' +
+      '2.3.1 只通过小红书正式页面可见卡片、表单和“加入专辑”执行专辑读取、创建与归档。' +
+      '必须使用抓取时的 note id 回到收藏或点赞列表点击真实卡片；禁止按标题搜索、访问网页内部模块或调用私有接口。' +
+      '保护依据不是全部收藏或全部已有专辑成员，只保护本 Skill 完整执行并最终回读后登记的专辑及其实时成员。' +
+      '用户选择“其他”时先要求其复述来源、范围、期望结果、允许读写和浏览器；确认能严格映射为现有流程后才调用工具。' +
+      '在 WorkBuddy 中只能调用本服务器管理小红书浏览器阶段。' +
       '先 status；缺依赖时经用户同意后 setup；首次登录用 login；' +
       '抓取在同一浏览器会话中自动翻页，默认每 200 条一组、组间暂停 3 分钟；' +
       'capture 必须显式传 organizing_depth；quick 不做 OCR，light 在关闭同一浏览器前完成登录态详情补齐并在本地 OCR；' +
       'deep 因尚无视频语音和完整时轴画面证据入口而在浏览器启动前停止；' +
       '禁止在 WorkBuddy 中运行无登录态 enrich_note_images.py 或静默改用元数据分类；' +
-      'capture 后先调用不带 classification 的 prepare 读取真实已有专辑；' +
+      'capture 在任何详情和 OCR 前先读取完整专辑成员并绑定 Skill 归档登记，只分析未受保护条目；' +
+      'capture 后调用不带 classification 的 prepare 校验已绑定专辑证据；' +
       '分类优先选择真实已有专辑；没有合适专辑时只能依据本次真实内容提议新名称，不得使用预设主题；' +
       'capture、两次 prepare 和 execute 之间必须自动原样传递 evidence_receipt，用户无需处理；' +
       '没有已有专辑时，把提议名称和公开或私密设置与逐条移动方案一起交给用户一次确认；' +
@@ -442,7 +447,7 @@ server.registerTool(
   {
     title: '分组读取小红书完整范围',
     description:
-      '只用插件独立 Playwright Chromium 打开精确页面并在同一会话中自动翻页；organizing_depth 必填，quick 不做 OCR，light 用同一登录态读取全部详情、下载本地图片字节并 OCR，deep 在视频证据入口接入前于浏览器启动前停止。轻度整理前必须把用户是否需要整理后专辑 HTML 报告写入 generate_report；快速整理固定为 false。固定每 200 条独立保存一组、非末组真实暂停 3 分钟；完成后由插件签发会话 receipt，用户无需处理；不导出 Cookie、签名图片 URL 或 xsec。',
+      '只用插件独立 Playwright Chromium 打开精确页面并在同一会话中自动翻页；organizing_depth 必填，quick 不做 OCR，light 会先读取完整专辑成员和 Skill 归档登记，再只对未受保护条目读取详情、下载本地图片字节并 OCR；deep 在视频证据入口接入前于浏览器启动前停止。轻度整理前必须把用户是否需要整理后专辑 HTML 报告写入 generate_report；快速整理固定为 false。固定每 200 条独立保存一组、非末组真实暂停 3 分钟；完成后由插件签发会话 receipt，用户无需处理；不导出 Cookie、签名图片 URL 或 xsec。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合明确授权此精确页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/).optional(),
@@ -523,7 +528,7 @@ server.registerTool(
   {
     title: '生成真实专辑证据与硬闸门 dry-run',
     description:
-      '两阶段固定入口：第一次只读返回真实已有专辑，并只把当前不属于任何专辑的笔记放入 classification_inputs；这些笔记完成首次归档并回读确认后才进入永久保护，当前已有专辑成员视为已完成首次归档。第二次提交必须精确覆盖 classification_inputs，禁止补回受保护 ID。空 target_board 会机械转入固定的“无法确定”专辑；若该专辑不存在，会连同用户确认的公开或私密设置加入同一次创建与移动方案。其他新专辑只能来自本次真实内容。两阶段 receipt 均由 WorkBuddy 自动传递，用户无需处理。',
+      '两阶段固定入口：第一次只读返回真实已有专辑，并载入同账号最新的 Skill v2 归档登记；只排除登记专辑的实时成员，普通收藏和未登记专辑成员仍进入 classification_inputs。第二次提交必须精确覆盖 classification_inputs，禁止补回受保护 ID。空 target_board 会机械转入固定的“无法确定”专辑；若该专辑不存在，会连同用户确认的公开或私密设置加入同一次创建与移动方案。其他新专辑只能来自本次真实内容。两阶段 receipt 均由 WorkBuddy 自动传递，用户无需处理。',
     inputSchema: z.object({
       browser_authorized: z.boolean().describe('用户是否在当前回合授权只读核验此页面'),
       run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
@@ -545,7 +550,7 @@ server.registerTool(
         main_topic: z.string().default(''),
         content_summary: z.string().default(''),
       })).optional().describe(
-        '第二阶段必须精确覆盖第一次返回的 classification_inputs；不得包含任何已有专辑成员',
+        '第二阶段必须精确覆盖第一次返回的 classification_inputs；不得包含 v2 归档登记中受保护专辑的实时成员',
       ),
       proposed_board_names: z.array(z.string().min(1)).max(20).optional().describe(
         '仅依据本次 classification_inputs 提议的新专辑名称；不得使用插件预设类别。“无法确定”由工具在空目标出现时机械加入，无需在此重复提议',

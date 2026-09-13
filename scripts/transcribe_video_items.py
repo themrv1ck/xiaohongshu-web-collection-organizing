@@ -28,7 +28,7 @@ from video_content_common import (
     xiaohongshu_access_url,
 )
 from collection_scope import validate_scope_input
-from archive_exclusion import combine_archived_note_maps
+from archive_exclusion import combine_live_protected_note_maps
 from xhs_safety import (
     SafetyHaltedError,
     classify_safety_error,
@@ -739,7 +739,8 @@ def main() -> int:
     parser.add_argument("--resume", action="store_true", help="保留输出文件中已落盘的条目，只处理缺失视频")
     parser.add_argument("--allow-video-access", action="store_true", help="明确同意本次访问所选视频；默认低风险模式不会请求视频页面或媒体")
     parser.add_argument("--collection-scope", default="", help="可选 collection_scope.json；提供时强制校验完整 note ID 范围")
-    parser.add_argument("--archive-registry", action="append", default=[], help="已确认归档基线或 existing boards inventory；可重复传入，命中 ID 不访问视频")
+    parser.add_argument("--archive-registry", action="append", default=[], help="Skill 完成回读后生成的 v2 归档登记；可重复传入")
+    parser.add_argument("--board-snapshot", default="", help="使用归档登记时必填：本轮完整专辑成员快照，用于排除登记专辑的实时成员")
     parser.add_argument("--safety-state", default="", help="共享安全状态文件；默认继承输入文件旁已有状态，否则使用输出同目录的 xhs_safety_state.json")
     parser.add_argument("--subtitle-timeout", type=int, default=180)
     parser.add_argument("--audio-timeout", type=int, default=900)
@@ -789,8 +790,9 @@ def main() -> int:
     if str(args.collection_scope or "").strip():
         scope = validate_scope_input(args.collection_scope, items, stage="视频转写输入")
         scope_user_id = str((scope.get("page_binding") or {}).get("user_id") or "")
-    archived_note_map = combine_archived_note_maps(
+    archived_note_map = combine_live_protected_note_maps(
         args.archive_registry,
+        board_snapshot_path=args.board_snapshot,
         expected_user_id=scope_user_id or None,
     )
     archived_excluded_count = sum(

@@ -1,6 +1,6 @@
 # 收藏 / 点赞来源范围选择与合并
 
-适用：用户要求整理小红书收藏、点赞，或说“我全都要 / 全部 / 都要”时。
+适用：用户要求整理小红书收藏、点赞、二者合并，或提出其他来源/目标时。
 
 ## 交互口径
 
@@ -14,11 +14,15 @@
 >
 > 1. 回复“收藏”：只整理收藏列表；
 > 2. 回复“点赞”：只整理点赞列表；
-> 3. 回复“我全都要”：合并收藏和点赞，并按笔记去重。
+> 3. 回复“我全都要”：合并收藏和点赞，并按笔记去重；
+> 4. 回复“其他”：请准确说明内容现在在哪里、要处理哪些内容、整理后要变成什么、允许哪些读取和写入操作，以及本轮允许使用哪个浏览器。
 
 - 用户回答“收藏”：只抓收藏页，来源标记 `collection` / `收藏`。
 - 用户回答“点赞”：只抓点赞页，来源标记 `liked` / `点赞`。
 - 用户回答“我全都要 / 全部 / 都要”：先抓收藏，再抓点赞，并按 note id 合并去重。
+- 用户回答“其他”：不打开浏览器。先要求用户完整复述来源位置、范围、结果、允许操作和本轮浏览器，再做可实现性判断。
+
+“其他”只有能严格转换为以下既有链路时才能继续：本人账号的收藏/点赞/二者合并 → 只读采集 → 真实内容分类 → dry-run → 用户确认 → 正式页面可见“加入专辑” → 完整成员回读 → Skill 归档登记。若涉及发布或删除笔记、评论、点赞/取消点赞、关注、私信、绕过安全验证、他人私密数据，或无法证明来源及目标，必须说明具体不可实现原因，并推荐用户先手工完成缺失步骤，或把范围改为“收藏”“点赞”“我全都要”中的一种。不得把“其他”静默映射为任一默认选项。
 - 若页面声明总数包含没有实际卡片或 note id 的项目，默认不能把较小的可访问集合当成完整收藏。只有用户明确说“按当前可访问的 N 条真实笔记整理”时，直接路径才可运行 `scripts/collection_scope.py` 建立 `scope_kind=user_confirmed_accessible_collection`：显式传 N 和页面差额 M，固定保存全部真实 ID、ID 哈希、`page_index=0..N-1`、同一 passive 分段哈希、页面/账号绑定和 active 安全会话。M 条只记录为不可识别 UI 计数差，绝不伪造成笔记、排除项、分类项或移动成功项。默认“收藏 / 点赞 / 我全都要”仍要求 `scope_kind=full_collection` 与声明数精确一致。
 
 如果用户本轮已经明确给出范围，可以跳过范围卡片，但随后仍要自动运行本地能力只读预检，再显示“快速整理 / 轻度整理 / 深度整理”档位。只有用户回复“自定义”时，才依次取得图文 OCR 和视频内容分类两个开关的回答；档位或两项开关确定后，才能请求具体浏览器授权并开始完整环境检查或抓取。
@@ -71,7 +75,7 @@ python3 scripts/extract_visible_items.py segment-001-collection.json --backend m
 - `source_lists`：该笔记出现过的来源列表。
 - `source_primary`：第一次抓到该笔记的来源。
 - 同一 note id 在收藏和点赞中都出现时，不重复分类/移动，只合并来源。
-- 完成列表级合并后，必须先读取本轮完整专辑成员快照；当前属于任一专辑的 note id 视为首次归档已确认，永久保护并从后续分类输入排除；只有 `first_archive_pending` 的专辑外 note id 进入详情、OCR、视频分析和首次归档计划。
+- 完成列表级合并后，必须先读取本轮完整专辑成员快照，并载入同账号最新的 `xhs-skill-archive-registry-v2`。只有登记专辑在当前快照中的实时成员受保护；单纯已收藏或已进入未登记专辑都不受保护。所有未受保护的 note id 都进入本轮内容分析；未登记专辑成员标记为 `unarchived_board_member + first_archive_pending`。
 - 列表页的 `content_type` 和 `image_urls` 都只是 observed 线索，图片必须保持 `image_urls_complete=false`；只有详情 `noteData.type` 可确定权威类型，只有详情 `noteData.imageList` 可形成完整图片集合。
 - 使用 `collection_scope.json` 时，`enrich_note_images.py`、`ocr_note_images.py`、`transcribe_video_items.py`、`analyze_video_visuals.py`、`classify_items.py` 和 `run_reassign_batch.py` 都必须传 `--collection-scope <path>`；任何缺失、增加、换序或跨账号/页面快照都会被拒绝。
 
@@ -81,7 +85,7 @@ python3 scripts/extract_visible_items.py segment-001-collection.json --backend m
 - “我全都要”不是执行两套独立移动；必须合并去重后再进入 `enrich_note_images.py -> ocr_note_images.py`、分类、dry-run、确认、execute 链路。
 - 详情补齐遇到 `security_blocked` 时必须落盘状态和 `xhs_safety_state.json`、停止后续请求并以非零退出码结束，不得继续 OCR 或 `--resume`。
 - 真实移动仍需用户确认分类、目标专辑和风险后才可传 `--execute --max-moves-per-session <1–200>`；达到上限后不得自动续段。
-- `--include-existing-boards` 不存在；不得跨专辑迁移、取消收藏后重收或纠正用户当前专辑归纳。
+- `--include-existing-boards` 不存在；不得操作或纠正已由本 Skill 归档登记的专辑；未受保护条目的取消后重收须明确同意，详见 `visible-collection-entry.md`。未登记专辑成员只能在用户确认后通过正式页面“加入专辑”完成首次归档，并验证原专辑 -1、目标专辑 +1。
 
 ## 回归验证
 

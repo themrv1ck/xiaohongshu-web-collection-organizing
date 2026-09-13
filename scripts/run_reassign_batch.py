@@ -25,11 +25,24 @@ from xhs_safety import (
     load_safety_state,
     mark_security_halted,
     redact_persisted_errors,
-    reject_unsafe_private_runtime,
     resolve_safety_state_path,
 )
 from workbuddy_runtime import apply_workbuddy_browser_policy, is_workbuddy_host
 from archive_rules import UNCERTAIN_BOARD_NAME
+from archive_exclusion import protected_note_map_from_snapshot
+from xhs_visible_ui import (
+    ArcVisibleUiSession,
+    VisibleUiContractError,
+    build_assign_collected_note_js,
+    build_collect_into_board_js,
+    build_find_and_open_note_card_js,
+    build_note_collect_probe_js,
+    read_visible_album_list,
+    read_visible_board,
+    capture_visible_album_snapshot,
+    source_tab_for_item,
+    validate_new_collection_transition,
+)
 
 
 LOGIN_MARKERS = ('手机号登录', '登录后推荐', '马上登录即可', '扫码登录', '验证码登录')
@@ -38,478 +51,6 @@ NOTE_ID_RE = re.compile(r'^[0-9a-f]{24}$', re.IGNORECASE)
 
 class ExecutionPreflightError(RuntimeError):
     pass
-
-
-LIVE_API_RESOLVER_JS = r'''
-const XHS_LIVE_API_ENDPOINTS = Object.freeze({
-  d0: '/api/sns/web/v1/note/move',
-  Ks: '/api/sns/web/v1/board/note',
-  yC: '/api/sns/web/v1/board/user',
-  U_: '/api/sns/web/v1/board/{boardId}'
-});
-
-function hasExactEndpointLiteral(fn, endpoint) {
-  if (typeof fn !== 'function') return false;
-  const source = Function.prototype.toString.call(fn);
-  return source.includes('"' + endpoint + '"') ||
-    source.includes("'" + endpoint + "'") ||
-    source.includes('`' + endpoint + '`');
-}
-
-function collectExportedFunctions(moduleExports) {
-  const containers = [];
-  if (moduleExports !== null && (typeof moduleExports === 'object' || typeof moduleExports === 'function')) {
-    containers.push(moduleExports);
-    if (moduleExports.default !== null &&
-        (typeof moduleExports.default === 'object' || typeof moduleExports.default === 'function') &&
-        moduleExports.default !== moduleExports) {
-      containers.push(moduleExports.default);
-    }
-  }
-  const functions = [];
-  const seen = new Set();
-  function add(fn) {
-    if (typeof fn === 'function' && !seen.has(fn)) {
-      seen.add(fn);
-      functions.push(fn);
-    }
-  }
-  for (const container of containers) {
-    add(container);
-    for (const key of Object.keys(container)) add(container[key]);
-  }
-  return functions;
-}
-
-function uniqueEndpointExport(functions, endpoint, label) {
-  const matches = functions.filter((fn) => hasExactEndpointLiteral(fn, endpoint));
-  if (matches.length !== 1) {
-    throw new Error('Xiaohongshu live API ' + label + ' export match count must be 1; found ' + matches.length);
-  }
-  return matches[0];
-}
-
-function findApi(req) {
-  if (typeof req !== 'function' || !req.m || typeof req.m !== 'object') {
-    throw new Error('Xiaohongshu Rspack module registry is unavailable');
-  }
-  const endpoints = Object.values(XHS_LIVE_API_ENDPOINTS);
-  const moduleMatches = Object.keys(req.m).filter((moduleId) => {
-    const factory = req.m[moduleId];
-    return typeof factory === 'function' && endpoints.every((endpoint) => hasExactEndpointLiteral(factory, endpoint));
-  });
-  if (moduleMatches.length !== 1) {
-    throw new Error('Xiaohongshu live API factory match count must be 1; found ' + moduleMatches.length);
-  }
-  const functions = collectExportedFunctions(req(moduleMatches[0]));
-  return Object.freeze({
-    d0: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.d0, 'd0'),
-    Ks: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.Ks, 'Ks'),
-    yC: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.yC, 'yC'),
-    U_: uniqueEndpointExport(functions, XHS_LIVE_API_ENDPOINTS.U_, 'U_')
-  });
-}
-'''.strip()
-
-
-BOARD_LIST_PAGINATION_JS = r'''
-const XHS_BOARD_LIST_PAGE_SIZE = 100;
-
-function normalizeUserBoard(board, absoluteIndex) {
-  if (!board || typeof board !== 'object' || Array.isArray(board)) {
-    throw new Error('Xiaohongshu board/user board must be an object at index ' + absoluteIndex);
-  }
-  const id = typeof board.id === 'string' ? board.id.trim() : '';
-  const name = typeof board.name === 'string' ? board.name.trim() : '';
-  if (!/^[0-9a-f]{24}$/i.test(id) || !name) {
-    throw new Error('Xiaohongshu board/user board id/name contract failed at index ' + absoluteIndex);
-  }
-  const totalRaw = board.total ?? board.noteCount ?? board.note_count ?? board.notesCount;
-  const total = Number.isFinite(Number(totalRaw)) ? Number(totalRaw) : null;
-  return { id, name, privacy: board.privacy, total };
-}
-
-async function loadAllBoardsStrict(api, userId, assertContext) {
-  if (!api || typeof api.yC !== 'function') {
-    throw new Error('Xiaohongshu board/user API is unavailable');
-  }
-  if (typeof userId !== 'string' || !/^[0-9a-f]{24}$/i.test(userId.trim())) {
-    throw new Error('Xiaohongshu board/user requires a 24-character user id');
-  }
-  const boards = [];
-  const ids = new Set();
-  const names = new Set();
-  let declaredTotal = null;
-  let pageCount = null;
-
-  for (let page = 1; ; page += 1) {
-    if (typeof assertContext === 'function') assertContext();
-    const response = await api.yC({
-      params: { userId: userId.trim(), num: XHS_BOARD_LIST_PAGE_SIZE, page }
-    });
-    if (typeof assertContext === 'function') assertContext();
-    if (!response || typeof response !== 'object' || Array.isArray(response)) {
-      throw new Error('Xiaohongshu board/user page ' + page + ' response must be an object');
-    }
-    if (!Array.isArray(response.boards)) {
-      throw new Error('Xiaohongshu board/user page ' + page + ' response.boards must be an array');
-    }
-    if (!Number.isSafeInteger(response.boardCount) || response.boardCount < 0) {
-      throw new Error('Xiaohongshu board/user page ' + page + ' boardCount must be a non-negative integer');
-    }
-    if (declaredTotal === null) {
-      declaredTotal = response.boardCount;
-      pageCount = Math.max(1, Math.ceil(declaredTotal / XHS_BOARD_LIST_PAGE_SIZE));
-    } else if (response.boardCount !== declaredTotal) {
-      throw new Error(
-        'Xiaohongshu board/user boardCount changed during pagination: expected ' +
-        declaredTotal + ', got ' + response.boardCount + ' on page ' + page
-      );
-    }
-    if (page > pageCount) {
-      throw new Error('Xiaohongshu board/user returned an unexpected extra page ' + page);
-    }
-    const expectedLength = declaredTotal === 0
-      ? 0
-      : (page < pageCount
-        ? XHS_BOARD_LIST_PAGE_SIZE
-        : declaredTotal - XHS_BOARD_LIST_PAGE_SIZE * (page - 1));
-    if (response.boards.length !== expectedLength) {
-      throw new Error(
-        'Xiaohongshu board/user page ' + page + ' length mismatch: expected ' +
-        expectedLength + ', got ' + response.boards.length
-      );
-    }
-    for (let index = 0; index < response.boards.length; index += 1) {
-      const board = normalizeUserBoard(
-        response.boards[index],
-        XHS_BOARD_LIST_PAGE_SIZE * (page - 1) + index
-      );
-      if (ids.has(board.id) || names.has(board.name)) {
-        throw new Error(
-          'Xiaohongshu board/user returned duplicate board id or name on page ' + page
-        );
-      }
-      ids.add(board.id);
-      names.add(board.name);
-      boards.push(board);
-    }
-    if (page === pageCount) break;
-  }
-
-  if (boards.length !== declaredTotal) {
-    throw new Error(
-      'Xiaohongshu board/user complete count mismatch: expected ' +
-      declaredTotal + ', got ' + boards.length
-    );
-  }
-  return { boardCount: declaredTotal, pageCount, boards };
-}
-'''.strip()
-
-
-BOARD_TRANSACTION_JS = r'''
-class HighRiskStateUncertainError extends Error {
-  constructor(message) {
-    super('HIGH_RISK_STATE_UNCERTAIN: ' + message);
-    this.name = 'HighRiskStateUncertainError';
-  }
-}
-
-class CrossBoardTransactionError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'CrossBoardTransactionError';
-  }
-}
-
-function errorText(error) {
-  return error && error.message ? error.message : String(error);
-}
-
-function assertRecoveryIsSafe(assertTransactionSafe, error, events, context) {
-  try {
-    assertTransactionSafe(error);
-  } catch (guardError) {
-    events.push('transaction:high_risk_state_uncertain');
-    throw new HighRiskStateUncertainError(
-      context + '; recovery writes stopped: ' + errorText(guardError)
-    );
-  }
-}
-
-async function rollbackCrossBoardTransaction(
-  api, noteId, sourceBoardId, maxPages, events, assertTransactionSafe
-) {
-  events.push('transaction:rollback');
-  events.push('transaction:rollback:start');
-  assertRecoveryIsSafe(
-    assertTransactionSafe, null, events, 'rollback could not start safely'
-  );
-
-  let rollbackEndpointFailure = null;
-  try {
-    await api.LN({ noteIds: noteId });
-    events.push('transaction:rollback:uncollect');
-  } catch (error) {
-    rollbackEndpointFailure = error;
-    events.push('transaction:rollback:uncollect_failed');
-    assertRecoveryIsSafe(
-      assertTransactionSafe, error, events, 'rollback uncollect state is uncertain'
-    );
-  }
-
-  assertRecoveryIsSafe(
-    assertTransactionSafe, null, events, 'rollback recollect could not start safely'
-  );
-  try {
-    await api.B1({ noteId });
-    events.push('transaction:rollback:recollect');
-  } catch (error) {
-    if (!rollbackEndpointFailure) rollbackEndpointFailure = error;
-    events.push('transaction:rollback:recollect_failed');
-    assertRecoveryIsSafe(
-      assertTransactionSafe, error, events, 'rollback recollect state is uncertain'
-    );
-  }
-
-  assertRecoveryIsSafe(
-    assertTransactionSafe, null, events, 'rollback source move could not start safely'
-  );
-  try {
-    await api.d0({ targetBoardId: sourceBoardId, notesId: noteId });
-    events.push('transaction:rollback:move');
-  } catch (error) {
-    if (!rollbackEndpointFailure) rollbackEndpointFailure = error;
-    events.push('transaction:rollback:move_failed');
-    assertRecoveryIsSafe(
-      assertTransactionSafe, error, events, 'rollback source move state is uncertain'
-    );
-  }
-
-  assertRecoveryIsSafe(
-    assertTransactionSafe, rollbackEndpointFailure, events,
-    'rollback source verification could not start safely'
-  );
-  let sourceSnapshot;
-  try {
-    sourceSnapshot = await boardSnapshot(api, sourceBoardId, maxPages, assertTransactionSafe);
-  } catch (error) {
-    events.push('transaction:rollback:source_verify_failed');
-    assertRecoveryIsSafe(
-      assertTransactionSafe, error, events, 'rollback source verification failed'
-    );
-    events.push('transaction:rollback:failed');
-    events.push('transaction:high_risk_state_uncertain');
-    throw new HighRiskStateUncertainError(
-      'rollback source verification failed: ' + errorText(error)
-    );
-  }
-  assertRecoveryIsSafe(
-    assertTransactionSafe, null, events,
-    'rollback source verification completed under an unsafe page state'
-  );
-  if (!sourceSnapshot.noteIds.includes(noteId)) {
-    events.push('transaction:rollback:source_missing');
-    events.push('transaction:rollback:failed');
-    events.push('transaction:high_risk_state_uncertain');
-    throw new HighRiskStateUncertainError(
-      'rollback completed without restoring the note to source board ' + sourceBoardId
-    );
-  }
-  events.push('transaction:rollback:source_verified');
-  events.push('transaction:rollback:succeeded');
-  return sourceSnapshot;
-}
-
-async function moveAcrossBoardsTransaction(
-  api, noteId, sourceBoardId, targetBoardId, maxPages, events, assertTransactionSafe
-) {
-  if (!sourceBoardId || sourceBoardId === targetBoardId) {
-    throw new Error('cross-board transaction requires different non-empty source and target board ids');
-  }
-  if (typeof assertTransactionSafe !== 'function') {
-    throw new Error('cross-board transaction requires a safety guard');
-  }
-
-  assertTransactionSafe();
-  const sourceBefore = await boardSnapshot(api, sourceBoardId, maxPages, assertTransactionSafe);
-  if (!sourceBefore.noteIds.includes(noteId)) {
-    events.push('transaction:preflight:source_missing');
-    throw new Error('transaction preflight failed: note is absent from source board');
-  }
-  events.push('transaction:preflight:source_present');
-
-  assertTransactionSafe();
-  const targetBefore = await boardSnapshot(api, targetBoardId, maxPages, assertTransactionSafe);
-  if (targetBefore.noteIds.includes(noteId)) {
-    events.push('transaction:preflight:target_present');
-    throw new Error('transaction preflight failed: note already exists in target board');
-  }
-  events.push('transaction:preflight:target_absent');
-  assertTransactionSafe();
-
-  let transactionFailure = null;
-  try {
-    await api.LN({ noteIds: noteId });
-    events.push('transaction:uncollect');
-  } catch (error) {
-    transactionFailure = error;
-    events.push('transaction:uncollect_failed');
-    assertRecoveryIsSafe(
-      assertTransactionSafe, error, events, 'initial uncollect state is uncertain'
-    );
-  }
-
-  assertRecoveryIsSafe(
-    assertTransactionSafe, null, events, 'initial recollect could not start safely'
-  );
-  try {
-    await api.B1({ noteId });
-    events.push('transaction:recollect');
-  } catch (error) {
-    if (!transactionFailure) transactionFailure = error;
-    events.push('transaction:recollect_failed');
-    assertRecoveryIsSafe(
-      assertTransactionSafe, error, events, 'initial recollect state is uncertain'
-    );
-  }
-
-  if (!transactionFailure) {
-    let targetStage = 'move';
-    try {
-      assertRecoveryIsSafe(
-        assertTransactionSafe, null, events, 'target move could not start safely'
-      );
-      await api.d0({ targetBoardId, notesId: noteId });
-      events.push('transaction:move');
-      targetStage = 'verify';
-      assertRecoveryIsSafe(
-        assertTransactionSafe, null, events, 'target verification could not start safely'
-      );
-      const targetSnapshot = await boardSnapshot(api, targetBoardId, maxPages, assertTransactionSafe);
-      assertRecoveryIsSafe(
-        assertTransactionSafe, null, events,
-        'target verification completed under an unsafe page state'
-      );
-      if (!targetSnapshot.noteIds.includes(noteId)) {
-        events.push('transaction:target_missing');
-        throw new Error('note not found in target board after cross-board move');
-      }
-      events.push('transaction:target_verified');
-      return { sourceBefore, targetBefore, targetSnapshot };
-    } catch (error) {
-      if (error && error.name === 'HighRiskStateUncertainError') throw error;
-      transactionFailure = error;
-      events.push(
-        targetStage === 'move' ? 'transaction:move_failed' : 'transaction:target_verify_failed'
-      );
-      assertRecoveryIsSafe(
-        assertTransactionSafe, error, events, 'target move or verification state is uncertain'
-      );
-    }
-  }
-
-  await rollbackCrossBoardTransaction(
-    api, noteId, sourceBoardId, maxPages, events, assertTransactionSafe
-  );
-  throw new CrossBoardTransactionError(
-    'cross-board transaction failed; source rollback verified: ' + errorText(transactionFailure)
-  );
-}
-'''.strip()
-
-
-BOARD_VERIFICATION_JS = r'''
-const XHS_BOARD_IMAGE_FORMATS = 'jpg,webp,avif';
-
-function parseBoardNotesPage(response) {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) {
-    throw new Error('Xiaohongshu board/note response must be an object');
-  }
-  if (!Array.isArray(response.notes)) {
-    throw new Error('Xiaohongshu board/note response.notes must be an array');
-  }
-  if (typeof response.cursor !== 'string') {
-    throw new Error('Xiaohongshu board/note response.cursor must be a string');
-  }
-  if (typeof response.hasMore !== 'boolean') {
-    throw new Error('Xiaohongshu board/note response.hasMore must be a boolean');
-  }
-  const noteIds = response.notes.map((note, index) => {
-    if (!note || typeof note !== 'object' || Array.isArray(note) ||
-        typeof note.noteId !== 'string' || !note.noteId.trim()) {
-      throw new Error('Xiaohongshu board/note notes[' + index + '].noteId must be a non-empty string');
-    }
-    return note.noteId.trim();
-  });
-  return { noteIds, cursor: response.cursor, hasMore: response.hasMore };
-}
-
-function parseBoardDetail(response, boardId) {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) {
-    throw new Error('Xiaohongshu board detail response must be an object');
-  }
-  if (typeof response.id !== 'string' || response.id !== boardId) {
-    throw new Error('Xiaohongshu board detail response.id does not match target board');
-  }
-  if (!Number.isSafeInteger(response.total) || response.total < 0) {
-    throw new Error('Xiaohongshu board detail response.total must be a non-negative integer');
-  }
-  return { total: response.total };
-}
-
-async function boardSnapshot(api, boardId, maxPages, assertSafe) {
-  if (!Number.isSafeInteger(maxPages) || maxPages < 1) {
-    throw new Error('board verification maxPages must be a positive integer');
-  }
-  const check = typeof assertSafe === 'function' ? assertSafe : function() {};
-  check();
-  const detailResponse = await api.U_({
-    params: { imageFormats: XHS_BOARD_IMAGE_FORMATS },
-    resourceParams: { boardId }
-  });
-  check();
-  const detail = parseBoardDetail(detailResponse, boardId);
-  const noteIds = [];
-  const seenCursors = new Set(['']);
-  let cursor = '';
-  let pageCount = 0;
-  while (true) {
-    if (pageCount >= maxPages) {
-      throw new Error('Xiaohongshu board/note pagination exceeded maxPages before completion');
-    }
-    check();
-    const pageResponse = await api.Ks({
-      params: { boardId, num: 30, cursor, imageFormats: XHS_BOARD_IMAGE_FORMATS }
-    });
-    check();
-    const page = parseBoardNotesPage(pageResponse);
-    noteIds.push(...page.noteIds);
-    pageCount += 1;
-    if (!page.hasMore) break;
-    if (!page.cursor) {
-      throw new Error('Xiaohongshu board/note hasMore=true with an empty cursor');
-    }
-    if (seenCursors.has(page.cursor)) {
-      throw new Error('Xiaohongshu board/note hasMore=true with a repeated cursor');
-    }
-    seenCursors.add(page.cursor);
-    cursor = page.cursor;
-  }
-  const uniqueNoteIds = Array.from(new Set(noteIds));
-  if (uniqueNoteIds.length !== noteIds.length) {
-    throw new Error('Xiaohongshu board/note pagination returned duplicate noteId values');
-  }
-  return {
-    noteIds: uniqueNoteIds,
-    declaredTotal: detail.total,
-    accessibleTotal: uniqueNoteIds.length,
-    countMismatch: detail.total !== uniqueNoteIds.length,
-    pageCount
-  };
-}
-'''.strip()
 
 
 def load_json(path: str) -> Any:
@@ -636,6 +177,55 @@ class BrowserRunner:
             return safari_js(js)
         return run_page_javascript(self.page, js)
 
+    def navigate_xhs(self, path: str, query: Optional[Dict[str, str]] = None) -> None:
+        clean_path = str(path or '').strip()
+        if not clean_path.startswith('/') or '..' in clean_path:
+            raise VisibleUiContractError('小红书目标路径无效')
+        from urllib.parse import urlencode
+        target = 'https://www.xiaohongshu.com' + clean_path
+        query_string = urlencode(dict(query or {}))
+        if query_string:
+            target += '?' + query_string
+        parsed = urlparse(target)
+        if parsed.scheme != 'https' or parsed.hostname != 'www.xiaohongshu.com':
+            raise VisibleUiContractError('只允许导航到小红书正式站')
+        if {'xsec_token', 'xsec_source', 'sign', 'signature'}.intersection(parse_qs(parsed.query)):
+            raise VisibleUiContractError('导航目标不得包含会话或签名参数')
+
+        if self.backend == 'arc':
+            ArcVisibleUiSession(
+                str(getattr(self.args, 'arc_window_id', '') or ''),
+                str(getattr(self.args, 'arc_tab_id', '') or ''),
+                str(getattr(self.args, 'arc_tab_marker', '') or ''),
+                str(getattr(self.args, 'user_id', '') or ''),
+            ).navigate(clean_path, query)
+            return
+        if self.backend == 'playwright':
+            self.page.goto(target, wait_until='domcontentloaded', timeout=60000)
+            return
+
+        self.run_javascript(
+            "window.location.assign(" + json.dumps(target, ensure_ascii=False) + "); true;"
+        )
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            try:
+                state = parse_js_json(self.run_javascript(
+                    "JSON.stringify({url:String(window.location.href||''),ready:document.readyState,"
+                    "title:String(document.title||''),body:String((document.body&&document.body.innerText)||'').slice(0,500)});"
+                ))
+            except Exception:
+                time.sleep(0.2)
+                continue
+            text_value = ' '.join(str(state.get(key) or '') for key in ('url', 'title', 'body'))
+            classified = classify_safety_error(text_value)
+            if classified:
+                raise SafetyHaltedError(classified[1])
+            if state.get('url') == target and state.get('ready') in {'interactive', 'complete'}:
+                return
+            time.sleep(0.2)
+        raise VisibleUiContractError('正式页面导航未在截止时间内完成')
+
     def close(self) -> None:
         if self.backend != 'playwright':
             return
@@ -647,6 +237,41 @@ class BrowserRunner:
         finally:
             if self.playwright:
                 self.playwright.stop()
+
+
+class BrowserVisibleUiSession:
+    """Duck-typed visible UI session for the already authorized BrowserRunner."""
+
+    def __init__(self, runner: BrowserRunner, user_id: str, tab_marker: str = ''):
+        self.runner = runner
+        self.browser_name = str(getattr(runner, 'backend', 'test'))
+        self.user_id = str(user_id or '').strip().lower()
+        self.tab_marker = str(tab_marker or '').strip()
+        if not NOTE_ID_RE.fullmatch(self.user_id):
+            raise VisibleUiContractError('user id 不是 24 位十六进制 id')
+
+    def run_json(self, script: str) -> Any:
+        return parse_js_json(self.runner.run_javascript(script))
+
+    def navigate(self, path: str, query: Optional[Dict[str, str]] = None) -> None:
+        self.runner.navigate_xhs(path, query)
+
+    def wait_for(self, script: str, *, timeout_sec: float = 20.0) -> Any:
+        deadline = time.monotonic() + timeout_sec
+        last_error: Optional[Exception] = None
+        while time.monotonic() < deadline:
+            try:
+                value = self.run_json(script)
+                if value:
+                    return value
+            except Exception as exc:
+                last_error = exc
+                if classify_safety_error(exc):
+                    raise
+            time.sleep(0.2)
+        if last_error:
+            raise VisibleUiContractError(f'正式页面未在截止时间内就绪：{last_error}') from last_error
+        raise VisibleUiContractError('正式页面未在截止时间内就绪')
 
 
 def choose_backend(value: str, args: argparse.Namespace = None) -> str:
@@ -697,6 +322,7 @@ def initial_report(classification: List[Dict[str, Any]], mode: str) -> Dict[str,
         'ready_for_execute': False,
         'blockers': [],
         'warnings': [],
+        'collection_write_notice': '已收藏的待归档笔记需取消一次再重新收藏；会改变收藏排序，中途失败可能留下未收藏或未归入状态。须明确同意 --allow-recollect，受 Skill 归档保护的笔记不操作。',
         'board_validation_status': 'not_checked',
         'membership_validation_status': 'not_checked',
         'visible_count': len(classification),
@@ -783,7 +409,7 @@ def append_classification_preview(
     if item.get('excluded') or item.get('exclude_reason'):
         status = 'skipped'
         events = ['skip:existing_board_excluded', 'preview:no_account_changes', 'preflight:not_run']
-        error = item.get('exclude_reason') or 'existing_board_member_protected'
+        error = item.get('exclude_reason') or 'skill_archived_board_member_protected'
     elif not item['id']:
         status = 'failed'
         error = 'missing note id'
@@ -831,6 +457,7 @@ def prepare_write_preflight(
     *,
     allow_low_confidence: bool,
     allow_planned_board_creation: bool = False,
+    archive_registry: Any = None,
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     warnings: List[str] = []
@@ -903,6 +530,13 @@ def prepare_write_preflight(
             'page_count': board.get('page_count'),
         }
 
+    snapshot_user_id = str(source.get('user_id') or '').strip().lower() if isinstance(source, dict) else ''
+    protected_note_to_board = protected_note_map_from_snapshot(
+        board_snapshot,
+        archive_registry,
+        expected_user_id=snapshot_user_id,
+    ) if archive_registry is not None else {}
+
     if not isinstance(created_boards, dict):
         raise ExecutionPreflightError('created_boards must be an object')
     confirmed_boards = set(_normalize_string_list(created_boards.get('confirmed'), 'created_boards.confirmed'))
@@ -942,7 +576,7 @@ def prepare_write_preflight(
     required_targets = set()
     missing_targets = set()
     membership_counts = {
-        'existing_board_member_protected': 0,
+        'skill_archived_board_member_protected': 0,
         'not_in_any_board': 0,
         'needs_review': 0,
         'excluded': 0,
@@ -957,24 +591,45 @@ def prepare_write_preflight(
                 (ref['board_id'], ref['board_name'])
                 for ref in membership.get(note_id, [])
             }
-            if unique_refs:
+            protected_board = protected_note_to_board.get(note_id)
+            if protected_board:
                 sorted_refs = sorted(unique_refs)
-                resolved['membership_state'] = 'existing_board_member_protected'
+                if not sorted_refs or protected_board not in {ref[1] for ref in sorted_refs}:
+                    raise ExecutionPreflightError(
+                        f'归档登记与本轮专辑快照不一致：{note_id}'
+                    )
+                resolved['membership_state'] = 'skill_archived_board_member_protected'
                 resolved['archive_lifecycle_state'] = 'first_archive_confirmed'
                 resolved['excluded'] = True
-                resolved['exclude_reason'] = 'existing_board_member_protected'
+                resolved['exclude_reason'] = 'skill_archived_board_member_protected'
                 resolved['source_board'] = ' | '.join(ref[1] for ref in sorted_refs)
                 resolved['source_board_id'] = (
                     sorted_refs[0][0] if len(sorted_refs) == 1 else ''
                 )
-                membership_counts['existing_board_member_protected'] += 1
+                membership_counts['skill_archived_board_member_protected'] += 1
                 resolved_items.append(resolved)
                 continue
-            resolved['membership_state'] = 'not_in_any_board'
-            resolved['archive_lifecycle_state'] = 'first_archive_pending'
-            resolved['source_board'] = ''
-            resolved['source_board_id'] = ''
-            membership_counts['not_in_any_board'] += 1
+            if unique_refs:
+                sorted_refs = sorted(unique_refs)
+                if len(sorted_refs) != 1:
+                    resolved['membership_state'] = 'unarchived_multiple_boards'
+                    resolved['archive_lifecycle_state'] = 'first_archive_pending'
+                    resolved['source_board'] = ' | '.join(ref[1] for ref in sorted_refs)
+                    resolved['source_board_id'] = ''
+                    blockers.append(f'unarchived_note_in_multiple_boards:{note_id}')
+                    resolved_items.append(resolved)
+                    continue
+                resolved['membership_state'] = 'unarchived_board_member'
+                resolved['archive_lifecycle_state'] = 'first_archive_pending'
+                resolved['source_board'] = sorted_refs[0][1]
+                resolved['source_board_id'] = sorted_refs[0][0]
+                membership_counts['not_in_any_board'] += 1
+            else:
+                resolved['membership_state'] = 'not_in_any_board'
+                resolved['archive_lifecycle_state'] = 'first_archive_pending'
+                resolved['source_board'] = ''
+                resolved['source_board_id'] = ''
+                membership_counts['not_in_any_board'] += 1
 
         actionable = all([
             not item.get('excluded'),
@@ -1200,7 +855,7 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
     if item.get('excluded') or item.get('exclude_reason'):
         status = 'skipped'
         events = ['skip:existing_board_excluded', 'dry_run:no_account_changes']
-        error = item.get('exclude_reason') or 'existing_board_member_protected'
+        error = item.get('exclude_reason') or 'skill_archived_board_member_protected'
     elif not item['id']:
         status = 'failed'
         error = 'missing note id'
@@ -1231,8 +886,187 @@ def append_dry_run(report: Dict[str, Any], item: Dict[str, Any], allow_low_confi
 
 
 def build_browser_job(items: List[Dict[str, Any]], args: argparse.Namespace) -> str:
-    """Historical collected-note moves remain disabled before browser access."""
-    reject_unsafe_private_runtime('移动笔记')
+    """Build one visible-detail-page assignment; never search titles or touch runtime modules."""
+    if len(items) != 1:
+        raise RuntimeError('可见页面归档每次必须且只能处理一条笔记')
+    item = items[0]
+    note_id = str(item.get('id') or '').strip().lower()
+    target_board = str(item.get('target_board') or '').strip()
+    if not NOTE_ID_RE.fullmatch(note_id):
+        raise RuntimeError('移动笔记缺少有效的 24 位 note id')
+    if not target_board:
+        raise RuntimeError('移动笔记缺少目标专辑')
+    if (
+        item.get('excluded') or item.get('exclude_reason')
+        or
+        item.get('membership_state') not in {'not_in_any_board', 'unarchived_board_member'}
+        or item.get('archive_lifecycle_state') != 'first_archive_pending'
+    ):
+        raise RuntimeError('只允许首次归档尚未被本 Skill 登记保护的笔记')
+    source_tab = source_tab_for_item(item)
+    user_id = str(getattr(args, 'user_id', '') or '').strip()
+    marker = str(getattr(args, 'arc_tab_marker', '') or '').strip()
+    timeout_ms = min(10000, int(float(getattr(args, 'timeout_sec', 30)) * 1000) - 1000)
+    collected = item.get('_visible_collected')
+    if collected is False:
+        if source_tab != 'liked':
+            raise RuntimeError('收藏列表中的笔记却显示未收藏，已停止以免切换错误状态')
+        script = build_collect_into_board_js(
+            user_id,
+            marker,
+            note_id=note_id,
+            target_board=target_board,
+            timeout_ms=timeout_ms,
+        )
+    else:
+        script = build_assign_collected_note_js(
+            user_id,
+            marker,
+            note_id=note_id,
+            target_board=target_board,
+            allow_recollect=getattr(args, 'allow_recollect', False) is True,
+            timeout_ms=timeout_ms,
+        )
+    return (
+        '/* membership_state:not_in_any_board; '
+        'archive_lifecycle_state:first_archive_pending; exact_note_id_only */\n'
+        + script
+    )
+
+
+def open_exact_source_note(
+    session: BrowserVisibleUiSession,
+    item: Dict[str, Any],
+    *,
+    timeout_sec: float,
+) -> Dict[str, Any]:
+    note_id = str(item.get('id') or '').strip().lower()
+    source_tab = source_tab_for_item(item)
+    session.navigate(f'/user/profile/{session.user_id}', {'tab': source_tab})
+    deadline = time.monotonic() + timeout_sec
+    from xhs_visible_ui import build_source_page_ready_js
+    session.wait_for(
+        build_source_page_ready_js(session.user_id, session.tab_marker, source_tab),
+        timeout_sec=min(20.0, timeout_sec),
+    )
+    last_count = -1
+    last_scroll = -1
+    while time.monotonic() < deadline:
+        result = session.run_json(build_find_and_open_note_card_js(
+            session.user_id,
+            session.tab_marker,
+            note_id=note_id,
+            source_tab=source_tab,
+        ))
+        if result.get('found') is True and result.get('clicked') is True:
+            probe = session.wait_for(
+                build_note_collect_probe_js(session.user_id, session.tab_marker, note_id),
+                timeout_sec=min(20.0, max(1.0, deadline - time.monotonic())),
+            )
+            return dict(probe)
+        count = int(result.get('visible_card_count') or 0)
+        scroll_after = int(result.get('scroll_y_after') or 0)
+        if result.get('at_bottom') is True and count == last_count and scroll_after == last_scroll:
+            break
+        last_count = count
+        last_scroll = scroll_after
+        time.sleep(0.2)
+    raise VisibleUiContractError(
+        f'在{source_tab}列表完整滚动到底后仍未找到精确 note id：{note_id}'
+    )
+
+
+def read_target_board_state(
+    session: BrowserVisibleUiSession,
+    target_board: str,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    albums = read_visible_album_list(session)
+    matches = [row for row in albums['boards'] if row.get('name') == target_board]
+    if len(matches) != 1:
+        raise VisibleUiContractError('目标专辑必须在完整可见专辑列表中唯一存在')
+    return albums, read_visible_board(session, matches[0])
+
+
+def validate_live_assignment_membership(session, item):
+    """Re-prove the approved source before a potentially destructive toggle.
+
+    Even one new membership is a change: do not uncollect a note the user has
+    since put in another (possibly protected) album. Full reader fails on gaps.
+    """
+    snapshot = capture_visible_album_snapshot(session)
+    note_id = str(item.get('id') or '').lower()
+    actual = {board['id'] for board in snapshot['boards'] if note_id in board['note_ids']}
+    source = str(item.get('source_board_id') or '').lower()
+    expected = {source} if source else set()
+    if actual != expected:
+        raise VisibleUiContractError('笔记实时专辑关系已变化；不会取消收藏，必须重新生成计划')
+    return snapshot
+
+
+def successful_visible_assignment_chunk(
+    item: Dict[str, Any],
+    result: Dict[str, Any],
+    before_albums: Dict[str, Any],
+    before_board: Dict[str, Any],
+    after_albums: Dict[str, Any],
+    after_board: Dict[str, Any],
+    before_source_board: Optional[Dict[str, Any]] = None,
+    after_source_board: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    note_id = str(item.get('id') or '').strip().lower()
+    validate_new_collection_transition(before_board, after_board, note_id)
+    before_identity = {(row['id'], row['name']) for row in before_albums['boards']}
+    after_identity = {(row['id'], row['name']) for row in after_albums['boards']}
+    if before_albums['declared_board_count'] != after_albums['declared_board_count']:
+        raise VisibleUiContractError('归档后专辑总数发生变化')
+    if before_identity != after_identity:
+        raise VisibleUiContractError('归档后专辑 id/名称集合发生变化')
+    if before_source_board is not None:
+        if after_source_board is None:
+            raise VisibleUiContractError('跨专辑归档后缺少原专辑回读')
+        before_source_ids = set(before_source_board.get('note_ids') or [])
+        after_source_ids = set(after_source_board.get('note_ids') or [])
+        if note_id not in before_source_ids:
+            raise VisibleUiContractError('跨专辑归档前原专辑没有该笔记')
+        if (
+            after_source_board.get('declared_total') != before_source_board.get('declared_total') - 1
+            or after_source_ids != before_source_ids - {note_id}
+        ):
+            raise VisibleUiContractError('跨专辑归档后原专辑没有精确减少该笔记')
+    row = {
+        'id': note_id,
+        'title': item.get('title') or '',
+        'target_board': item.get('target_board') or '',
+        'status': 'success',
+        'attempt': 1,
+        'events': list(result.get('events') or []) + ['verify:exact_member_append'],
+        'error': '',
+        'verified': True,
+        'visible_confirmation': result.get('visible_confirmation') or '',
+        'source_board': '',
+        'source_board_id': '',
+        'membership_state': 'skill_archived_board_member_protected',
+        'archive_lifecycle_state': 'first_archive_confirmed',
+        'source_lists': item.get('source_lists', []),
+        'source_primary': item.get('source_primary', ''),
+        'exclude_reason': '',
+    }
+    target = row['target_board']
+    return {
+        'board_list_count': after_albums['declared_board_count'],
+        'board_list_page_count': after_albums['page_count'],
+        'processed': [row],
+        'errors': [],
+        'missing_boards': [],
+        'board_counts_before': {target: before_board['declared_total']},
+        'board_counts_after': {target: after_board['declared_total']},
+        'board_count_checks': {target: {
+            'before': before_board['declared_total'],
+            'after': after_board['declared_total'],
+            'expected_delta': 1,
+            'passed': True,
+        }},
+    }
 
 def poll_browser_job(runner: BrowserRunner, run_id: str, timeout_sec: int) -> Dict[str, Any]:
     deadline = time.time() + timeout_sec
@@ -1255,10 +1089,12 @@ def poll_browser_job(runner: BrowserRunner, run_id: str, timeout_sec: int) -> Di
                 return state.get('result') or {}
             message = state.get('error') or 'browser job failed'
             if classify_safety_error(message):
-                raise SafetyHaltedError(str(message))
+                error = SafetyHaltedError(str(message))
+                error.ui_state = state
+                raise error
             raise RuntimeError(message)
         time.sleep(1)
-    raise TimeoutError('browser job timed out')
+    raise SafetyHaltedError('HIGH_RISK_STATE_UNCERTAIN: browser job timed out after dispatch; do not retry')
 
 
 def record_security_halt(
@@ -1302,6 +1138,8 @@ def record_security_halt(
             events.append('safety:security_halted')
     if row not in report.setdefault('errors', []):
         report['errors'].append(row)
+    if isinstance(getattr(error, 'ui_state', None), dict):
+        row['visible_ui_state'] = error.ui_state
     report['safety_state'] = 'security_halted'
     report['security_halted'] = True
     report['safety_halt'] = {
@@ -1327,11 +1165,26 @@ def is_ready_move(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
     return all((
         not item.get('excluded'),
         not item.get('exclude_reason'),
-        item.get('membership_state') == 'not_in_any_board',
+        item.get('membership_state') in {'not_in_any_board', 'unarchived_board_member'},
         item.get('archive_lifecycle_state') == 'first_archive_pending',
-        not bool(str(item.get('source_board_id') or '').strip()),
         bool(str(item.get('id') or '').strip()),
         bool(str(item.get('target_board') or '').strip()),
+        str(item.get('source_board') or '').strip() != str(item.get('target_board') or '').strip(),
+        confidence_allows_move(item, allow_low_confidence),
+    ))
+
+
+def is_ready_finalize(item: Dict[str, Any], allow_low_confidence: bool) -> bool:
+    status = str(item.get('status') or '').strip()
+    return all((
+        not status or status == 'planned',
+        not item.get('excluded'),
+        not item.get('exclude_reason'),
+        item.get('membership_state') == 'unarchived_board_member',
+        item.get('archive_lifecycle_state') == 'first_archive_pending',
+        bool(str(item.get('id') or '').strip()),
+        bool(str(item.get('target_board') or '').strip()),
+        str(item.get('source_board') or '').strip() == str(item.get('target_board') or '').strip(),
         confidence_allows_move(item, allow_low_confidence),
     ))
 
@@ -1343,6 +1196,7 @@ def apply_batch(
     report_path: Path,
     commit_callback: Optional[Callable[[], None]] = None,
     post_commit_callback: Optional[Callable[['BrowserRunner'], None]] = None,
+    completion_callback: Optional[Callable[[BrowserVisibleUiSession, Dict[str, Any]], None]] = None,
 ) -> None:
     backend = choose_backend(args.browser, args)
     arc_selector = {
@@ -1367,9 +1221,11 @@ def apply_batch(
     session_limit = move_session_limit(args)
     safety_state = resolve_safety_state_path(getattr(args, 'safety_state', ''), report_path)
     move_policy = {
-        'auto_scroll': False,
-        'auto_navigation': False,
+        'auto_scroll': True,
+        'auto_navigation': True,
         'auto_retry': False,
+        'visible_ui_only': True,
+        'exact_note_id_only': True,
         'max_moves_per_session': session_limit,
     }
     if commit_callback is None:
@@ -1383,18 +1239,34 @@ def apply_batch(
         for item in classification
         if is_ready_move(item, args.allow_low_confidence)
     ]
+    finalize_items = [
+        item
+        for item in classification
+        if is_ready_finalize(item, args.allow_low_confidence)
+    ]
     planned_items = executable_items[:session_limit]
     remaining_count = len(executable_items) - len(planned_items)
-    if not planned_items:
+    if not planned_items and not finalize_items:
         report['session_status'] = 'completed'
         report['updated_at'] = utc_now()
         write_json(report_path, report)
         return
-    build_browser_job(planned_items, args)
+    for item in planned_items:
+        if source_tab_for_item(item) == 'fav' and getattr(args, 'allow_recollect', False) is not True:
+            report.update({'mode': 'execute_blocked', 'ready_for_execute': False,
+                           'blockers': ['recollect_consent_required'], 'session_status': 'blocked'})
+            write_json(report_path, report)
+            raise RuntimeError('已有收藏归档需要明确同意取消后重新收藏（--allow-recollect）；尚未打开浏览器')
+        build_browser_job([item], args)
     runner = BrowserRunner(backend, args)
     try:
+        validate_write_live_binding(runner, args)
+        session = BrowserVisibleUiSession(
+            runner,
+            str(getattr(args, 'user_id', '') or ''),
+            str(getattr(args, 'arc_tab_marker', '') or '') if backend == 'arc' else '',
+        )
         if commit_callback is not None:
-            validate_write_live_binding(runner, args)
             commit_callback()
             ensure_active_session(safety_state, stage='move', policy=move_policy)
         if post_commit_callback is not None:
@@ -1421,14 +1293,119 @@ def apply_batch(
                 report['updated_at'] = utc_now()
                 write_json(report_path, report)
                 raise
+        for item in finalize_items:
+            albums, board = read_target_board_state(
+                session,
+                str(item.get('target_board') or '').strip(),
+            )
+            note_id = str(item.get('id') or '').strip().lower()
+            if note_id not in set(board.get('note_ids') or []):
+                raise VisibleUiContractError(
+                    f'待登记笔记不在声明的目标专辑中：{note_id}'
+                )
+            row = {
+                'id': note_id,
+                'title': item.get('title') or '',
+                'target_board': item.get('target_board') or '',
+                'status': 'already_in_target',
+                'attempt': 0,
+                'events': ['verify:already_in_target', 'archive:first_archive_confirmed'],
+                'error': '',
+                'verified': True,
+                'source_board': item.get('source_board') or '',
+                'source_board_id': item.get('source_board_id') or '',
+                'membership_state': 'skill_archived_board_member_protected',
+                'archive_lifecycle_state': 'first_archive_confirmed',
+                'source_lists': item.get('source_lists', []),
+                'source_primary': item.get('source_primary', ''),
+                'exclude_reason': '',
+            }
+            report.setdefault('processed', []).append(row)
+            report['board_list_count'] = albums['declared_board_count']
+            report['board_list_page_count'] = albums['page_count']
+            report['updated_at'] = utc_now()
+            write_json(report_path, report)
         for index, item in enumerate(planned_items):
             if index > 0 and inter_item_delay_sec > 0:
                 time.sleep(inter_item_delay_sec)
             try:
-                run_id = parse_browser_job_id(
-                    runner.run_javascript(build_browser_job([item], args))
+                validate_live_assignment_membership(session, item)
+                before_albums, before_board = read_target_board_state(
+                    session,
+                    str(item.get('target_board') or '').strip(),
                 )
-                result = poll_browser_job(runner, run_id, args.timeout_sec)
+                before_source_board = None
+                source_board_id = str(item.get('source_board_id') or '').strip().lower()
+                if source_board_id:
+                    source_matches = [
+                        row for row in before_albums['boards']
+                        if str(row.get('id') or '').strip().lower() == source_board_id
+                    ]
+                    if len(source_matches) != 1:
+                        raise VisibleUiContractError('原专辑必须在完整专辑列表中唯一存在')
+                    before_source_board = read_visible_board(session, source_matches[0])
+                probe = open_exact_source_note(
+                    session,
+                    item,
+                    timeout_sec=float(args.timeout_sec),
+                )
+                source_tab = source_tab_for_item(item)
+                if probe.get('collected') is False and source_tab != 'liked':
+                    raise VisibleUiContractError(
+                        '收藏列表中的笔记显示未收藏，已停止以免误触收藏状态'
+                    )
+                if probe.get('collected') is True and getattr(args, 'allow_recollect', False) is not True:
+                    raise VisibleUiContractError('该笔记已收藏，缺少取消后重新收藏授权；保持零写入')
+                executable_item = dict(item)
+                executable_item['_visible_collected'] = probe.get('collected') is True
+                intent = {
+                    'id': item['id'],
+                    'operation': 'uncollect_recollect_then_join' if executable_item['_visible_collected'] else 'collect_then_join',
+                    'status': 'dispatching',
+                }
+                report.setdefault('write_intents', []).append(intent)
+                write_json(report_path, report)
+                try:
+                    run_id = parse_browser_job_id(
+                        runner.run_javascript(build_browser_job([executable_item], args))
+                    )
+                    result = poll_browser_job(runner, run_id, args.timeout_sec)
+                except Exception as dispatch_exc:
+                    intent['status'] = 'state_uncertain'
+                    error = SafetyHaltedError('HIGH_RISK_STATE_UNCERTAIN: 可见收藏/归入任务已下发；禁止自动重试；' + str(dispatch_exc))
+                    error.ui_state = getattr(dispatch_exc, 'ui_state', None)
+                    raise error from dispatch_exc
+                try:
+                    after_albums, after_board = read_target_board_state(
+                        session,
+                        str(item.get('target_board') or '').strip(),
+                    )
+                    after_source_board = None
+                    if source_board_id:
+                        source_matches = [
+                            row for row in after_albums['boards']
+                            if str(row.get('id') or '').strip().lower() == source_board_id
+                        ]
+                        if len(source_matches) != 1:
+                            raise VisibleUiContractError('归档后无法唯一找回原专辑')
+                        after_source_board = read_visible_board(session, source_matches[0])
+                    result = successful_visible_assignment_chunk(
+                        item,
+                        result,
+                        before_albums,
+                        before_board,
+                        after_albums,
+                        after_board,
+                        before_source_board,
+                        after_source_board,
+                    )
+                    intent['status'] = 'verified'
+                except Exception as verify_exc:
+                    intent['status'] = 'state_uncertain'
+                    raise RuntimeError(
+                        'HIGH_RISK_STATE_UNCERTAIN: 已点击目标专辑，但完整成员回读未通过；'
+                        + str(verify_exc)
+                    ) from verify_exc
             except Exception as exc:
                 if isinstance(exc, SafetyHaltedError) or classify_safety_error(exc):
                     record_security_halt(report, safety_state=safety_state, item=item, error=exc)
@@ -1486,6 +1463,8 @@ def apply_batch(
             report['next_action'] = '本次移动上限已到；请人工检查结果后，再明确开启新的移动会话。'
         else:
             report['session_status'] = 'completed'
+            if completion_callback is not None:
+                completion_callback(session, report)
         report['updated_at'] = utc_now()
         write_json(report_path, report)
     finally:
@@ -1493,12 +1472,19 @@ def apply_batch(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='生成离线分类预览；真实专辑读取、创建和移动已安全停用。')
+    parser = argparse.ArgumentParser(
+        description='生成分类预览、严格 dry-run，并在显式授权后通过正式可见页面执行归档。'
+    )
     parser.add_argument('classification', help='classification.json 路径')
     parser.add_argument('report', nargs='?', default='run_report.json', help='run_report.json 输出路径')
-    parser.add_argument('--execute', action='store_true', help='已停用；传入后会在打开浏览器前安全停止')
+    parser.add_argument(
+        '--execute',
+        action='store_true',
+        help='通过用户在当前回合明确授权的浏览器正式可见页面执行已确认归档',
+    )
     parser.add_argument('--browser', choices=['auto', 'arc', 'chrome', 'safari', 'playwright'], default='auto', help='执行浏览器后端；真实执行必须显式指定，禁止 auto')
     parser.add_argument('--allow-low-confidence', action='store_true', help='允许移动 low confidence 条目；默认要求人工复核')
+    parser.add_argument('--allow-recollect', action='store_true', help='仅用户明确同意后：待归档的已收藏笔记取消一次再重新收藏，以打开加入专辑；会改变收藏排序，中途失败可能留下未收藏状态')
     parser.add_argument('--verify-pages', type=int, default=10, help='每个目标专辑最多翻页核验次数')
     parser.add_argument('--timeout-sec', type=int, default=300, help='浏览器执行最长等待秒数')
     parser.add_argument('--inter-item-delay-sec', type=float, default=5.0, help='真实执行时两条移动之间的固定等待秒数；默认 5，测试可设 0')
@@ -1520,6 +1506,8 @@ def main() -> None:
     parser.add_argument('--created-boards', default='', help='build_created_boards.py 生成的目标专辑核验结果；与 --board-snapshot 同时提供')
     parser.add_argument('--allow-planned-board-creation', action='store_true', help='仅供受信 WorkBuddy dry-run：允许审批证据中声明待创建专辑')
     parser.add_argument('--collection-scope', default='', help='可选 collection_scope.json；提供时强制校验完整分类范围及专辑快照页面绑定')
+    parser.add_argument('--archive-registry', default='', help='可选：上一轮由本 Skill 回读确认后生成的 v2 归档登记；只有其中专辑的当前成员受保护')
+    parser.add_argument('--archive-output', default='', help='直接 execute 必填：写入新的不可覆盖 Skill 归档登记；同目录生成 post snapshot')
     args = parser.parse_args()
 
     if args.execute and is_workbuddy_host():
@@ -1531,7 +1519,6 @@ def main() -> None:
             '--allow-planned-board-creation 只能用于受信 WorkBuddy dry-run；'
             '真实执行必须由插件在同一会话中创建并核验专辑。'
         )
-
     classification = normalize_classification(load_json(args.classification))
     scope_path = str(args.collection_scope or '').strip()
     if scope_path:
@@ -1564,6 +1551,11 @@ def main() -> None:
             load_json(str(created_boards_path)),
             allow_low_confidence=args.allow_low_confidence,
             allow_planned_board_creation=args.allow_planned_board_creation,
+            archive_registry=(
+                load_json(str(Path(args.archive_registry)))
+                if str(args.archive_registry or '').strip()
+                else None
+            ),
         )
         classification = preflight.pop('resolved_items')
         report.update(preflight)
@@ -1572,6 +1564,9 @@ def main() -> None:
         report['created_boards'] = str(created_boards_path)
         report['created_boards_sha256'] = sha256_file(created_boards_path)
         report['classification_sha256'] = sha256_file(Path(args.classification))
+        if str(args.archive_registry or '').strip():
+            report['archive_registry'] = str(Path(args.archive_registry))
+            report['archive_registry_sha256'] = sha256_file(Path(args.archive_registry))
         if scope_path:
             report['collection_scope'] = scope_path
             report['collection_scope_sha256'] = sha256_file(Path(scope_path))
@@ -1626,7 +1621,67 @@ def main() -> None:
         report['skipped_success_count'] = len(preserved)
 
     if args.execute:
-        apply_batch(classification, report, args, report_path)
+        if not str(args.archive_output or '').strip():
+            report['mode'] = 'execute_blocked'
+            report['ready_for_execute'] = False
+            report['blockers'] = ['archive_output_required']
+            report['finished_at'] = utc_now()
+            write_json(report_path, report)
+            raise SystemExit('--execute 必须提供 --archive-output；只有完成实时回读并写入归档登记后才算完成')
+        archive_output = Path(args.archive_output)
+        if archive_output.exists():
+            raise SystemExit(f'拒绝覆盖已有归档登记：{archive_output}')
+        post_snapshot_path = archive_output.with_name(archive_output.stem + '.post_board_snapshot.json')
+        if post_snapshot_path.exists():
+            raise SystemExit(f'拒绝覆盖已有 post snapshot：{post_snapshot_path}')
+
+        def write_direct_archive(session: BrowserVisibleUiSession, current_report: Dict[str, Any]) -> None:
+            from build_archived_notes_registry import build_registry
+            snapshot = capture_visible_album_snapshot(session)
+            snapshot['generated_at'] = utc_now()
+            snapshot['source'].update({
+                'browser': choose_backend(args.browser, args),
+                'user_id': args.user_id,
+                'expected_url_substring': args.expected_url_substring or args.arc_expected_url_substring,
+                'verify_pages': args.verify_pages,
+                'writes_performed': False,
+            })
+            write_json(post_snapshot_path, snapshot)
+            previous = (
+                load_json(str(Path(args.archive_registry)))
+                if str(args.archive_registry or '').strip()
+                else None
+            )
+            registry = build_registry(
+                current_report,
+                snapshot,
+                user_id=args.user_id,
+                previous=previous,
+            )
+            registry['source_sha256'] = {
+                'run_report_before_registry': hashlib.sha256(
+                    json.dumps(current_report, ensure_ascii=False, sort_keys=True).encode('utf-8')
+                ).hexdigest(),
+                'post_board_snapshot': sha256_file(post_snapshot_path),
+                'previous_registry': (
+                    sha256_file(Path(args.archive_registry))
+                    if str(args.archive_registry or '').strip()
+                    else ''
+                ),
+            }
+            write_json(archive_output, registry)
+            current_report['post_board_snapshot'] = str(post_snapshot_path)
+            current_report['archive_registry'] = str(archive_output)
+            current_report['archived_board_count'] = registry['archived_board_count']
+            current_report['confirmed_archived_count'] = registry['confirmed_archived_count']
+
+        apply_batch(
+            classification,
+            report,
+            args,
+            report_path,
+            completion_callback=write_direct_archive,
+        )
     elif not has_preflight_inputs:
         for item in classification:
             append_classification_preview(report, item, args.allow_low_confidence)

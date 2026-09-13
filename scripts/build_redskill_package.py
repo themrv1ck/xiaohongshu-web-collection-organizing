@@ -18,6 +18,8 @@ SKILLHUB_REQUIRED_FILES = (
     'SKILL.md',
     'LICENSE.txt',
     'scripts/enable_workbuddy_mcp.py',
+    'scripts/xhs_album_assignment.js',
+    'references/visible-collection-entry.md',
 )
 RELEASE_EXCLUDED_PREFIXES = ('tests/', 'workbuddy-plugin-src/')
 RELEASE_EXCLUDED_FILES = {'.gitignore'}
@@ -85,7 +87,7 @@ def _skillhub_skill_text(text, version):
     release_fields = [
         'version: "{}"'.format(version),
         'license: MIT',
-        'compatibility: "Direct Arc album reads and visible-form creation require current-turn Arc authorization; historical collected notes and WorkBuddy account writes remain protected."',
+        'compatibility: "Visible-page account operations require current-turn browser authorization; only albums archived by this Skill and their live members are protected."',
     ]
     return '\n'.join(lines[:end] + release_fields + lines[end:]) + '\n'
 
@@ -115,9 +117,17 @@ def _tracked_files(repo_root):
 def _release_files(repo_root, channel):
     if channel == 'redskill':
         return [Path(relative) for relative in REDSKILL_REQUIRED_FILES]
+    # Explicit runtime dependencies must not disappear from a local build just
+    # because a newly added source file has not been staged yet. Never include
+    # arbitrary untracked files: those may contain private account evidence.
+    candidates = dict.fromkeys([
+        *_tracked_files(repo_root),
+        *(Path(relative) for relative in SKILLHUB_REQUIRED_FILES),
+    ])
     return [
-        relative for relative in _tracked_files(repo_root)
-        if relative.as_posix() not in RELEASE_EXCLUDED_FILES
+        relative for relative in candidates
+        if (repo_root / relative).is_file()
+        and relative.as_posix() not in RELEASE_EXCLUDED_FILES
         and not relative.as_posix().startswith(RELEASE_EXCLUDED_PREFIXES)
         and (
             channel != 'skillhub'
@@ -264,7 +274,7 @@ def build_redskill_package(repo_root, output_dir, channel='redskill'):
     }
     missing_required = [
         relative for relative in sorted(repository_required)
-        if Path(relative) not in tracked_files
+        if not (repo_root / relative).is_file() or (repo_root / relative).is_symlink()
     ]
     if missing_required:
         raise ValueError('仓库缺少发布文件: ' + ', '.join(missing_required))

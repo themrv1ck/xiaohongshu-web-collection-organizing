@@ -1,5 +1,5 @@
 name: xiaohongshu-web-collection-organizing
-version: 2.3.0
-description: "小红书收藏与点赞整理 Skill；直接 Arc 路径只使用正式页面可见控件，严格保护历史已收藏笔记。"
+version: 2.3.1
+description: "小红书收藏与点赞整理 Skill；只使用正式页面可见控件，保护本 Skill 已完成归档登记的专辑及其实时成员；未归档的已有收藏需明确同意取消后重新收藏。"
 category: productivity
 author: themrv1ck

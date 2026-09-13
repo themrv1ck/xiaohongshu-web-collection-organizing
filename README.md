@@ -6,11 +6,15 @@
 
 不适合：未登录小红书网页端、想绕过浏览器授权、想无确认批量改账号数据的人。
 
-## 2.3.0 Arc 可见页面状态
+## 2.3.1 正式可见页面状态
 
-直接 Arc 路径已重写为只使用小红书正式页面可见控件：可读取完整专辑卡片/成员卡片，可通过“创建专辑”表单创建已批准的空专辑，也可在新笔记尚未收藏时点击“收藏 → 加入专辑”完成首次归档。页面数量、id、名称或成员集不完整时直接报错停止。本次操作前已收藏的笔记永久保护，不取消、不重新收藏、不移动。旧的内部模块和私有 API 路径仍被禁止。
+本次修复：当前网页收藏按钮有 500 毫秒防连点限制，而且图标在请求完成前更新。执行器现使用单调时钟确保两次点击之间满足该窗口，并检查可见禁用/忙碌状态。对应离线用例已先失败再通过；修复后的真实重收藏入口也已通过下述限范围验收。根因证据与边界见 `references/visible-collection-entry.md`。
 
-WorkBuddy Plugin 尚未接入这个 Arc 适配器，所以 WorkBuddy 的账号读写仍停用；插件发布号与 Skill 统一为 `2.3.0`。
+**2026-09-13 实机复验通过：取消一次 → 约 601 毫秒后重新收藏一次 → 加入专辑 → 显示目标专辑。** 使用 WorkBuddy 专用 Chromium 和生产状态流程的预览入口，只操作明确批准的一篇测试笔记；目标专辑通过原生点击的 trial 检查，没有真的选择专辑。随后从收藏来源列表重新打开，确认仍已收藏，专辑目录和声明数量未变；自建浏览器进程全部关闭，本次未观察到 300031。新收藏入口、按 note id 打开原笔记、专辑目录读取和创建表单打开（未提交）也有实机证据。**实际归入提交、创建提交、完整归档后成员回读及 WorkBuddy 宿主端到端仍未测试。** 不把“不提交的可点击性检查”称为实际移动成功，也不保证未来不会出现平台验证；专辑成员数量不一致仍严格停止。
+
+整理路径只使用小红书正式页面可见控件：完整读取专辑卡片/成员卡片，通过“创建专辑”表单创建已批准的空专辑，并按抓取时的 note id 回到收藏或点赞列表点击真实卡片，再通过“加入专辑”完成归档。禁止按标题重新搜索。已收藏的待归档笔记须明确同意取消一次再重新收藏；仅点赞且尚未收藏时只点击一次收藏。两者都立即使用本次收藏后的“加入专辑”，不再悬停。详见 `references/visible-collection-entry.md`。
+
+保护依据不是“所有已收藏笔记”或“所有已有专辑成员”。只有本 Skill 完成 execute、逐条和最终完整回读成功，并写入 `xhs-skill-archive-registry-v2` 的专辑及其当前成员受保护。WorkBuddy Plugin 与完整 Skill 统一为 `2.3.1`，都使用同一可见页面流程。
 
 ## 能力边界
 
@@ -24,11 +28,11 @@ WorkBuddy Plugin 尚未接入这个 Arc 适配器，所以 WorkBuddy 的账号�
 - 支持分类计划、dry-run 报告、retry queue、报告汇总。
 - 无法可靠判断目标的未归档笔记固定进入“无法确定”；WorkBuddy 会在不存在时把该专辑加入同一次创建确认，之后由用户自行调整。
 - 轻度/深度整理开始前询问是否需要最终报告；肯定回答会在完整回读核验后生成桌面 HTML，按专辑说明主题和主要笔记内容。
-- 支持已有专辑排除清单，默认不移动用户决定保留的已有专辑内容。
+- `existing_boards_inventory.json` 只用于记录本轮当前专辑位置，不会把所有已有专辑成员错误锁定。
 - 支持 `--source collection|liked|custom` 标记来源；支持 `--append-existing` 合并收藏和点赞，按 note id 去重，并保留 `source_lists`。
 - 默认低风险采集：一次只读取当前已显示卡片、每段最多 200 条；不自动滚动、刷新、点击、导航或进入下一段。
-- 直接 Arc 路径支持可见专辑读取、可见表单创建和新笔记首次归档；WorkBuddy 账号读写和历史已收藏笔记移动仍安全停用。
-- 执行清单生成前先做全部专辑成员关系核对：不在任何专辑的条目处于 `first_archive_pending`，可以完成首次归档；当前已属于专辑的条目视为首次归档已确认并零写入保护。
+- Arc 与 WorkBuddy 都支持可见专辑读取、可见表单创建和按 note id 的首次归档；不访问网页内部模块或私有接口。
+- 执行清单生成前用上一份 v2 Skill 归档登记和本轮完整专辑快照交叉核验。登记专辑的实时成员受保护；未登记专辑成员和不在专辑中的条目仍是 `first_archive_pending`。
 - 新笔记首次归档后会重新读取目标专辑可见成员；只有“成员数精确 +1，旧成员全部保留，新 note id 唯一出现”时才记为 `success`。
 - 视频内容分类是可选开关：Video Transcript Extractor 优先获取平台字幕，无字幕时用 MiMo-V2.5-ASR-MLX 本地转写。
 - 视觉模块开启后，用户明确选择的每段视频都用 ffmpeg + macOS Vision + 所选 provider 分析完整时轴真实帧；所有本地分段完成后才可宣称覆盖全部视频。未开启视觉模块时只能标为 `transcript_only`。
@@ -41,7 +45,7 @@ WorkBuddy Plugin 尚未接入这个 Arc 适配器，所以 WorkBuddy 的账号�
 
 - 用户必须先在浏览器里登录小红书网页端。
 - 非 WorkBuddy 直接路径要求目标专辑已存在；WorkBuddy 可在用户确认名称和隐私后创建缺失专辑。“无法确定”也遵守同一确认闸门。
-- `run_reassign_batch.py` 不执行跨专辑移动；只有 `membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending` 且 `source_board_id` 为空的条目能进入 execute 清单。
+- `run_reassign_batch.py` 可归档 `not_in_any_board` 和 `unarchived_board_member`，但只处理 `first_archive_pending`。跨未登记专辑时必须回读原专辑精确减一、目标专辑精确加一。
 - 小红书网页结构和前端模块可能变化；如果页面变更，需要重新验证。
 - 分类体系默认是空的，只能从本次真实内容和用户已有专辑生成；图文可使用元数据与 OCR，视频开关开启时使用合格文字稿、完整时轴真实帧（若启用视觉模块）和所选 provider。低置信度条目默认不会真实移动。
 - 200 是程序的防误操作分段上限，不是平台公开的安全阈值，不能保证不会出现验证。
@@ -95,7 +99,7 @@ WorkBuddy Plugin 尚未接入这个 Arc 适配器，所以 WorkBuddy 的账号�
 
 ### WorkBuddy Plugin（WorkBuddy 用户使用这一条）
 
-若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.3.0` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
+若从 SkillHub 安装 Skill，直接提出整理请求即可；检测到 Plugin 缺失或版本不是 `2.3.1` 时，Skill 只会让用户回复一次“启用”，随后通过 WorkBuddy 官方 CLI 安装或更新固定的 GitHub Plugin，并要求重开一次 WorkBuddy。用户无需寻找插件页、配置 MCP 或粘贴下面的命令。下面的命令只保留给开发者手动安装和排障。
 
 在 WorkBuddy 对话中执行：
 
@@ -107,11 +111,11 @@ WorkBuddy Plugin 尚未接入这个 Arc 适配器，所以 WorkBuddy 的账号�
 
 加载成功后应出现六个 `xhs_workbuddy_*` 工具。先运行离线 status；只有用户同意后才安装 Playwright 依赖。Windows 复用系统 Edge 程序但使用插件独立 profile，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。用户只需在这个专用窗口登录一次小红书。
 
-正常使用时，用户不需要寻找 URL、复制地址、手动滚动或关闭浏览器。插件在同一个专用浏览器会话中自动完成列表和轻度 OCR 详情读取，固定每 200 条独立保存一组，非末组真实等待 3 分钟；只有声明总数、实际条数与全部位置严格一致才算完整，绝不会把首屏约 10 条当作全部。Cookie、原始 query、签名图片 URL 和 xsec 不写入 JSON。插件先只读取得真实已有专辑；没有合适专辑时，模型只能依据本次真实内容提议新名称，不附带预设内容类别。唯一固定规则是空目标进入“无法确定”，等待用户自行调整。待创建专辑及公开/私密设置、逐条移动和上限会合并为一次确认；执行时在同一个受管 BrowserContext 中先创建并核验空专辑，再移动收藏。
+正常使用时，用户不需要寻找 URL、复制地址、手动滚动或关闭浏览器。插件在同一个专用浏览器会话中先完整读取列表，再读取完整专辑成员并绑定 Skill 存档登记；只有登记专辑的实时成员受保护。轻度整理只对未受保护条目做详情与 OCR。固定每 200 条独立保存一组，非末组真实等待 3 分钟；只有声明总数、实际条数与全部位置严格一致才算完整，绝不会把首屏约 10 条当作全部。Cookie、原始 query、签名图片 URL 和 xsec 不写入 JSON。没有合适专辑时，模型只能依据本次真实内容提议新名称，不附带预设内容类别。唯一固定规则是空目标进入“无法确定”，等待用户自行调整。待创建专辑及公开/私密设置、逐条移动、上限和取消后重收藏的风险会合并为一次明确确认；执行时在同一个受管 BrowserContext 中先创建并核验空专辑，再移动收藏。
 
 `capture → prepare → prepare → execute` 之间的证据凭证由插件自动传递，用户不需要查看、复制或保存。凭证绑定账号、来源、页面 `tab`、整理档位、专辑创建方案、隐私、逐条移动、上限和实际文件哈希；最终 `COMMIT` 前会全部重算。直接运行抓取或 `--execute` 脚本会在 WorkBuddy 宿主中被拒绝，不能靠改 JSON 或重置安全状态绕过插件。
 
-已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.3.0`。
+已安装旧版的用户可在 WorkBuddy 中执行 `/plugin update xiaohongshu-organizer`，然后重启 WorkBuddy；当前插件版本为 `2.3.1`。
 
 如果 WorkBuddy 对话里暂时不能执行 `/plugin`，在本机 Terminal.app 运行：
 
@@ -442,7 +446,7 @@ python3 scripts/summarize_run_report.py classification_preview.json
 
 上面最后一步只是分类预览，不改小红书账号，也不具备执行资格。
 
-确认 `classification.json` 的分类建议后，必须先通过用户本轮授权的浏览器读取全部专辑的完整 `yC + U_ + Ks` 成员关系，再生成目标专辑核验结果和可执行 dry-run：
+确认 `classification.json` 的分类建议后，必须先通过用户本轮授权的浏览器，将正式页面的全部专辑卡片和成员卡片滚动读完，再生成目标专辑核验结果和可执行 dry-run：
 
 Arc 执行还必须提供稳定的窗口、标签页、`window.name` 标记和预期 URL：
 
@@ -462,6 +466,8 @@ python3 scripts/summarize_run_report.py run_report.json
 python3 scripts/run_reassign_batch.py classification.json run_report.json \
   --board-snapshot board_snapshot.json \
   --created-boards created_boards.json \
+  --archive-registry archive_registry_previous.json \
+  --archive-output archive_registry_new.json \
   --execute --browser arc --user-id '<user-id>' \
   --max-moves-per-session <本次明确范围> \
   --arc-window-id '<window-id>' \
@@ -472,9 +478,9 @@ python3 scripts/build_retry_queue.py run_report.json retry_queue.json
 python3 scripts/summarize_run_report.py run_report.json
 ```
 
-真实执行不接受浏览器 `auto`；必须把 `arc`、`chrome`、`safari` 或 `playwright` 写清楚，并且该浏览器已由用户在当前回合明确授权。缺少 `board_snapshot.json` 或 `created_boards.json` 时，脚本会在接触浏览器前拒绝执行。Arc 执行器通过隐藏 DOM bridge 把任务注入页面 main world，再从 Rspack `req.m` 按精确 endpoint 唯一解析 `d0/Ks/yC/U_`；匹配不唯一就停止，不猜导出名。
+真实执行不接受浏览器 `auto`；必须把 `arc`、`chrome`、`safari` 或 `playwright` 写清楚，并且该浏览器已由用户在当前回合明确授权。缺少 `board_snapshot.json` 或 `created_boards.json` 时，脚本会在接触浏览器前拒绝执行。第一次运行可省略 `--archive-registry`，之后每轮必须传入上一份 v2 登记；`--archive-output` 必须指向不存在的新文件。执行器只在正式页面上按 note id 点击真实卡片和“加入专辑”，不读取网页内部模块。
 
-首次归档待处理条目使用 `d0 -> U_/Ks`。任何当前已属于专辑、带 `source_board_id`、无法证明 `membership_state=not_in_any_board`，或生命周期不是 `first_archive_pending` 的条目都会在 Python 与页面 JavaScript 两层跳过；只有 `U_/Ks` 回读确认成功后才改为 `first_archive_confirmed`。执行器不解析取消收藏/重新收藏 endpoint，也不提供跨专辑事务。安全验证、登录页、页面绑定失效或状态不确定会先写报告和 `xhs_safety_state.json`，立即停写。每次只提交一条，达到本次上限后等待人工检查，不自动进入下一段。
+首次归档只处理 `first_archive_pending`。`not_in_any_board` 使用可见“加入专辑”；`unarchived_board_member` 若目标与当前专辑相同只回读登记，不同则通过同一官方可见流程归档，并验证原专辑 -1、目标专辑 +1。v2 登记专辑的成员保持零写入。安全验证、登录页、页面绑定失效或状态不确定会先写报告和 `xhs_safety_state.json`，立即停写。每次只提交一条，达到本次上限后不更新归档登记。
 
 如果你使用 Safari：
 
@@ -504,7 +510,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 - `ocr_results.json`：每条明确图文笔记的逐图 OCR 结果、聚合文字、图片集合哈希、覆盖计数和 `ocr_run_fingerprint`；缓存复用要求图片集合哈希和运行指纹同时一致
 - `video_transcripts.json`：开关开启时的视频时间戳文字稿
 - `video_analysis.json`：所选 analysis provider 根据合格文字稿和/或完整时轴真实帧生成的主要内容、短摘要、目标专辑、置信度和理由；视觉项额外带可验证证据清单，纯文字项必须标明 `transcript_only`
-- `existing_boards_inventory.json`：用户决定保留的已有专辑排除清单
+- `existing_boards_inventory.json`：本轮当前专辑位置清单；不代表 Skill 已归档保护
 - `classification.json`：分类建议；图文 OCR 成功时包含逐图证据和同一 `ocr_run_fingerprint`，非图文、跳过或未成功 OCR 的行指纹为空
 - `我的小红书专辑整理报告.html`：仅在轻度/深度整理前明确选择且最终核验通过时生成，默认放在桌面
 - `board_snapshot.json`：通过当前授权浏览器前端只读取得的全部专辑、完整分页成员关系及完整性检查
@@ -527,8 +533,8 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 - `scripts/verify_mimo_vl_install.py`：校验模型分片并用 `--run-inference` 做一次真实推理验收。
 - `scripts/ocr_note_images.py`：对完整图片集合逐张下载并执行 OCR；任一图片失败时不使用部分 OCR 文本分类。缓存复用还要求 `ocr_run_fingerprint` 一致；该指纹绑定实际 provider、Tesseract 语言和 Swift OCR 脚本版本。
 - `scripts/classify_items.py`：生成分类建议。
-- `scripts/build_existing_boards_inventory.py`：从已有专辑 JSON 生成排除清单。
-- `scripts/capture_board_snapshot.py`：在用户本轮授权的浏览器中，通过前端 `yC + U_ + Ks` 只读生成全部专辑成员快照；分页或数量不完整会明确标记。
+- `scripts/build_existing_boards_inventory.py`：从已有专辑 JSON 生成本轮位置清单。
+- `scripts/capture_board_snapshot.py`：在用户本轮授权的浏览器中，只读滚动正式页面上的全部专辑卡片和成员卡片；分页或数量不完整会立即报错。
 - `scripts/build_created_boards.py`：用 `classification.json` 和真实 `board_snapshot.json` 核对本次目标专辑是否存在。
 - `scripts/run_reassign_batch.py`：没有两份专辑证据时只输出不可执行的分类预览；同时传入 `--board-snapshot` 和 `--created-boards` 且硬闸门通过后才输出 dry-run。真实执行还必须传 `--execute --max-moves-per-session <1–200>`，达到上限只落盘。
 - `scripts/verify_board_membership.py`：只读抓取全部专辑成员，并核验一批已执行移动的来源、目标和全局唯一性。
@@ -549,7 +555,7 @@ python scripts\run_reassign_batch.py classification.json run_report.json --board
 - 视频链路只产出文字稿、分类 memo 和必要证据 JSON，不要求 Qwen 或 LM Studio。
 - 不将仅文字稿的结果冒充为已检查画面；视觉模块开启后，不跳过任何明确视频的完整时轴画面证据。
 - 不传 `--execute` 时不会改账号。
-- 不把对已在其他专辑条目直接 `d0` 的静默 no-op 算成功；没有 `U_` + `Ks` 的 note id 核验就不记成功。
+- 不把可见点击或“已加入”文案单独算成功；目标专辑完整成员必须精确增加该 note id，跨未登记专辑时原专辑还必须精确减少。
 
 ## 给 Hermes 使用
 

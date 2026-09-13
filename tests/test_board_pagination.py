@@ -1,167 +1,89 @@
 #!/usr/bin/env python3
-import argparse
-import json
-import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / 'scripts'
+SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from create_board import build_create_board_job  # noqa: E402
-from run_reassign_batch import (  # noqa: E402
-    BOARD_LIST_PAGINATION_JS,
-    build_browser_job,
+from xhs_visible_ui import (  # noqa: E402
+    VisibleUiContractError,
+    read_visible_album_list,
+    validate_album_scroll_snapshots,
 )
-from verify_board_membership import build_snapshot_job  # noqa: E402
+
+
+def board(index: int) -> dict:
+    return {
+        "id": f"{index:024x}",
+        "name": f"board-{index}",
+        "declared_total": index,
+        "path": f"/board/{index:024x}",
+    }
+
+
+def accumulating(total: int) -> list[list[dict]]:
+    rows = [board(index + 1) for index in range(total)]
+    stops = list(range(100, total, 100)) + [total]
+    return [rows[:stop] for stop in stops]
 
 
 class BoardPaginationTests(unittest.TestCase):
-    USER_ID = 'f' * 24
-
-    def run_js(self, scenario):
-        completed = subprocess.run(
-            ['node', '-e', BOARD_LIST_PAGINATION_JS + '\n' + scenario],
-            cwd=str(ROOT),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return json.loads(completed.stdout)
-
-    def test_reads_complete_board_counts_at_page_boundaries(self):
+    def test_reads_all_required_album_counts_from_visible_pages(self):
         for total in (100, 101, 181, 200, 201):
             with self.subTest(total=total):
-                result = self.run_js(f'''
-function boardAt(index) {{
-  return {{
-    id: index.toString(16).padStart(24, '0'),
-    name: 'board-' + index,
-    privacy: 0,
-    total: index
-  }};
-}}
-(async function() {{
-  const total = {total};
-  const calls = [];
-  const api = {{
-    yC: async function(options) {{
-      calls.push(options.params);
-      const start = (options.params.page - 1) * options.params.num;
-      const end = Math.min(total, start + options.params.num);
-      const boards = [];
-      for (let index = start; index < end; index += 1) boards.push(boardAt(index));
-      return {{boards, boardCount: total}};
-    }}
-  }};
-  const result = await loadAllBoardsStrict(api, '{self.USER_ID}');
-  console.log(JSON.stringify({{
-    boardCount: result.boardCount,
-    boardLength: result.boards.length,
-    pageCount: result.pageCount,
-    firstId: result.boards[0].id,
-    lastId: result.boards[result.boards.length - 1].id,
-    calls
-  }}));
-}})().catch(function(error) {{ console.error(error); process.exit(1); }});
-''')
-                expected_pages = (total + 99) // 100
-                self.assertEqual(result['boardCount'], total)
-                self.assertEqual(result['boardLength'], total)
-                self.assertEqual(result['pageCount'], expected_pages)
-                self.assertEqual(
-                    result['calls'],
-                    [
-                        {'userId': self.USER_ID, 'num': 100, 'page': page}
-                        for page in range(1, expected_pages + 1)
-                    ],
-                )
+                result = validate_album_scroll_snapshots(total, accumulating(total))
+                self.assertEqual(len(result), total)
+                self.assertEqual(result[-1]["id"], f"{total:024x}")
 
-    def failure_for(self, api_body):
-        return self.run_js(f'''
-function boardAt(index) {{
-  return {{id: index.toString(16).padStart(24, '0'), name: 'board-' + index}};
-}}
-(async function() {{
-  const api = {{yC: async function(options) {{ {api_body} }} }};
-  try {{
-    await loadAllBoardsStrict(api, '{self.USER_ID}');
-    console.log(JSON.stringify({{error: ''}}));
-  }} catch (error) {{
-    console.log(JSON.stringify({{error: error.message}}));
-  }}
-}})();
-''')['error']
+    def test_missing_page_is_a_hard_error(self):
+        with self.assertRaisesRegex(VisibleUiContractError, "缺页"):
+            validate_album_scroll_snapshots(181, accumulating(180))
 
-    def test_rejects_missing_page_data(self):
-        error = self.failure_for('''
-const total = 181;
-const start = (options.params.page - 1) * 100;
-const end = options.params.page === 2 ? 180 : Math.min(total, start + 100);
-const boards = [];
-for (let index = start; index < end; index += 1) boards.push(boardAt(index));
-return {boards, boardCount: total};
-''')
-        self.assertIn('page 2 length mismatch: expected 81, got 80', error)
+    def test_duplicate_album_is_a_hard_error(self):
+        rows = accumulating(101)[-1]
+        rows[-1] = dict(rows[0], name="duplicate-id")
+        with self.assertRaisesRegex(VisibleUiContractError, "重复"):
+            validate_album_scroll_snapshots(101, [rows])
 
-    def test_rejects_duplicate_data_across_pages(self):
-        error = self.failure_for('''
-const total = 101;
-if (options.params.page === 1) {
-  return {boards: Array.from({length: 100}, (_, index) => boardAt(index)), boardCount: total};
-}
-return {boards: [boardAt(0)], boardCount: total};
-''')
-        self.assertIn('duplicate board id or name on page 2', error)
+    def test_album_identity_change_is_a_hard_error(self):
+        first = accumulating(100)[-1]
+        changed = [dict(row) for row in first]
+        changed[0]["name"] = "changed"
+        with self.assertRaisesRegex(VisibleUiContractError, "绑定发生变化"):
+            validate_album_scroll_snapshots(100, [first, changed])
 
-    def test_rejects_board_count_changes(self):
-        error = self.failure_for('''
-const first = options.params.page === 1;
-const total = first ? 181 : 180;
-const start = (options.params.page - 1) * 100;
-const end = Math.min(181, start + (first ? 100 : 81));
-const boards = [];
-for (let index = start; index < end; index += 1) boards.push(boardAt(index));
-return {boards, boardCount: total};
-''')
-        self.assertIn('boardCount changed during pagination: expected 181, got 180', error)
+    def test_declared_count_change_is_a_hard_error(self):
+        class ChangingCountSession:
+            user_id = "f" * 24
+            tab_marker = "test-marker"
 
-    def test_rejects_missing_authoritative_board_count(self):
-        error = self.failure_for('''
-return {boards: Array.from({length: 100}, (_, index) => boardAt(index))};
-''')
-        self.assertIn('boardCount must be a non-negative integer', error)
+            def __init__(self):
+                self.wait_count = 0
+                self.snapshots = [
+                    {"declared_board_count": 201, "boards": accumulating(100)[-1]},
+                    {"declared_board_count": 202, "boards": accumulating(101)[-1]},
+                ]
 
-    def test_live_read_and_create_use_visible_ui_while_historical_move_is_disabled(self):
-        create_args = argparse.Namespace(
-            name='其他', desc='', privacy=0, execute=False,
-            user_id=self.USER_ID, verify_pages=10,
-            arc_tab_marker='marker',
-            arc_expected_url_substring='/user/profile/',
-            arc_window_id='window', arc_tab_id='tab', timeout_sec=30,
-        )
-        move_args = argparse.Namespace(
-            allow_low_confidence=False,
-            verify_pages=10,
-            user_id=self.USER_ID,
-            arc_tab_marker='',
-            expected_url_substring='',
-            arc_expected_url_substring='',
-        )
-        jobs = {
-            'read': build_snapshot_job(self.USER_ID, 10, 'marker', '/user/profile/'),
-            'create': build_create_board_job(create_args),
-        }
-        for label, job in jobs.items():
-            with self.subTest(path=label):
-                self.assertNotIn('/api/sns/web/v1/board', job)
-                self.assertNotIn('req.m', job)
-        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
-            build_browser_job([], move_args)
+            def navigate(self, path, query=None):
+                return None
+
+            def wait_for(self, script, *, timeout_sec=20.0):
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    return {"ok": True}
+                return self.snapshots.pop(0)
+
+            def run_json(self, script):
+                return {"ok": True}
+
+        with patch("xhs_visible_ui.time.sleep", return_value=None):
+            with self.assertRaisesRegex(VisibleUiContractError, "专辑总数变化"):
+                read_visible_album_list(ChangingCountSession())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

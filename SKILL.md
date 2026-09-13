@@ -1,41 +1,42 @@
 ---
 name: xiaohongshu-web-collection-organizing
-description: "Organize Xiaohongshu collections with strict first-archive protection. Version 2.3.0 reads album cards and members through visible Arc pages, creates albums through the visible form, and can archive only a currently-uncollected new note through the visible Collect then Add to album flow. Historical collected notes are never uncollected, re-collected, or moved."
+description: "Organize Xiaohongshu collections with Skill-owned archive protection. Version 2.3.1 uses only visible Xiaohongshu pages, opens exact captured note cards by note id, and protects only albums and members recorded after this Skill completes a verified archive run."
 ---
 
 # 小红书工作流 Skill
 
-This is the umbrella for Xiaohongshu web workflows. Use the collection/liked organizing sections only to archive notes that are not in any album; use the single-note research section below for one shared note URL.
+This is the umbrella for Xiaohongshu web workflows. Use the collection/liked organizing sections only for notes not protected by a verified Skill archive registry; use the single-note research section below for one shared note URL.
 
-## 2.3.0 Arc 可见页面合同（最高优先级）
+## 2.3.1 正式可见页面合同（最高优先级）
 
-只有用户在当前回合明确授权 Arc 时，才可绑定已打开的唯一 Arc 标签页；不启动、切换或接管 Chrome、Edge、Safari 或 Playwright 浏览器。
+只有用户在当前回合明确授权具体浏览器时才可连接或启动该浏览器；不得沿用历史授权，也不得自动切换到另一浏览器。WorkBuddy 只使用插件自己的可见 Playwright profile，不接管日常浏览器。
 
-- `capture_board_snapshot.py` 只读正式页面可见的专辑卡片和笔记卡片；专辑总数、成员总数、id 和名称必须完整一致。缺页、重复、数量变化或身份变化立即报错停止，不允许猜测。
+- `capture_board_snapshot.py` 只读正式页面可见的专辑卡片和笔记卡片；专辑总数、成员总数、id 和名称必须完整一致。100、101、181、200、201 或更多专辑都持续滚动到页面声明总数；缺页、重复、数量变化或身份变化立即报错停止，不允许猜测。
 - `create_board.py` 只可通过正式页面的“创建专辑”表单建立一个已明确批准的专辑；提交前后都要回读专辑清单，并确认总数精确增加 1、名称唯一、隐私一致、新专辑为空。
-- `collect_new_note.py` 只处理“本次操作前尚未收藏”的新笔记：点击可见的收藏按钮，等待“加入专辑”，选择可见的唯一目标专辑，再回读目标成员必须精确等于原集合加该笔记。
-- 只要笔记在本次操作前已经收藏，无论它是否已在专辑中，都不得取消收藏、重新收藏或移动。`run_reassign_batch.py --execute` 继续硬停。这是“第一次归档之后永久保护”的实现边界。
+- `run_reassign_batch.py` 必须回到精确来源列表，用抓取时保存的 note id 点击真实卡片；禁止用标题搜索、搜索结果重开或根据相似标题猜笔记。当前未收藏时点击一次收藏并立即使用“加入专辑”；已收藏且未受保护时，只有明确同意取消后重新收藏才能启用该流程，不再悬停。具体授权、风险和停止规则见 `references/visible-collection-entry.md`。
+- **保护依据不是“已经收藏”，也不是“进入任意专辑”。** 只有本 Skill execute 完成、逐条成员回读成功并写入 `xhs-skill-archive-registry-v2` 的专辑目录及其当前成员受保护。没有登记的手工专辑成员仍是 `first_archive_pending`；若分类目标与当前位置相同，只做成员核验并登记，不重复移动。dry-run、失败、中止、缺少最终回读或普通专辑快照都不能产生保护。
+- 专辑读取、创建和归档都只使用正式可见控件；写入后必须回读目标专辑精确增加该 ID。跨未登记专辑归档时，还必须回读原专辑精确减少该 ID。最终完整回读后生成新的不可覆盖登记，下一轮通过登记与实时快照交叉核验保护集合。
 - 所有当前能生成或下发的页面任务禁止 `webpackChunkxhs_pc_web`、`req.m`、`/api/sns/web/v1/board`、`/api/sns/web/v1/note/move` 及任何同类私有模块/接口。历史离线合同代码不得进入浏览器。出现 300031、安全验证、登录页或页面绑定丢失时立即持久化停机。
 
-WorkBuddy Plugin 2.3.0 没有接入上述 Arc 可见页面适配器，因此其 `login/capture/prepare/execute` 仍不可执行；不得把 Arc 直接路径冒充为 WorkBuddy 功能。下面的 WorkBuddy 和历史合同仅供数据结构参考，冲突时以本节为准。
+WorkBuddy Plugin 2.3.1 已接入同一套可见页面适配器；`login → capture → prepare → execute` 可按下列硬闸门执行。Claude Code、WorkBuddy 或其他宿主都不得自己发明“标题搜索再收藏”的替代流程。
 
-## WorkBuddy 历史合同（当前不可执行）
+## WorkBuddy 可执行合同
 
 先检查当前工具集中是否同时存在 `xhs_workbuddy_status`、`xhs_workbuddy_setup`、`xhs_workbuddy_login`、`xhs_workbuddy_capture`、`xhs_workbuddy_prepare`、`xhs_workbuddy_execute`。六个工具同时存在，才视为已检测到 WorkBuddy Plugin；不得用进程名、应用标题、环境猜测或模型自述判断宿主。
 
 检测到 WorkBuddy Plugin 后：
 
 1. 浏览器阶段只允许调用上述 `xhs_workbuddy_*` 工具。禁止直接运行 `osascript`、Safari/Arc/Chrome Apple Events、Computer Use、CDP，禁止调用脚本时传 `--browser safari|arc|chrome` 或 `--backend macos-*`。
-2. 先调用 `xhs_workbuddy_status`，并确认返回 `plugin_version=2.3.0`；缺失或版本不同都按第 11 步走官方 Plugin 安装/更新入口，重开 WorkBuddy 后再继续。版本正确但 `install_required=true` 时，先取得一次依赖安装同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)` 并复验 status。Windows 只安装 Python Playwright 并检查系统 Edge，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。
-3. 范围和整理深度确定后，WorkBuddy 的 capture 必须显式传唯一档位：快速整理为 `organizing_depth=quick`，轻度整理为 `organizing_depth=light`。轻度或深度整理必须在任何浏览器、采集或内容处理开始前，单独询问一次“整理完成并核验后，是否需要在桌面生成小红书专辑 HTML 报告？”并把回答固定为 `report_requested=true|false`；快速整理不询问并固定为 `false`。当前 WorkBuddy Plugin 尚未接入视频语音与完整时轴画面证据，也尚未在 capture 前接入 `archived_notes_registry.json`。若用户选择深度整理，或明确要求“已有收藏夹成员不再读取/识别/分类”，必须在打开浏览器前停止，不得把视频元数据冒充深度结果，也不得先 capture 全集再晚排除；只有用户另行授权非 WorkBuddy 的具体浏览器后，才可改走下面支持预分析归档排除的直接路径。其他快速或轻度场景确定后，只询问一次是否允许打开 WorkBuddy 专用浏览器完成本轮只读整理。WorkBuddy 固定每组 200 条、非末组间隔 3 分钟，这两个参数不暴露给模型或普通用户修改，也不得重复询问。用户同意后，这次授权覆盖本轮 `login → capture（轻度含同会话登录态详情补齐与本地 OCR）→ prepare` 三个只读阶段。
+2. 先调用 `xhs_workbuddy_status`，并确认返回 `plugin_version=2.3.1`；缺失或版本不同都按第 11 步走官方 Plugin 安装/更新入口，重开 WorkBuddy 后再继续。版本正确但 `install_required=true` 时，先取得一次依赖安装同意，再调用 `xhs_workbuddy_setup(install_dependencies=true)` 并复验 status。Windows 只安装 Python Playwright 并检查系统 Edge，不下载 Chromium；macOS/Linux 安装插件独立 Chromium。
+3. 范围和整理深度确定后，WorkBuddy 的 capture 必须显式传唯一档位：快速整理为 `organizing_depth=quick`，轻度整理为 `organizing_depth=light`。轻度或深度整理必须在任何浏览器、采集或内容处理开始前，单独询问一次“整理完成并核验后，是否需要在桌面生成小红书专辑 HTML 报告？”并把回答固定为 `report_requested=true|false`；快速整理不询问并固定为 `false`。WorkBuddy 必须在列表读取完成后、任何详情或 OCR 之前，完整读取专辑成员并绑定同账号最新的 Skill 归档登记；只排除登记专辑的实时成员，不排除所有收藏或所有普通专辑成员。当前 WorkBuddy Plugin 尚未接入视频语音与完整时轴画面证据；若用户选择深度整理，必须在打开浏览器前停止并说明缺失能力。其他快速或轻度场景确定后，只询问一次是否允许打开 WorkBuddy 专用浏览器完成本轮只读整理。WorkBuddy 固定每组 200 条、非末组间隔 3 分钟，这两个参数不暴露给模型或普通用户修改，也不得重复询问。用户同意后，这次授权覆盖本轮 `login → capture（含专辑保护核验；轻度只补齐未受保护条目并做本地 OCR）→ prepare` 三个只读阶段。
 4. 获得授权后调用 `xhs_workbuddy_login(browser_authorized=true,source=collection|liked)`。首次使用时用户只需在可见的 WorkBuddy 专用浏览器完成登录：Windows 使用系统 Edge 程序和插件独立 profile，macOS/Linux 使用插件独立 Chromium。插件必须自动识别当前账号、进入所选范围、保存精确 URL、关闭自己的全部窗口并确认 profile 已释放；不得要求用户打开目标页、关闭窗口或复制 URL。
    调用 capture 时还必须显式传 `generate_report=true|false`，且与第 3 步记录的回答一致；不得在整理结束后临时改变选择。
-5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,organizing_depth=quick|light)`，不得再次询问或让用户粘贴地址。WorkBuddy 插件必须在同一个专用浏览器会话中自动翻页：固定每 200 条独立保存一组，非最后一组真实等待 3 分钟后继续。轻度整理必须在关闭这次浏览器前，用只存在于插件进程内的原始卡片链接逐条打开全部已授权详情，用权威 `noteData.type` 纠正列表类型并取得完整图片列表；随后必须用同一个登录态 BrowserContext 下载图片字节到权限为 0600 的运行目录，只把相对本地路径与内容 SHA256 写入 `image_items.json`，清除源图片 URL 后再关闭浏览器并运行本地 OCR。Cookie、卡片原始 query、签名图片 URL 和 xsec 不得落盘、返回模型或出现在错误中。页面到底后只能在前端声明总数每次连读均未变化、真实唯一条数完全相等、且 `page_index ↔ note_id` 双向唯一并精确覆盖 `0..总数-1` 时结束；任一条缺少索引、同一笔记占多个位置、同一位置换笔记、总数变化/缺失、数量不符或索引缺口，都要保存已读数据并硬停，禁止把首屏约 10 条称为完整范围。列表采集不得点击、刷新、自动重试或写账号。只有 `ready_for_classification=true` 时插件才签发 capture receipt；WorkBuddy 必须自动传递，不得让用户查看、复制或保存。
-6. 抓取完成后，先调用一次不带 `classification` 的 `xhs_workbuddy_prepare(...)`，并自动传入 capture 返回的 `evidence_receipt`。这一次只读生成与本次账号、页面和 `verify_pages` 绑定的完整 `board_snapshot.json`。工具把所有已属于任一专辑的 note id 视为“首次归档已确认”并进入永久保护，只返回尚未首次归档的专辑外笔记脱敏 `classification_inputs`，同时返回 `phase=board_inventory`、`existing_board_names`、`protected_existing_board_member_count` 和新的 inventory receipt。`classification_required=true` 表示继续分类；即使 `existing_board_names=[]` 也不是失败，必须进入第 7 步，禁止生成任何固定默认类别。
-7. 只能使用第一次 prepare 返回的 `classification_inputs` 为专辑外真实 note id 分类。不得补回、识别、评价或纠正已保护的专辑成员。优先选择 `existing_board_names`；只有真实内容确实需要且没有合适专辑时，才可从本次输入归纳最多 20 个 `proposed_board_names`，不得从模板、示例或插件注入类别。存在提议时必须明确 `new_board_privacy=public|private`，并让每个提议至少被一条真实分类使用；无法准确判断的条目保持 `target_board=""`，由第二次 prepare 机械转入固定专辑“无法确定”，不得猜入其他专辑。禁止模型读取运行目录或原始 URL/凭据；轻度 OCR 失败不得静默改用元数据。
-8. 把只覆盖 `classification_inputs` 的完整逐条分类、可选的 `proposed_board_names`、对应隐私和 inventory receipt 自动传给第二次 `xhs_workbuddy_prepare(...)`。工具必须机械补入已保护行，写入 `archive_lifecycle_state=first_archive_confirmed` 并保持 `target_board=""`；专辑外空目标行必须写成 `target_board="无法确定"`、`uncertain_assignment=true`、`review_state=manual_reclassification_required`。若真实专辑清单中没有“无法确定”，工具自动把它加入同一次待创建清单并要求 `new_board_privacy=public|private`；不得生成其他默认类别。随后核验完整抓取、OCR、分类 ID、真实已有专辑和待创建名称；审批摘要只能包含专辑外笔记的待创建专辑、隐私、逐条移动与上限。第二次调用只生成 dry-run，不打开浏览器、不创建专辑。只有返回 `phase=dry_run`、`mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0`、非空 `approval_digest` 和 plan receipt，才可请求一次执行确认。
+5. 登录工具返回后，立即把其 `target_page_url` 原样传给 `xhs_workbuddy_capture(browser_authorized=true,organizing_depth=quick|light)`，不得再次询问或让用户粘贴地址。WorkBuddy 插件必须在同一个专用浏览器会话中自动翻页：固定每 200 条独立保存一组，非最后一组真实等待 3 分钟后继续。列表完整后先生成 `board_snapshot.json`，绑定最新 v2 登记，并算出登记专辑的实时成员。轻度整理随后只能用进程内原始卡片链接打开未受保护条目的详情；权威 `noteData.type` 用于纠正列表类型并取得完整图片列表，再以同一 BrowserContext 下载图片字节到权限为 0600 的运行目录。`image_items.json` 与 OCR 必须精确覆盖未受保护条目，已保护成员不得访问详情、不得 OCR。Cookie、卡片原始 query、签名图片 URL 和 xsec 不得落盘、返回模型或出现在错误中。页面到底后只能在前端声明总数每次连读均未变化、真实唯一条数完全相等、且 `page_index ↔ note_id` 双向唯一并精确覆盖 `0..总数-1` 时结束；任一条缺少索引、同一笔记占多个位置、同一位置换笔记、总数变化/缺失、数量不符或索引缺口，都要保存已读数据并硬停。列表采集和专辑读取不得写账号。只有全部证据通过时插件才签发 capture receipt。
+6. 抓取完成后，先调用一次不带 `classification` 的 `xhs_workbuddy_prepare(...)`，并自动传入 capture 返回的 `evidence_receipt`。这一次只校验 capture 已绑定的完整 `board_snapshot.json`、v2 登记和内容证据，不重复启动浏览器或重新生成保护集合。工具只把登记专辑的实时成员视为已保护；普通收藏和未登记专辑成员仍进入脱敏 `classification_inputs`。同时返回 `phase=board_inventory`、`existing_board_names`、`protected_existing_board_member_count` 和新的 inventory receipt。首次没有登记时使用显式空登记，不把现有专辑自动收编为保护集合。
+7. 只能使用第一次 prepare 返回的 `classification_inputs` 为未受保护的真实 note id 分类。不得补回、识别、评价或纠正已保护的专辑成员。优先选择 `existing_board_names`；只有真实内容确实需要且没有合适专辑时，才可从本次输入归纳最多 20 个 `proposed_board_names`，不得从模板、示例或插件注入类别。存在提议时必须明确 `new_board_privacy=public|private`，并让每个提议至少被一条真实分类使用；无法准确判断的条目保持 `target_board=""`，由第二次 prepare 机械转入固定专辑“无法确定”，不得猜入其他专辑。禁止模型读取运行目录或原始 URL/凭据；轻度 OCR 失败不得静默改用元数据。
+8. 把只覆盖 `classification_inputs` 的完整逐条分类、可选的 `proposed_board_names`、对应隐私和 inventory receipt 自动传给第二次 `xhs_workbuddy_prepare(...)`。工具必须机械补入已保护行，写入 `archive_lifecycle_state=first_archive_confirmed` 并保持 `target_board=""`；专辑外空目标行必须写成 `target_board="无法确定"`、`uncertain_assignment=true`、`review_state=manual_reclassification_required`。若真实专辑清单中没有“无法确定”，工具自动把它加入同一次待创建清单并要求 `new_board_privacy=public|private`；不得生成其他默认类别。随后核验完整抓取、OCR、分类 ID、真实已有专辑和待创建名称；审批摘要只包含未受保护条目的待创建专辑、隐私、逐条映射、上限和 `visible_assignment_contract.risk_notice`；必须明确说明取消后重收藏及其风险。第二次调用只生成 dry-run，不打开浏览器、不创建专辑。只有返回 `phase=dry_run`、`mode=dry_run`、`ready_for_execute=true`、`blockers=[]`、`planned_move_count>0`、非空 `approval_digest` 和 plan receipt，才可请求一次执行确认。
 9. 普通整理结果直接在当前对话里用简短纯文本报告，不调用可视化 Skill、可视化指南、组件渲染、仪表盘或 `present_files`，也不为已有 JSON 产物额外生成展示文件。唯一固定例外是第 3 步已记录 `report_requested=true`：执行与最终只读成员核验全部成功后，先用 `scripts/analyze_image_ocr.py <同批完整分类> <image_analysis.json> --analysis-provider <已明确选用且可用的 provider>` 把完整图文 OCR 转成整体概括，再运行 `scripts/generate_collection_report.py --board-snapshot <最终完整快照> --classification <同批完整分类> --image-analysis <image_analysis.json> --output "$HOME/Desktop/我的小红书专辑整理报告.html"`。生成器按专辑列出主题、内容类型、已保存主题和全部笔记摘要；原始 OCR 只作为摘要证据，不得直接冒充报告正文或写进 HTML。图文摘要必须与当前标题、OCR、OCR 指纹和图片数的来源哈希完全一致，缺项、重复或来源变化直接停止。成员与分类缺页、重复、数量变化或目标不一致时同样直接停止，不得重读笔记或猜写内容。除此之外，只有用户明确要求图表、网页或文件交付时才允许生成展示文件。普通文本报告仍只列工具顺序、抓取/分类数量、`mode`、`ready_for_execute`、`blockers`、`warnings`、`planned_move_count`、是否写入账号、`run_dir`，以及已正确归档/待复核条目。
-10. 用户明确确认待创建专辑及隐私、逐条映射与本次移动上限后，原样传回绑定这些内容的 `approval_digest` 并调用 `xhs_workbuddy_execute(...)`。Python 按 receipt 哈希把最终输入读入内存，启动本轮专用浏览器并核验精确 profile、`tab` 与前端“我”账号；MCP 重算哈希并回传 `COMMIT` 后，若有待创建专辑，必须在同一个 BrowserContext 中逐个创建，核验名称、隐私和空成员，再开始移动。若同名专辑已因前次不确定写入而存在，只有隐私一致且确认为空时才可继续；任一创建写入状态不确定都要安全停机，禁止继续移动。不得直接运行 `run_reassign_batch.py --execute` 或修改 JSON 绕过 receipt。
+10. 用户明确确认待创建专辑及隐私、逐条映射、本次移动上限，以及取消后重收藏的动作和风险后，原样传回绑定这些内容的 `approval_digest` 并调用 `xhs_workbuddy_execute(...)`。Python 按 receipt 哈希把最终输入读入内存，启动本轮专用浏览器并核验精确 profile、`tab` 与前端“我”账号；MCP 重算哈希并回传 `COMMIT` 后，若有待创建专辑，必须在同一个 BrowserContext 中逐个创建，核验名称、隐私和空成员，再按 note id 回到来源列表点击真实卡片并用可见“加入专辑”完成归档。不得按标题搜索。全部逐条回读和最终完整专辑回读成功后，才生成新的不可覆盖归档登记；中途失败或达到分段上限不更新登记。
 11. 如果六个工具缺少任何一个，且当前环境存在 `WORKBUDDY_CONFIG_DIR`，不要让普通用户寻找连接器页面、编辑 JSON、粘贴命令或处理 MCP 名词。只说明：“小红书插件需要一次性启用；回复‘启用’后，我会用 WorkBuddy 官方安装器安装或启用唯一的 `xiaohongshu-organizer`，然后你只需重开一次 WorkBuddy。”用户明确回复“启用”后，运行 `python3 scripts/enable_workbuddy_mcp.py --install-plugin`。脚本必须只从固定 GitHub marketplace `themrv1ck/xiaohongshu-web-collection-organizing` 安装/启用 `xiaohongshu-organizer@xiaohongshu-skill-marketplace`，再只把 `xiaohongshu-organizer` 加入 MCP 白名单；已有本地开发 marketplace 不得更新或覆盖，其他设置必须完整保留。任一步失败都不得写入成功状态。返回 `restart_required=true` 后，只让用户完全退出并重开 WorkBuddy，再重发原请求。其他宿主仍按“WorkBuddy Plugin 未安装或未加载”停止；不得退回 Safari、Arc、系统 Chrome，也不得用普通终端脚本冒充插件流程。
 
 WorkBuddy 路径由插件显式注入 `XHS_HOST=workbuddy` 与真实平台；浏览器入口会在代码层强制 Windows 为 Playwright `msedge`、macOS/Linux 为 `chromium`，始终使用可见窗口和插件独立 profile，并拒绝 CDP、headless 与用户日常浏览器目录。这条约束与选择 GLM、Hy3 或其他模型无关。完整合同见 `references/workbuddy-plugin.md`。
@@ -54,23 +55,23 @@ Workflow:
 
 See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 
-## 专辑整理历史合同（当前不可执行）
+## 专辑整理通用合同
 
-当用户要求整理“小红书收藏 / 点赞 / 我的收藏 / 专辑分类”且本轮尚未明确范围时，先显示首次使用欢迎卡片，说明 Skill 能读取用户选择的收藏/点赞范围、根据实际内容生成专辑分类建议，并在用户再次明确授权后执行移动；随后让用户回复“收藏”“点赞”或“我全都要”。用户回答“收藏”就只整理收藏里的笔记；回答“点赞”就只整理点赞里的笔记；回答“我全都要 / 全部 / 都要”就把点赞和收藏合并去重后一起整理。**首次归档锁定规则：当前不属于任何专辑的笔记处于 `first_archive_pending`，允许完成一次首次归档；只有移动成功且实时回读确认已进入目标专辑后，才转为 `first_archive_confirmed` 并永久保护。当前快照中已属于任一专辑的笔记视为首次归档已经完成，以用户现有整理结果为准，禁止重新分类、跨专辑移动、清理或模型纠错。dry-run、失败、中止或未回读确认都不能提前触发保护。该规则不提供开关。**采集按本地保存的 200 条被动分段进行：用户手动停在目标列表位置，Skill 只读取已显示卡片，不自动翻页、点击、刷新或进入下一段；全部已保存分段在本地合并、分类，再由用户明确开启写入会话。只有用户明确把范围改为“当前可访问的 N 条真实笔记”时，直接路径可使用受审计的 `collection_scope.json`；它不是“收藏”的静默降级。
+当用户要求整理“小红书收藏 / 点赞 / 我的收藏 / 专辑分类”且本轮尚未明确范围时，先显示首次使用欢迎卡片，说明 Skill 能读取用户选择的范围、根据实际内容生成分类建议，并在用户再次明确授权后执行写入；随后让用户回复“收藏”“点赞”“我全都要”或“其他”。**首次归档锁定规则：只有本 Skill 完成 execute、实时回读并写入 v2 归档登记的专辑目录及其成员受保护。所有已收藏笔记或所有已有专辑成员都不是保护依据。**
 
 允许的动作：
 - 可核对目标专辑是否已存在，并把缺失专辑写入 `created_boards.json`；只可在用户明确授权后创建新专辑，删除、重命名、合并或清理现有专辑不属于本整理流程。
 - 可通过 `capture_board_snapshot.py` 只读 Arc 正式页面可见的专辑卡片和成员卡片，完整一致时生成 `board_snapshot.json`。
-- 可通过 `collect_new_note.py` 把尚未收藏的新笔记收藏后立即加入既有专辑；已收藏笔记一律拒绝写入。
+- 可通过可见“加入专辑”流程整理未受保护笔记；仅点赞且未收藏时点击一次收藏。已有收藏的取消后重收须按 `references/visible-collection-entry.md` 明确说明并取得同意。
 - 只要下一步明确，就持续推进到全量完成、失败项入队、最终核验，不要在中间阶段只做总结就停止。
 
 硬性边界：
-- 所有已收藏笔记都不允许删除、取消收藏、重新收藏或移动；可见页面写入只允许处理本次操作前尚未收藏的新笔记。
+- 已登记保护的专辑及其实时成员不允许删除、取消收藏、重新收藏或移动；未登记条目可按已确认计划通过可见“加入专辑”首次归档。
 - 选择“点赞”或“我全都要”时，不得取消点赞、删除互动记录或把点赞来源静默丢弃；抓取和报告中必须保留 `source_lists` / `source_primary`，能区分笔记来自收藏、点赞或二者都有。
 - 不得把未分类、抓取失败或移动失败的笔记静默丢弃；必须写入 `retry_queue.json` / `run_report.json`。
 - 没有 `board_snapshot.json` 和 `created_boards.json` 时，`run_reassign_batch.py` 只会生成 `mode=classification_preview`、`ready_for_execute=false`、`missing_boards=null`；不得把分类预览称为 dry-run，不得用 `missing_boards=null` 或空值声称目标专辑已存在。
 - WorkBuddy 的最终说明必须逐字服从 `xhs_workbuddy_prepare` 返回值及其 `run_report.json` 的 `mode`、`ready_for_execute` 与 `blockers`。只有 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]` 且存在 `approval_digest` 才能展示可执行计划；任何其他状态都必须停止，禁止声称产物可直接复用执行。
-- 收藏整理流程不得删除、重命名、合并、清理现有专辑，也不得迁移其成员；这些动作不属于本 Skill 的整理权限。
+- 收藏整理流程不得删除、重命名、合并或清理专辑；未登记专辑成员只有在分类目标不同并获确认时才可迁移，且必须同时核验原专辑减一和目标专辑加一。
 - 不得把完整小红书 URL query、`xsec_token`、cookie、signed media URL、`sign` 参数或任何疑似凭据写入模型上下文、正式报告、Telegram/Discord 回复或日志摘要；只保留标准 `/explore/<note_id>`、标题、作者、公开计数和分类所需普通文本。历史上完整 `xsec_token` 链接曾触发 GPT `cyber_policy` 误判。
 
 ## 稳定工作流
@@ -89,11 +90,13 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
      >
      > 1. 回复“收藏”：只整理收藏列表；
      > 2. 回复“点赞”：只整理点赞列表；
-     > 3. 回复“我全都要”：合并收藏和点赞，并按笔记去重。
+     > 3. 回复“我全都要”：合并收藏和点赞，并按笔记去重；
+     > 4. 回复“其他”：先准确说明内容现在在哪里、想整理哪些内容、整理后要变成什么、允许读取和写入什么。
 
    - 收藏：抓取收藏页，`source=collection`。
    - 点赞：抓取点赞页，`source=liked`。
    - 我全都要：先抓收藏再抓点赞，按 note id 合并去重；同一笔记同时在收藏和点赞中出现时，`source_lists` 应包含两个来源。
+   - 其他：先要求用户用自己的话精确复述四项：来源位置、目标范围、期望结果、允许的读取/写入及本轮浏览器。收到后先判断能否严格映射为“收藏、点赞或二者合并 → 内容分析 → dry-run → 用户确认 → 可见加入专辑 → 完整回读归档登记”。能完整映射才继续下一步；只要需要发布/删除笔记、评论、点赞/取消点赞、关注、私信、绕过验证、访问他人私密数据，或缺少可验证来源/目标，就明确说明不可实现的具体原因，并推荐用户先在小红书完成哪项手工操作或把范围改成哪种可支持形式。禁止猜测、偷偷改成“收藏”或直接打开浏览器试探。
    - 范围确认后，当前宿主 Agent 先如实声明自身视觉能力为 `ready`、`unavailable` 或 `unknown`；无法证明时必须使用 `unknown`。随后运行 `python3 scripts/check_environment.py --capability-preflight`；已明确知道宿主具备视觉能力时可加 `--host-visual-capability ready --host-visual-name "<名称>"`。不得同时传浏览器、`--video-content`、analysis provider 或安装参数。
    - 读取 `capabilities.ocr`、`capabilities.video_audio.local_asr`、`capabilities.local_visual` 和 `capabilities.host_visual`，先向用户显示：
 
@@ -216,32 +219,29 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
    - “我全都要”时，收藏与点赞各自按被动分段保存；本地按 note id 合并，并保留来源列表。
    - 抓取结果必须保留 `content_type`。开启视频内容分类后，只有明确的 `video` 进入视频链路；`unknown` 不得按简介猜测。用户已明确授权详情且给出上限时，直接路径可在 `enrich_note_images.py` 加 `--resolve-unknown-content-types`，从详情权威 `noteData.type` 确认后才进入图文或视频链路；否则保持人工复核。
    - 列表页取得的 `cover_image_url` / `image_urls` 和 `content_type` 都只是 observed 线索：图片必须写成 `image_urls_complete=false`，不得作为完整图片集合；类型只用于决定详情补齐候选。详情页 `LAUNCHER_SSR_STORE_PAGE_DATA.noteData.type` 才是图文/视频类型的权威来源。
-3. 必须在任何详情补齐、OCR、视频下载、转写或视觉分析之前，先用本轮完整只读专辑快照和 `scripts/build_existing_boards_inventory.py` 建立 `existing_boards_inventory.json`。当前快照中的全部专辑成员是“首次归档已确认”的实时证据，统一进入保护集合；当前不在任何专辑的笔记仍是 `first_archive_pending`，不能提前保护。这是固定规则，不询问用户，也不存在重组开关。上一轮 `archived_notes_registry.json` 只用于审计连续性，不能替代本轮快照，也不能把本轮已不在任何专辑的笔记伪装成当前专辑成员。把本轮 inventory 作为 `--archive-registry <路径>` 传给 `enrich_note_images.py`、`ocr_note_images.py`、`transcribe_video_items.py`、`analyze_video_visuals.py` 和 `classify_items.py`。这些脚本必须先验证完整 `collection_scope`，再在访问详情、OCR 或视频前按 ID 排除；禁止先分析全集、到分类或移动阶段才排除。受保护 ID 不得进入 analysis provider，也不得因为缓存缺失而重跑。
+3. 必须在任何详情补齐、OCR、视频下载、转写或视觉分析之前，先读取本轮完整只读专辑快照，并载入同账号上一份 `xhs-skill-archive-registry-v2`。保护集合只取“登记专辑 ID 在本轮快照中的实时成员”；普通收藏和未登记专辑成员不受保护。首次没有登记时使用显式空登记。内容处理脚本必须同时传 `--archive-registry <登记路径> --board-snapshot <本轮完整快照>`，缺一就停止；禁止把 `existing_boards_inventory.json` 或任意专辑快照单独冒充归档登记。
 4. 图文 OCR 开关开启时，先在本地确定本次详情补齐范围。WorkBuddy 轻度整理必须在 `xhs_workbuddy_capture` 中传 `organizing_depth=light`，由同一登录态前端会话按每组最多 200 条、组间默认 3 分钟补齐所选范围，并在浏览器关闭后运行本地 OCR；严禁运行 `enrich_note_images.py`。其他宿主的 `enrich_note_images.py` 默认不会访问详情；只有用户明确同意这一次请求且给出 1–200 条上限，才传 `--allow-detail-requests --max-items <n>`；需要纠正 `unknown` 时额外传 `--resolve-unknown-content-types`。用户已授权 Arc 时必须同时传 `--browser arc --arc-profile <当前资料目录>`：脚本只在内存中复用当前收藏 API 的单条访问上下文，绝不落盘或输出 xsec/query；缺少该上下文时失败，不回退成无登录态猜测。两条路径都必须从详情权威 `noteData.imageList` 为明确图文笔记取得按原顺序排列的封面和全部内页图片列表，并用详情 `noteData.type` 覆盖 observed 类型；只有权威 `image_list_source`、`image_enrichment_status=ok`、`image_urls_complete=true` 且声明数量一致时，才允许 `scripts/ocr_note_images.py` 逐张 OCR并写入 `ocr_results.json`。任一图文笔记的图片列表不完整时，必须保留 `incomplete_image_set`，不得只识别封面后声称完成。若详情触发 `security_blocked`，必须立即停止后续请求、写出未请求状态和 `xhs_safety_state.json`，不得继续 OCR 或用 `--resume` 重发。开关关闭时跳过这两步并在分类时显式传 `--skip-ocr`。视频内容分类开关开启时不能用视频封面 OCR 下结论。
-5. 生成 `classification.json`。图文 OCR 开启时，只有 `status=ok`、完整图片集合哈希和本次 `ocr_run_fingerprint` 都一致才复用 `ocr_results.json`，否则补跑 OCR；关闭时必须传 `--skip-ocr`。必须传 `--existing-boards-inventory`；其中全部 note id 固定输出 `excluded=true`、`exclude_reason=existing_board_member_protected`、`archive_lifecycle_state=first_archive_confirmed`、空 `target_board`；经这份完整 inventory 证明仍在专辑外的行输出 `archive_lifecycle_state=first_archive_pending`。未归档且无法可靠选定目标的行必须机械写入固定 `target_board="无法确定"`、`confidence=low`、`uncertain_assignment=true`、`review_state=manual_reclassification_required`；若专辑不存在，`created_boards.json` 必须把它列为缺失并在取得创建确认前阻止执行。未做成员核对的普通分类预览只能标记 `not_checked`。`--include-existing-boards` 已删除，任何调用都不能覆盖保护。
+5. 生成 `classification.json`。图文 OCR 开启时，只有 `status=ok`、完整图片集合哈希和本次 `ocr_run_fingerprint` 都一致才复用 `ocr_results.json`，否则补跑 OCR；关闭时必须传 `--skip-ocr`。只有 v2 归档登记和本轮实时快照共同确认的 note id 固定输出 `excluded=true`、`exclude_reason=skill_archived_board_member_protected`、`archive_lifecycle_state=first_archive_confirmed`、空 `target_board`；其他条目保持 `first_archive_pending`。未归档且无法可靠选定目标的行必须机械写入固定 `target_board="无法确定"`、`confidence=low`、`uncertain_assignment=true`、`review_state=manual_reclassification_required`。
    - 视频开关开启时，视频访问也必须先确定本次范围：`transcribe_video_items.py` 需要 `--allow-video-access` 与明确的 `--video-id` 或 `--max-videos <1–200>`；视觉分析的 `--all-videos` 还必须同时给 `--max-videos <1–200>`。每段保存后停下，下一段需用户再次明确开始。任何安全提示会写入同一份 `xhs_safety_state.json` 并阻止续跑。完成全部本地保存分段后，才生成文字 memo、完整时轴视觉 memo 和 `classification.json`。
    - analysis provider 必须由用户选择：`codex-cli` 是已安装 Codex CLI 的适配器；`mimo-vl-mlx` 是本地官方 BF16 MiMo-VL + MLX-VLM；`command` 用于已有宿主 Agent/API，不经 shell 执行固定 argv，stdin 每次一行 `{"protocol_version":1,"prompt":"...","image_paths":["..."]}`，stdout 必须且只能输出一个 JSON 对象。
    - MiMo-VL 的视频入口只分析画面，不读取音轨。声音信息始终来自平台字幕或 MiMo ASR，以文字稿形式与真实帧一起交给 provider。
    - 长批次中，ASR 与持久 provider worker 各自只加载一次模型；转写与分析 checkpoint 必须原子写盘。正式分类默认要求分析结果覆盖本轮未归档的全部明确视频；`--allow-partial-video-analysis` 只用于显式抽样测试。
    - `video_analysis.json` 只保存分类所需的极简内容 memo（主要内容、短摘要、目标专辑、置信度、理由）；视觉修复成功项另保存帧时间戳、帧/OCR 哈希和完整时轴覆盖证据，不生成额外报告或 HTML。
    - 视频转写、覆盖率校验或 analysis provider 失败时，分析结果先保留空目标；写入最终 `classification.json` 时再机械转入“无法确定”。开启视觉模块后，任一本轮未归档的明确视频，其真实帧证据不完整就不得标记为完成；未开启视觉模块时，成功项也必须标为 `transcript_only`。转写与所选分析路径都失败时，必须保留真实 `video_content_unavailable` 错误状态并进入“无法确定”；禁止回退标题、简介、作者、封面 OCR 或任何猜测。
-6. 分析完成后必须在用户本轮明确授权的浏览器上重新运行 `scripts/capture_board_snapshot.py board_snapshot.json --browser <浏览器> --user-id <当前账号> --expected-url-substring <当前页面片段>`，通过前端 `yC + U_ + Ks` 完整分页读取全部专辑成员，并与第 3 步的预分析 inventory 比较；任何原成员、专辑身份或绑定变化都停止。随后运行 `scripts/build_created_boards.py classification.json board_snapshot.json created_boards.json`。缺失专辑只记录为 `missing`，不自动创建。`board_snapshot.validation.full_membership_complete` 不是 `true` 时停止。
+6. 分析完成后必须在用户本轮明确授权的浏览器上重新运行 `scripts/capture_board_snapshot.py board_snapshot.json --browser <浏览器> --user-id <当前账号> --expected-url-substring <当前页面片段>`，只通过正式页面可见专辑卡片与成员卡片读取完整关系；缺页、重复、数量变化或身份变化都停止。随后运行 `scripts/build_created_boards.py classification.json board_snapshot.json created_boards.json`。
 7. 生成执行清单时必须同时传入上述两份证据：`scripts/run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json`。脚本必须先按本轮快照判定成员关系，再校验分类目标，WorkBuddy 不得自行猜测：
-   - 已属于任一专辑：统一标记 `membership_state=existing_board_member_protected`、`archive_lifecycle_state=first_archive_confirmed`，强制 `excluded=true` 并保持零写入；即使模型目标不同、目标不存在、置信度低或同时出现在多个专辑，也不得进入移动清单。
-   - 不在任何专辑：标记 `membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending`，保持空 `source_board_id`，才允许用 `d0` 完成首次归档。
-   - 快照分页不完整、账号/页面绑定变化或无法证明“不在任何专辑”时停止；禁止推断、跨专辑迁移或静默放行。
+   - v2 登记专辑的实时成员：标记 `skill_archived_board_member_protected + first_archive_confirmed` 并保持零写入。
+   - 未登记专辑成员：标记 `unarchived_board_member + first_archive_pending`；目标与当前专辑相同则只核验并登记，目标不同才进入已确认的可见跨专辑归档。
+   - 不在任何专辑：标记 `not_in_any_board + first_archive_pending`，允许通过可见“加入专辑”首次归档。
+   - 快照分页不完整、账号/页面绑定变化或归档登记不一致时停止；禁止推断或静默放行。
    - 只有报告同时满足 `mode=dry_run`、`ready_for_execute=true`、`blockers=[]`，才是可执行 dry-run；否则停止。
-8. 用户确认专辑外笔记的分类、目标专辑和风险后，才允许运行 `scripts/run_reassign_batch.py classification.json run_report.json --board-snapshot board_snapshot.json --created-boards created_boards.json --execute --browser <用户本轮明确授权的浏览器> --user-id <同一账号> --expected-url-substring <同一页面片段> --max-moves-per-session <1–200>`。执行浏览器、账号、页面片段和共享安全会话必须与快照完全一致；缺少证据或绑定变化会在接触浏览器前拒绝。`auto` 会直接拒绝执行，禁止自动控制 Chrome 或其他外部浏览器。移动上限是人工检查断点，不是平台安全保证；到上限后只落盘，不自动进入下一段。Arc 写入还必须绑定不变的 `window id + tab id + --arc-tab-marker（预先写入 window.name 的稳定标记）+ --arc-expected-url-substring`，少任一项就中止。
-   - Arc execute JavaScript 必须注入页面 main world；隔离世界只负责创建/轮询隐藏 DOM 状态节点，结果通过 DOM bridge 返回，禁止把运行态挂到共享 `window` 全局。
-   - 专辑列表必须通过 `yC` 按 `num=100` 从 `page=1` 连续读取到 `boardCount` 对应的最后一页，禁止使用可能只含首屏的 `window.__INITIAL_STATE__`。每页数量必须与总数精确对应，跨页总数变化、缺页、重复 id/名称或缺少权威 `boardCount` 都立即中止。前端 API 必须从 Rspack `req.m` 按精确 endpoint 字面量唯一解析 `d0/Ks/yC/U_`，匹配为 0 或多个都中止，禁止猜压缩后的导出名。整理执行器不解析、不调用取消收藏或重新收藏 endpoint。
-   - 只有 `membership_state=not_in_any_board`、`archive_lifecycle_state=first_archive_pending` 且 `source_board_id=""` 的条目才可调用 `d0({targetBoardId, notesId})`。任何其他状态在 Python 和页面 JavaScript 两层都必须跳过。
-   - `d0(...)` 返回空对象 `{}` 不能判成功；必须以 `U_` + `Ks` 查到 note id 为准。
+8. 用户确认分类、目标专辑和风险后，才允许运行 `scripts/run_reassign_batch.py ... --archive-registry <上一份登记> --archive-output <新的不可覆盖登记> --execute --browser <用户本轮明确授权的浏览器> ...`。执行器必须按 note id 回到收藏或点赞来源列表点击真实卡片，禁止按标题搜索。已收藏且未受保护的笔记须明确同意取消后重新收藏，并传 `--allow-recollect`；仅点赞且未收藏时点击一次收藏。必须在同一详情中立即进入新出现的“加入专辑”，不导航离开再找入口。每条写入后用可见专辑成员卡片核验，完整结束后再写 post snapshot 和新登记。
 9. Python 每次只提交一条；浏览器返回首个错误行后，先合并并写入 `run_report.json`，再停止整批。页面出现安全验证、异常访问、频繁访问、登录页、执行页绑定失效或状态不确定时，必须先写 `xhs_safety_state.json` 和当前报告，再立即熔断；旧状态下 `--resume` 必须拒绝，重试队列标为“人工完成平台处理后开启新会话”，不得自动重试。
-10. 批次结束后在用户本轮授权的浏览器里重新抓取完整专辑成员并做数量核对；可访问前端运行时 API 时优先用 `U_` + `Ks` 做最终核验。post snapshot 必须同时证明：本轮开始时的全部专辑成员仍留在原有专辑，专辑外成功项已进入目标专辑，未成功项保持专辑外。**首次归档保护只在这次回读成功时生效**：成功项转为 `first_archive_confirmed`；失败、中止、未核验和仅 dry-run 条目继续保持 `first_archive_pending`，只能留在 `pending_not_archived`。只有回读成功后，才允许从 post snapshot 重建完整 inventory，并用 `build_archived_notes_registry.py` 写出一份新的、不可覆盖的版本化 registry。禁止原地修改旧 registry，也禁止把执行计划直接追加为 confirmed。
+10. 批次完整结束后在同一授权浏览器里重新抓取全部专辑成员。只有逐条结果与最终完整 post snapshot 都通过，才允许 `build_archived_notes_registry.py` 生成新的不可覆盖 v2 登记；失败、中止、仅 dry-run 或达到移动上限都不更新保护登记。
     - 当用户反馈“专辑里的笔记数量和笔记总量不一致”时，先做只读三方核对，不要立即执行移动：
       1. 在用户本轮授权的浏览器里从顶部全量滚动收藏页，得到可访问笔记集合 A。
-      2. 通过 webpack runtime 中的 `yC` 严格分页列出完整专辑，通过 `Ks` 分页抓每个专辑的真实笔记集合 B；禁止把 `window.__INITIAL_STATE__` 当成完整专辑清单。
-      3. 比较 `A - B`（收藏页可见但不在任何专辑）、`B - A`、专辑列表显示计数 vs `Ks` 实际返回计数、重复 noteId。
+      2. 通过正式页面可见专辑卡片和成员卡片完整滚动得到集合 B。
+      3. 比较 `A - B`、`B - A`、页面声明计数与可见唯一成员数、重复 noteId。
       4. 如果 `A == B` 但 UI 总数或专辑卡片计数更大，结论应是小红书缓存/失效/不可见笔记口径差异；不能声称有可移动的缺失笔记，也不要为了修计数执行 `note/move`。
 
 11. 第 10 步完整核验通过后，若 `report_requested=true`，只对同批完整分类中已有的完整图文 OCR 运行 `scripts/analyze_image_ocr.py`，生成与来源哈希逐条绑定的 `image_analysis.json`；随后运行 `scripts/generate_collection_report.py --board-snapshot <post snapshot> --classification <同批完整 classification.json> --image-analysis <image_analysis.json> --output "$HOME/Desktop/我的小红书专辑整理报告.html"`。报告按专辑说明主题、内容类型、已保存主题和主要笔记内容，只展示整体概括，不展示原始 OCR。生成器必须验证快照成员与分类 ID/目标逐条一致，并验证图文摘要完整覆盖且来源哈希未变；任一缺页、重复、数量变化、分类目标不一致或摘要来源变化都停止。若 `report_requested=false`，不得生成 HTML。报告阶段不打开浏览器、不重新 OCR/转写、不执行任何小红书写入；图文概括只分析已经保存的 OCR 证据。
@@ -256,9 +256,9 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
    - 不要只依赖当前可见卡片；需要滚动/翻页直到覆盖收藏列表，并把抓取覆盖情况写入 `visible_items.json`。
 
 2. 建立首次归档确认后的保护基线
-   - 先抓完整只读专辑成员快照并生成 `existing_boards_inventory.json`；当前属于任一专辑的全部 note id 视为首次归档已确认并自动保护，不询问是否重组。
-   - 当前 inventory 是本轮唯一成员关系事实源；历史 registry 只用于审计，不得覆盖本轮快照。
-   - 保护集合建立后才允许进入下一步；pending、dry-run、失败或未回读条目都不是当前专辑成员。
+   - 先抓完整只读专辑成员快照并载入同账号 v2 归档登记；只保护登记专辑的实时成员。
+   - 当前快照负责核验实时成员关系，v2 登记负责证明哪些专辑确由本 Skill 完成归档；缺一不可。
+   - 保护集合建立后才允许进入下一步；pending、dry-run、失败或未回读条目都不是受保护对象。
 
 3. 只读取未归档内容并生成专辑建议
    - 仅对排除集合外的图文笔记补齐按原顺序排列的封面和全部内页图片，下载/保存可访问图片并逐图 OCR；已归档 note id 不得进入详情请求或 OCR provider。
@@ -281,12 +281,12 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 ## 输入
 - 当前已登录的小红书收藏页 / 点赞页 / 专辑页
 - 用户给定或确认后的专辑体系 JSON
-- 固定生命周期策略：`first_archive_pending -> first_archive_confirmed -> 永久保护`；不可关闭
+- 固定生命周期策略：`first_archive_pending -> 整批最终回读 -> v2 归档登记 -> 受保护`；失败、中止或未写入登记时不生效
 - 用户确认的图文 OCR 开关：`classify_images_with_ocr=true/false`
 - 用户确认的视频内容分类开关：`classify_video_by_content=true/false`
 - 用户选择的快速启动档位：`quick` / `light` / `deep` / `custom`，以及其解析后的上述开关与 `visual_analysis=true/false`
-- `existing_boards_inventory.json`
-- 同账号、不可覆盖、只含回读确认成员的 `archived_notes_registry.json`
+- `existing_boards_inventory.json`：只描述本轮当前位置，不产生保护
+- 同账号、不可覆盖的 `xhs-skill-archive-registry-v2`：只登记本 Skill 完成整批归档和最终回读的专辑目录
 - 已抓取的 `visible_items.json`，每条建议包含 `source_lists` / `source_primary` 表示来自收藏、点赞或二者都有
 - 用户确认“当前可访问 N 条”时的 `collection_scope.json`；它必须与 `visible_items.json` 和后续分类的完整 note id 顺序一致
 - `image_items.json`：已补齐的图文封面及全部内页图片列表与完整性状态
@@ -304,7 +304,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - `video_analysis.json`（仅视频内容分类开启时）
 - `classification.json`
 - `existing_boards_inventory.json`
-- `archived_notes_registry.json`：同账号、不可覆盖；`confirmed_archived`（`first_archive_confirmed`）与 `pending_not_archived`（`first_archive_pending`）严格分开
+- `archive_registry_input.json` / 新的 v2 归档登记：按专辑 id 保存由本 Skill 完成归档的目录；只有新登记成功后下一轮才保护其实时成员
 - `board_snapshot.json`
 - `created_boards.json`
 - `run_report.json`
@@ -312,7 +312,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - `xhs_safety_state.json`：可恢复的 `active` 或不可由 `--resume` 清除的 `security_halted` 状态
 
 ## 分类复核要求
-- 图文 OCR 开关开启时，WorkBuddy 轻度整理只允许 `xhs_workbuddy_capture(organizing_depth=light)`；但用户要求已归档不再读取时，当前 WorkBuddy 路径必须按固定入口第 3 步停止。其他宿主运行 `enrich_note_images.py -> ocr_note_images.py`。允许执行的路径都必须只对本轮未归档图文，把封面和全部内页图片按原顺序逐张 OCR；关闭时不安装、不运行，预检结果也不得用于分类，并把对应条目标记为 `ocr_status=skipped` 或 `skipped_by_user`。视频视觉模块开启时，每个本轮未归档且明确选择的视频分段都跑完整时轴真实帧 + 逐帧 Vision OCR；所有本地分段完成前不得声称已覆盖本轮未归档的全部视频。未开启视频视觉模块时只能使用合格文字稿并标记 `transcript_only`。图文 OCR 与视频画面分析是两个独立开关；Vision OCR 不可用时，有视觉能力的 analysis provider 仍可直接看真实帧，但必须记录 `ocr_status=unavailable`。
+- 图文 OCR 开关开启时，WorkBuddy 轻度整理只允许 `xhs_workbuddy_capture(organizing_depth=light)`；其他宿主运行 `enrich_note_images.py -> ocr_note_images.py`。两条路径都只处理未被 v2 登记保护的图文；手工放入普通专辑但未由本 Skill 归档的图文仍属本轮待处理。开启时把封面和全部内页按原顺序逐张 OCR；关闭时不安装、不运行。视频视觉模块同样只处理未受保护的本轮视频。
 - `scripts/ocr_note_images.py` 的后端按平台自动选择：macOS 优先 `scripts/ocr_image.swift.txt` + Vision；Windows 优先 Tesseract / EasyOCR。所有后端必须逐图回写同一份 `ocr_results.json`；OCR 成功但未发现文字与图片下载/OCR 失败必须明确区分。
 - 如果用户关闭图文 OCR，分类流程继续走标题、desc、tags、作者等元数据，但必须在 `classification.json` 保留 `ocr_status=skipped` 或 `skipped_by_user`，并说明图片文字未参与分类、准确性可能下降。
 - 复核顺序：标题/desc/tags/作者 -> OCR 文本 -> 人工判断。
@@ -349,23 +349,23 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - 修改脚本后先跑 `python3 -m compileall -q .`。
 - 跑 `python3 -m unittest discover -s tests -p 'test_*.py'`，当前核心用例应覆盖 resume 过滤、报告 chunk 合并、抓取 manifest 写盘。
 - 再跑无副作用 smoke：`python3 scripts/classify_items.py examples/visible_items.example.json /tmp/xhs-classification-smoke.json --skip-ocr` 和 `python3 scripts/run_reassign_batch.py /tmp/xhs-classification-smoke.json /tmp/xhs-run-report-smoke.json`；后者必须得到 `mode=classification_preview`、`ready_for_execute=false`，不能得到 `planned`。
-- 不做真实网页登录态探针，不生成新的专辑快照，不创建专辑，不执行移动。发布验收只能验证这些入口在浏览器启动前安全停止。
+- 离线回归不打开浏览器、不生成新的专辑快照、不创建专辑、不移动笔记；它验证可见页面任务不含私有模块或标题搜索。真实页面验收只能在用户当前回合授权指定浏览器后另行进行。
 
 ## 核验方式
-1. 首次归档保护核验：必须先建立本轮排除清单；`classification.json` 中已有成员只能是 `existing_board_member_protected + first_archive_confirmed`，`run_report.json` 不得出现这些笔记的移动事件；专辑外收藏必须是 `not_in_any_board + first_archive_pending` 才能处理。
+1. 首次归档保护核验：必须用当前完整专辑快照与 v2 归档登记交叉核对。只有登记专辑的实时成员标记 `skill_archived_board_member_protected + first_archive_confirmed`并保持零写入；未登记专辑成员必须是 `unarchived_board_member + first_archive_pending`，专辑外笔记是 `not_in_any_board + first_archive_pending`。
 2. OCR 核验：`ocr_results.json` 只覆盖每条本轮未归档的明确图文笔记，并覆盖其封面和全部内页图片；`image_set_complete=true`、声明/可用/已处理图片数一致，每张图片都有独立 `status`，并记录本次 `ocr_run_fingerprint`
 3. 分类核验：`classification.json` 包含 `ocr_status` / `ocr_text` / `ocr_confidence` / `ocr_run_fingerprint`；成功图文透传与 OCR 结果相同的非空指纹，非图文、跳过或未成功 OCR 的行为空
-4. 事件核验：专辑外条目检查 `board:FOUND:<目标专辑>`、`note_move:CALLED`、`verify:note_present`、`archive:first_confirmed`；只有最后两个回读事件出现后才进入永久保护。已有专辑成员只能出现 `skip:existing_board_excluded` 或 `skip:first_archive_not_eligible`，不得出现任何写入事件。
+4. 事件核验：归档写入项必须出现可见“已加入”确认和 `verify:exact_member_append`；跨未登记专辑还要验证原专辑精确减少该 ID。目标与当前专辑相同的未登记成员只回读、不重复移动。只有整批最终快照与新 v2 登记都成功后保护才生效。
 5. 页面核验：重新抓目标专辑，确认条目已出现
 6. 数量核验：比较 `board_counts_before` / `board_counts_after`
 7. 最终核验：运行 `scripts/verify_classification_membership.py`，只读抓取全部专辑成员；所有已放行视频必须全局恰好出现一次并位于目标专辑，未决视频单独列出且保持零移动。
 
 ## 明确禁止事项
-- 不要把 `.collect-wrapper` 当成直接入专辑入口。
+- 禁止用悬停冒充已验证入口；未获明确同意不得取消后重新收藏。受 Skill 归档保护的笔记无论是否提供该同意都不得操作。
 - 不要把 `#collect -> #collected` 图标变化当成“已加入目标专辑”；它只说明笔记被收藏/取消收藏。
 - 禁止调用或恢复任何小红书私有专辑读写接口，包括网页内部的移动接口；不得以已知参数形状为理由重新启用。
-- 不要在未完成全专辑成员关系核对时执行；任何已属于专辑、带 `source_board_id`、成员状态无法证明为 `not_in_any_board`，或生命周期状态不是 `first_archive_pending` 的条目都禁止调用 `d0`。
-- 禁止 `--include-existing-boards`、跨专辑事务、取消收藏后重收、模型纠正用户已归档结果，以及删除/重命名/清理现有专辑。
+- 不要在未完成全专辑成员关系核对时执行；v2 登记专辑成员或生命周期不是 `first_archive_pending` 的条目不得写入。未登记专辑成员允许通过官方可见“加入专辑”完成首次归档，但必须验证原专辑 -1 与目标专辑 +1。
+- 禁止 `--include-existing-boards`、未获同意的取消后重收、模型纠正已由本 Skill 登记的专辑结果，以及删除/重命名/清理现有专辑。
 - 不要把 `GET /api/sns/web/v2/note/collect/page` 的 `code=-9109 参数错误` 直接判定为未登录；它也可能是页面上下文或参数不完整。
 - 不要把 UI 总数当成已完整抓取数。
 - 不要只写文档不落盘 JSON。
@@ -392,8 +392,6 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 - Windows Playwright/CDP + OCR 支持：`references/windows-playwright-ocr-notes.md`
 - WorkBuddy Plugin + 专用 Playwright 路径：`references/workbuddy-plugin.md`
 - Safari 自动化补充：`references/safari-web-automation-notes.md`
-- Safari 小红书前端模块/私有接口观察：`references/safari-xhs-private-api-notes.md`
-- Safari 专辑移动前端运行时路径与已验证 payload：`references/safari-xhs-board-move-fallback.md`
 - 分发可用性审计：`references/distribution-readiness-audit.md`
 - 小红书发布标题/文案/标签/推送策略：`references/xiaohongshu-publishing-playbook.md`
 - 示例文件：`examples/`
@@ -413,7 +411,7 @@ See `references/xiaohongshu-note-research.md` for the archived narrow workflow.
 3. 检查 diff，尤其是 `SKILL.md`、`README.md`、`references/`、`scripts/`；如果新增 reference 被 `SKILL.md` 引用，必须确保文件也被同步。
 4. 在 clone 中跑发布前验证：`python3 -m compileall -q .`、`python3 -m unittest discover -s tests -p 'test_*.py'`、`check_environment.py`、`classify_items.py --skip-ocr`、`run_reassign_batch.py` 分类预览、`build_retry_queue.py`、`summarize_run_report.py`，并用临时 `HERMES_HOME` 验证 `hermes skills list` 能识别；无浏览器证据的报告必须是 `classification_preview`、`ready_for_execute=false`。
 5. 提交并推送 main 后，不要立即宣布完成；重新 `git clone --depth 1` 和下载 `main.zip`，再比较新下载版与本机 skill 目录是否无差异，并重复关键 smoke。
-6. 最终回复必须给出 commit hash、验证项目和公开发布口径；明确说明专辑读取、创建和移动当前已停用，不得建议用户传 `--execute`。
+6. 最终回复必须给出 commit hash、验证项目和公开发布口径；严格区分“离线测试通过”与“已在当前授权浏览器真实验证”，没有真实验证不得声称可见写入已验收。
 
 详细审计标准见 `references/distribution-readiness-audit.md`。
 

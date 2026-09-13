@@ -14,7 +14,7 @@
       "target_board": "示例主题A",
       "status": "success",
       "attempt": 1,
-      "events": ["board:FOUND:示例主题A", "note_move:CALLED", "verify:note_present"],
+      "events": ["board:FOUND:示例主题A", "ui:join_album_clicked", "ui:join_confirmed", "verify:exact_member_append"],
       "error": "",
       "verified": true
     }

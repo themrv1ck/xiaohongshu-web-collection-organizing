@@ -20,6 +20,8 @@ from xhs_visible_ui import (  # noqa: E402
     build_open_create_modal_js,
     build_submit_create_board_js,
     poll_collect_into_board,
+    read_visible_board,
+    indexed_board_members,
     validate_album_scroll_snapshots,
     validate_board_note_snapshots,
     validate_new_collection_transition,
@@ -113,9 +115,9 @@ class VisibleUiAlbumTests(unittest.TestCase):
         self.assertIn(".reds-modal-open .modal", jobs[3])
         self.assertIn("#note-page-collect-board-guide", jobs[4])
         self.assertIn(".board-list-container", jobs[4])
-        self.assertIn("container.scrollTop = container.scrollHeight", jobs[4])
+        self.assertIn("panel.scrollTop = Math.min", jobs[4])
         self.assertIn("HIGH_RISK_STATE_UNCERTAIN", jobs[4])
-        self.assertIn("historical collected notes cannot be reassigned", jobs[4])
+        self.assertIn('"initial_collected": false', jobs[4])
         self.assertIn("#collected", jobs[5])
 
     def test_new_collection_transition_requires_one_exact_append(self):
@@ -139,6 +141,53 @@ class VisibleUiAlbumTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(VisibleUiContractError, "写入前已属于"):
             validate_new_collection_transition(before, after, "2" * 24)
+
+    def test_live_virtual_album_recycles_cards_without_losing_members(self):
+        board = {"id": "a" * 24, "name": "运动训练与体态", "declared_total": 32}
+        notes = [{"id": f"{index + 1:024x}", "page_index": index} for index in range(32)]
+
+        class VirtualSession:
+            user_id = "f" * 24
+            tab_marker = "test-marker"
+
+            def __init__(self):
+                self.windows = [notes[:30], notes[4:]]
+
+            def navigate(self, path):
+                pass
+
+            def wait_for(self, script, **kwargs):
+                return {"board_id": board["id"], "board_name": board["name"],
+                        "declared_total": 32, "notes": self.windows.pop(0)}
+
+            def run_json(self, script):
+                return {"ok": True}
+
+        with patch("xhs_visible_ui.time.sleep", return_value=None):
+            result = read_visible_board(VirtualSession(), board)
+        self.assertEqual(result["note_ids"], [row["id"] for row in notes])
+        self.assertEqual(result["declared_total"], 32)
+
+    def test_virtual_album_rejects_duplicate_or_changing_positions(self):
+        a = {"id": "a" * 24, "page_index": 0}
+        b = {"id": "b" * 24, "page_index": 1}
+        for windows in (
+            [[a, a]],
+            [[a], [{**b, "page_index": 0}]],
+            [[a], [{**a, "page_index": 1}]],
+            [[{"id": "a" * 24}]],
+            [[{**a, "page_index": 2}]],
+        ):
+            with self.subTest(windows=windows):
+                with self.assertRaises(VisibleUiContractError):
+                    indexed_board_members(2, windows)
+
+    def test_virtual_album_never_invents_missing_positions(self):
+        windows = [[{"id": "a" * 24, "page_index": 0}],
+                   [{"id": "c" * 24, "page_index": 2}]]
+        result = indexed_board_members(3, windows)
+        self.assertEqual([row["page_index"] for row in result], [0, 2])
+        self.assertLess(len(result), 3)
 
     def test_arc_navigation_reuses_exact_open_tab_and_rejects_session_query(self):
         session = ArcVisibleUiSession("window", "tab", self.MARKER, self.USER_ID)
@@ -175,7 +224,7 @@ class VisibleUiAlbumTests(unittest.TestCase):
 
         result = poll_collect_into_board(
             FakeSession(),
-            "xhs_ui_123_456",
+            "xhs_skill_123_456",
             timeout_sec=1,
         )
         self.assertEqual(result["visible_confirmation"], "已加入无法确定")

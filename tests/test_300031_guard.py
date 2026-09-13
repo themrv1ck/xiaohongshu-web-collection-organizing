@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +40,7 @@ class Security300031RegressionTests(unittest.TestCase):
                 self.assertIsNotNone(classified)
                 self.assertEqual(classified[0], 'security_challenge')
 
-    def test_read_and_create_jobs_are_visible_ui_and_historical_move_stays_disabled(self):
+    def test_read_create_and_move_jobs_use_only_visible_ui(self):
         create_args = argparse.Namespace(
             name='无法确定', desc='', privacy=0, execute=True,
             user_id='1' * 24, verify_pages=100,
@@ -59,14 +59,20 @@ class Security300031RegressionTests(unittest.TestCase):
         jobs = (
             build_snapshot_job('1' * 24, 100, 'marker', '/user/profile/'),
             build_create_board_job(create_args),
+            build_browser_job([{
+                'id': '2' * 24,
+                'target_board': '无法确定',
+                'confidence': 'high',
+                'membership_state': 'not_in_any_board',
+                'archive_lifecycle_state': 'first_archive_pending',
+                'source_primary': '收藏',
+            }], move_args),
         )
         for job in jobs:
-            for forbidden in ('webpackChunkxhs_pc_web', '/api/sns/web/v1/board', 'req.m'):
+            for forbidden in ('webpackChunkxhs_pc_web', '/api/sns/web/v1/', 'req.m', '/search_result'):
                 self.assertNotIn(forbidden, job)
-        with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
-            build_browser_job([], move_args)
 
-    def test_account_operations_stop_before_browser_constructor(self):
+    def test_visible_snapshot_closes_only_its_runner(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             capture_args = argparse.Namespace(
@@ -78,42 +84,22 @@ class Security300031RegressionTests(unittest.TestCase):
                 arc_expected_url_substring='', url=None, channel='chromium',
                 user_data_dir=None, cdp_url=None, headless=False,
             )
-            create_args = argparse.Namespace(
-                name='无法确定', desc='', privacy=0, execute=True,
-                user_id='1' * 24, report=str(root / 'create.json'),
-                safety_state='', verify_pages=100, timeout_sec=30,
-                arc_window_id='window', arc_tab_id='tab',
-                arc_tab_marker='marker',
-                arc_expected_url_substring='/user/profile/',
-            )
-            move_args = argparse.Namespace(
-                browser='safari', arc_window_id='', arc_tab_id='',
-                arc_tab_marker='', arc_expected_url_substring='',
-                expected_url_substring='', inter_item_delay_sec=0,
-                max_moves_per_session=1, allow_low_confidence=False,
-                verify_pages=100, user_id='', timeout_sec=30,
-                safety_state='',
-            )
-            move_rows = [{
-                'id': '2' * 24, 'title': '测试', 'target_board': '无法确定',
-                'confidence': 'high', 'membership_state': 'not_in_any_board',
-                'archive_lifecycle_state': 'first_archive_pending',
-                'source_board_id': '',
-            }]
-            report = {
-                'processed': [], 'errors': [], 'missing_boards': [],
-                'board_counts_before': {}, 'board_counts_after': {},
+            runner = Mock()
+            snapshot = {
+                'mode': 'read_only',
+                'source': {'writes_performed': False},
+                'boards': [],
+                'validation': {
+                    'board_count': 0,
+                    'full_membership_complete': True,
+                    'count_mismatch_boards': [],
+                },
             }
-
-            with patch('capture_board_snapshot.ArcVisibleUiSession') as arc:
-                with self.assertRaisesRegex(RuntimeError, '只支持.*Arc'):
-                    capture_snapshot(capture_args)
-                arc.assert_not_called()
-
-            with patch('run_reassign_batch.BrowserRunner') as browser:
-                with self.assertRaisesRegex(RuntimeError, '内部模块探测已禁用'):
-                    apply_batch(move_rows, report, move_args, root / 'move.json')
-                browser.assert_not_called()
+            with patch('capture_board_snapshot.BrowserRunner', return_value=runner), patch(
+                'capture_board_snapshot.capture_visible_album_snapshot', return_value=snapshot
+            ):
+                capture_snapshot(capture_args)
+            runner.close.assert_called_once_with()
 
 
 if __name__ == '__main__':

@@ -86,11 +86,11 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             'visible_items.json',
             'crawl_manifest.json',
             'xhs_safety_state.json',
+            'board_snapshot.json',
+            'archive_registry_input.json',
         ]
         if depth == 'light':
             names.extend(['image_items.json', 'ocr_results.json'])
-        if stage in {'inventory', 'plan'}:
-            names.append('board_snapshot.json')
         if stage == 'plan':
             names.extend([
                 'classification.json',
@@ -194,6 +194,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             'ocr_provider': provider,
             'ocr_tesseract_lang': tesseract_lang,
             'ocr_expected_fingerprint': expected_fingerprint,
+            'protected_note_count': 0,
         }
         (directory / 'crawl_manifest.json').write_text(
             json.dumps(manifest, ensure_ascii=False),
@@ -203,6 +204,34 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             json.dumps({'status': 'active'}),
             encoding='utf-8',
         )
+        (directory / 'board_snapshot.json').write_text(json.dumps({
+            'mode': 'read_only',
+            'source': {
+                'browser': 'playwright',
+                'writes_performed': False,
+                'user_id': capture_user_id,
+                'live_account_user_id': capture_user_id,
+                'expected_url_substring': capture_page,
+                'live_page_binding': capture_page,
+                'verify_pages': 100,
+            },
+            'boards': [],
+            'validation': {
+                'pagination_cursor_invariants_passed': True,
+                'board_names_unique': True,
+                'within_board_duplicates': [],
+                'full_membership_complete': True,
+            },
+        }, ensure_ascii=False), encoding='utf-8')
+        (directory / 'archive_registry_input.json').write_text(json.dumps({
+            'contract': 'xhs-skill-archive-registry-v2',
+            'user_id': capture_user_id,
+            'generated_at': '2026-09-04T00:00:00Z',
+            'archived_board_count': 0,
+            'archived_boards': [],
+            'confirmed_archived_count': 0,
+            'completed_run_item_count': 0,
+        }, ensure_ascii=False), encoding='utf-8')
         return manifest
 
     def write_valid_ocr_capture_contract(self, directory: Path):
@@ -1007,7 +1036,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         self.assertTrue(protected_row['excluded'])
         self.assertEqual(
             protected_row['exclude_reason'],
-            'existing_board_member_protected',
+            'skill_archived_board_member_protected',
         )
         self.assertEqual(protected_row['source_board'], '用户手动专辑')
         self.assertEqual(protected_row['target_board'], '')
@@ -1259,11 +1288,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             directory = data_dir / 'runs' / 'run-1'
             directory.mkdir(parents=True)
             self.write_capture_contract(directory, [])
-            trusted = self.trusted_evidence(directory, 'capture')
-
-            def fake_run_command(args, **_kwargs):
-                snapshot = Path(args[2])
-                snapshot.write_text(json.dumps({
+            (directory / 'board_snapshot.json').write_text(json.dumps({
                     'mode': 'read_only',
                     'source': {
                         'browser': 'playwright',
@@ -1275,8 +1300,8 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         'verify_pages': 100,
                     },
                     'boards': [
-                        {'id': 'a' * 24, 'name': '阅读', 'note_ids': []},
-                        {'id': 'b' * 24, 'name': '运动', 'note_ids': []},
+                        {'id': 'a' * 24, 'name': '阅读', 'declared_total': 0, 'note_ids': []},
+                        {'id': 'b' * 24, 'name': '运动', 'declared_total': 0, 'note_ids': []},
                     ],
                     'validation': {
                         'pagination_cursor_invariants_passed': True,
@@ -1285,11 +1310,11 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         'full_membership_complete': True,
                     },
                 }, ensure_ascii=False), encoding='utf-8')
-                return subprocess.CompletedProcess(args, 0, '{}', '')
+            trusted = self.trusted_evidence(directory, 'capture')
 
             with (
                 patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
-                patch('workbuddy_bridge.run_command', side_effect=fake_run_command) as command,
+                patch('workbuddy_bridge.run_command') as command,
             ):
                 result = prepare_action(
                     'run-1', user_id, page_url, expected, 100,
@@ -1303,8 +1328,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         self.assertEqual(result['verify_pages'], 100)
         self.assertEqual(result['blockers'], [])
         self.assertIsNone(result['approval_digest'])
-        self.assertEqual(command.call_count, 1)
-        self.assertIn('capture_board_snapshot.py', command.call_args.args[0][1])
+        command.assert_not_called()
 
     def test_prepare_first_phase_offers_bound_board_creation_when_account_is_empty(self):
         user_id = '66d19b54000000001d03a93d'
@@ -1979,6 +2003,142 @@ class WorkBuddyBridgeTests(unittest.TestCase):
         self.assertEqual(result['blockers'], ['declared_count_mismatch'])
         self.assertFalse(manifest['ready_for_classification'])
 
+    def test_capture_protects_skill_archived_album_before_detail_and_ocr(self):
+        note_id = '66d19b54000000001d03a93e'
+        user_id = '66d19b54000000001d03a93d'
+        target_url = (
+            f'https://www.xiaohongshu.com/user/profile/{user_id}'
+            '?tab=fav&subTab=note'
+        )
+
+        class FakeRunner:
+            def __init__(self, *_args):
+                self.closed = False
+
+            def run_javascript(self, _script):
+                return 'ok'
+
+            def close(self):
+                self.closed = True
+
+        def complete_capture(
+            _js_eval,
+            directory,
+            _source,
+            _batch_size,
+            _pause_minutes,
+            safety,
+            detail_href_sink,
+            *,
+            expected_page_url,
+        ):
+            self.assertEqual(expected_page_url, target_url)
+            self.write_capture_contract(directory, [{
+                'id': note_id,
+                'title': '已经由 Skill 存档的笔记',
+                'content_type': 'image',
+            }])
+            detail_href_sink[note_id] = f'https://www.xiaohongshu.com/explore/{note_id}'
+            return {
+                'count': 1,
+                'output': str(directory / 'visible_items.json'),
+                'crawl_complete': True,
+                'ready_for_classification': True,
+                'blockers': [],
+                'safety_state': str(safety),
+            }
+
+        def archived_protection(_runner, directory, *, user_id, expected_url):
+            board_id = 'a' * 24
+            snapshot = {
+                'mode': 'read_only',
+                'source': {
+                    'browser': 'playwright',
+                    'writes_performed': False,
+                    'user_id': user_id,
+                    'live_account_user_id': user_id,
+                    'expected_url_substring': expected_url,
+                    'live_page_binding': expected_url,
+                    'verify_pages': 100,
+                },
+                'boards': [{
+                    'id': board_id,
+                    'name': 'Skill存档',
+                    'declared_total': 1,
+                    'note_ids': [note_id],
+                }],
+                'validation': {
+                    'pagination_cursor_invariants_passed': True,
+                    'board_names_unique': True,
+                    'within_board_duplicates': [],
+                    'full_membership_complete': True,
+                },
+            }
+            registry = {
+                'contract': 'xhs-skill-archive-registry-v2',
+                'user_id': user_id,
+                'archived_board_count': 1,
+                'archived_boards': [{
+                    'id': board_id,
+                    'name': 'Skill存档',
+                    'note_ids': [note_id],
+                }],
+                'confirmed_archived_count': 1,
+            }
+            (directory / 'board_snapshot.json').write_text(
+                json.dumps(snapshot, ensure_ascii=False),
+                encoding='utf-8',
+            )
+            (directory / 'archive_registry_input.json').write_text(
+                json.dumps(registry, ensure_ascii=False),
+                encoding='utf-8',
+            )
+            return snapshot, {note_id: 'Skill存档'}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            with (
+                patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
+                patch('workbuddy_bridge.BrowserRunner', FakeRunner),
+                patch(
+                    'workbuddy_bridge.capture_workbuddy_groups',
+                    side_effect=complete_capture,
+                ),
+                patch(
+                    'workbuddy_bridge.capture_workbuddy_archive_protection',
+                    side_effect=archived_protection,
+                ),
+                patch(
+                    'workbuddy_bridge.enrich_workbuddy_image_items',
+                    side_effect=AssertionError('protected note detail must not run'),
+                ) as enrich,
+                patch(
+                    'workbuddy_bridge.run_workbuddy_ocr',
+                    side_effect=AssertionError('protected note OCR must not run'),
+                ) as ocr,
+                patch('workbuddy_bridge.wait_for_profile_release'),
+            ):
+                result = capture_action(
+                    'protected-before-analysis',
+                    'collection',
+                    target_url,
+                    200,
+                    3,
+                    'light',
+                )
+                evidence = validate_workbuddy_capture_evidence(
+                    data_dir / 'runs' / 'protected-before-analysis',
+                    expected_user_id=user_id,
+                    expected_page_url=target_url,
+                )
+
+        enrich.assert_not_called()
+        ocr.assert_not_called()
+        self.assertTrue(result['ready_for_classification'])
+        self.assertEqual(result['protected_note_count'], 1)
+        self.assertEqual(evidence['protected_visible_ids'], [note_id])
+        self.assertEqual(workbuddy_classification_inputs(evidence), [])
+
     def test_capture_uses_explicit_depth_and_fixed_200_by_3_grouping(self):
         target_url = (
             'https://www.xiaohongshu.com/user/profile/'
@@ -2304,6 +2464,10 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 patch('workbuddy_bridge.BrowserRunner', side_effect=make_runner),
                 patch('workbuddy_bridge.capture_workbuddy_groups', side_effect=fake_capture),
                 patch(
+                    'workbuddy_bridge.capture_workbuddy_archive_protection',
+                    return_value=({}, {}),
+                ),
+                patch(
                     'workbuddy_bridge.download_workbuddy_authenticated_images',
                     side_effect=self.fake_authenticated_download,
                 ),
@@ -2430,6 +2594,10 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
                 patch('workbuddy_bridge.BrowserRunner', side_effect=make_runner),
                 patch('workbuddy_bridge.capture_workbuddy_groups', side_effect=fake_capture),
+                patch(
+                    'workbuddy_bridge.capture_workbuddy_archive_protection',
+                    return_value=({}, {}),
+                ),
                 patch('workbuddy_bridge.run_command') as command,
                 patch('workbuddy_bridge.wait_for_profile_release'),
             ):
@@ -2731,6 +2899,10 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 patch.dict(os.environ, self.workbuddy_env(data_dir), clear=True),
                 patch('workbuddy_bridge.BrowserRunner', side_effect=make_runner),
                 patch('workbuddy_bridge.capture_workbuddy_groups', side_effect=fake_capture),
+                patch(
+                    'workbuddy_bridge.capture_workbuddy_archive_protection',
+                    return_value=({}, {}),
+                ),
                 patch('workbuddy_bridge.run_command') as command,
                 patch('workbuddy_bridge.wait_for_profile_release'),
             ):
@@ -2984,6 +3156,19 @@ class WorkBuddyBridgeTests(unittest.TestCase):
 
         self.assertNotEqual(approved_for_ten, raised_to_twenty)
 
+    def test_approval_digest_includes_recollect_method_and_risk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, report = self.write_ready_plan(Path(tmp))
+            basis = approval_basis(directory, report, 10)
+            self.assertEqual(basis['visible_assignment_contract']['existing_collect_operation'],
+                             'uncollect_once_recollect_once_then_join')
+            self.assertIn('未收藏',basis['visible_assignment_contract']['risk_notice'])
+            current = approval_digest(directory, report, 10)
+            del basis['visible_assignment_contract']
+            old = hashlib.sha256(json.dumps(basis,ensure_ascii=False,sort_keys=True,
+                                          separators=(',',':')).encode()).hexdigest()
+            self.assertNotEqual(current,old)
+
     def test_approval_basis_binds_snapshot_verify_pages(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory, report = self.write_ready_plan(Path(tmp))
@@ -3141,6 +3326,25 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                         )
                     run_command.assert_not_called()
 
+    def test_execute_rejects_old_approval_without_recollect_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            directory, report = self.write_ready_plan(data_dir)
+            basis = approval_basis(directory, report, 10)
+            del basis['visible_assignment_contract']
+            digest = hashlib.sha256(json.dumps(basis,ensure_ascii=False,sort_keys=True,
+                                               separators=(',',':')).encode()).hexdigest()
+            (directory/'approval.json').write_text(json.dumps({'approval_digest':digest,'basis':basis}),encoding='utf-8')
+            trusted = self.trusted_evidence(directory,'plan')
+            with patch.dict(os.environ,self.workbuddy_env(data_dir),clear=True), \
+                    patch('workbuddy_bridge.BrowserRunner') as browser:
+                with self.assertRaisesRegex(RuntimeError,'approval_digest'):
+                    execute_action('run-1','66d19b54000000001d03a93d',
+                        'https://www.xiaohongshu.com/user/profile/66d19b54000000001d03a93d?tab=fav',
+                        '/user/profile/66d19b54000000001d03a93d',digest,10,
+                        trusted_evidence=trusted,_launch_capability=_MCP_EXECUTE_CAPABILITY)
+                browser.assert_not_called()
+
     def test_execute_rejects_self_consistent_plan_tampering_before_browser(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -3285,7 +3489,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 self.assertEqual(events, ['profile_checked', 'live_binding_checked'])
                 events.append('receipt_committed')
 
-            def execute_in_memory(_items, execution_report, args, report_path, commit_callback):
+            def execute_in_memory(_items, execution_report, args, report_path, commit_callback, **_kwargs):
                 (directory / 'classification.json').write_text(
                     json.dumps([{
                         'id': '66d19b54000000001d03a93d',
@@ -3364,10 +3568,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             ),
         )
         report = {}
-        with (
-            patch('workbuddy_bridge.validate_write_live_binding') as binding,
-            patch('workbuddy_bridge.build_create_board_job', return_value='safe-test-job'),
-            patch('workbuddy_bridge.poll_browser_job', return_value={
+        with patch('workbuddy_bridge.create_visible_board', return_value={
                 'status': 'created',
                 'writePerformed': True,
                 'board': {
@@ -3376,8 +3577,7 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                     'privacy': 1,
                 },
                 'emptyBoardVerified': True,
-            }),
-        ):
+            }) as create:
             execute_planned_board_creations(
                 runner,
                 [{'name': '阅读', 'privacy': 1}],
@@ -3385,7 +3585,8 @@ class WorkBuddyBridgeTests(unittest.TestCase):
                 report,
             )
 
-        self.assertEqual(binding.call_count, 2)
+        create.assert_called_once()
+        self.assertIs(create.call_args.args[0].runner, runner)
         self.assertEqual(report['board_creations'], [{
             'name': '阅读',
             'privacy': 1,
@@ -3414,14 +3615,10 @@ class WorkBuddyBridgeTests(unittest.TestCase):
             'board': {'id': 'a' * 24, 'name': '阅读', 'privacy': 1},
             'emptyBoardVerified': True,
         }
-        with (
-            patch('workbuddy_bridge.validate_write_live_binding'),
-            patch('workbuddy_bridge.build_create_board_job', return_value='safe-test-job'),
-            patch(
-                'workbuddy_bridge.poll_browser_job',
+        with patch(
+                'workbuddy_bridge.create_visible_board',
                 side_effect=[first, RuntimeError('second board preflight failed')],
-            ),
-        ):
+            ):
             with self.assertRaisesRegex(RuntimeError, 'HIGH_RISK_STATE_UNCERTAIN'):
                 execute_planned_board_creations(
                     runner,

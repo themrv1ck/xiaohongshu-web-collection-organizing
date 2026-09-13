@@ -4,9 +4,9 @@
 
 WorkBuddy 不再通过宿主进程向 Safari 发送 Apple Events，也不依赖 macOS“自动化”开关。插件把 Skill、MCP 服务器、固定工作流桥接器和浏览器策略一起分发；模型只负责填写明确参数，浏览器选择和写入闸门由代码执行。
 
-## 2.3.0 安全停机
+## 2.3.1 可见页面执行
 
-专辑读取、创建和移动当前全部停用。模型必须在打开浏览器前停止，不调用 login、capture、prepare 或 execute。旧版网页内部模块探测与自动化会话进入安全验证错误页高度相关，现已删除；下面的浏览器与工具合同只作为未来非注入式实现的约束记录，不代表当前可执行。
+专辑读取、创建和归档已接入正式页面可见控件。`login/capture/prepare/execute` 可按本合同执行；不得访问网页内部模块、调用私有接口或按标题搜索。执行器按抓取时的 note id 点击真实来源卡片，再使用可见“加入专辑”，从而避免曾与 300031 高度相关的自定义 chunk 注册动作。
 
 ## 确定性宿主识别
 
@@ -45,15 +45,15 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 
 ## 工具顺序
 
-1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.3.0`、独立 profile、平台 channel 和依赖状态；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
+1. `xhs_workbuddy_status`：纯离线，返回 `plugin_version=2.3.1`、独立 profile、平台 channel 和依赖状态；缺失或版本不同必须先更新 Plugin 并重开 WorkBuddy。
 2. `xhs_workbuddy_setup`：仅在用户明确同意后调用；在 `${CODEBUDDY_PLUGIN_DATA}/python-venv` 安装 `requirements-workbuddy.txt`。Windows 只检查系统 Edge，不下载 Chromium；macOS/Linux 安装独立 Chromium。
 3. `xhs_workbuddy_login`：仅在用户当前回合明确授权打开浏览器后调用，并传入已选择的 `source=collection|liked`。用户只需完成登录；工具自动从前端“我”入口取得当前账号、进入所选范围、返回无敏感参数的 `target_page_url`，随后关闭自己的浏览器并等待 profile 锁释放。禁止要求用户关窗口或复制 URL。
    轻度整理调用 capture 前必须已经询问是否需要最终桌面 HTML，并显式传 `generate_report=true|false`；快速整理固定传 `false`。该选择写入抓取 manifest 并随证据哈希绑定。
-4. `xhs_workbuddy_capture`：直接复用上一步返回的 `target_page_url`；不得再次向用户索取地址。收藏 URL 必须带 `tab=fav`，点赞 URL 必须带 `tab=liked`。`organizing_depth` 必填：快速整理传 `quick`，轻度整理传 `light`；`deep` 会因尚无视频语音和完整时轴画面证据入口而在浏览器启动前明确停止，禁止冒充深度结果。分组参数不暴露给模型：插件固定每 200 条保存一组，非末组真实等待 3 分钟。只有声明总数每次连读均不变化、实际唯一条数完全相等、且 `page_index ↔ note_id` 双向唯一并连续覆盖 `0..总数-1` 才允许分类；否则保存现有数据并硬停，不能把约 10 条首屏数据标为完整。轻度整理在关闭同一次 context 前，用进程内卡片链接打开全部条目详情，再以同一 BrowserContext 下载图片字节；`image_items.json` 只保存相对本地路径与内容 SHA256，不保存签名图片 URL。Cookie、卡片原始 query、签名 URL 与 xsec 不得落盘、进入错误或返回模型。只有 `ready_for_classification=true` 时，MCP 才对本次文件哈希签发 capture receipt。
-5. `xhs_workbuddy_prepare`（专辑清单阶段）：第一次不传 `classification`，只读生成完整 `board_snapshot.json`，把当前属于任一专辑的全部 note id 视为首次归档已确认并标记为永久保护，只返回尚未首次归档的专辑外笔记脱敏 `classification_inputs`，并返回 `protected_existing_board_member_count`。账号没有专辑时也继续分类，不再返回死路 blocker。
+4. `xhs_workbuddy_capture`：直接复用上一步返回的 `target_page_url`；不得再次向用户索取地址。收藏 URL 必须带 `tab=fav`，点赞 URL 必须带 `tab=liked`。`organizing_depth` 必填：快速整理传 `quick`，轻度整理传 `light`；`deep` 会因尚无视频语音和完整时轴画面证据入口而在浏览器启动前明确停止。分组参数不暴露给模型：插件固定每 200 条保存一组，非末组真实等待 3 分钟。列表完整后，必须在任何详情或 OCR 前读取完整专辑成员、绑定最新 v2 登记，并算出登记专辑的实时成员。轻度整理只打开未受保护条目详情并下载其图片字节；已保护成员不得访问详情或 OCR。`image_items.json` 只保存相对本地路径与内容 SHA256，不保存签名图片 URL。Cookie、卡片原始 query、签名 URL 与 xsec 不得落盘、进入错误或返回模型。只有 `ready_for_classification=true` 时，MCP 才对列表、专辑快照、登记和未受保护内容证据一起签发 capture receipt。
+5. `xhs_workbuddy_prepare`（专辑清单阶段）：第一次不传 `classification`，只校验 capture 已生成的完整 `board_snapshot.json` 和 v2 Skill 归档登记，不重复启动浏览器。只保护登记专辑的本轮实时成员；普通收藏和未登记专辑成员仍返回脱敏 `classification_inputs`。首次运行使用显式空登记，不把已有专辑自动收编为保护集合。
 6. 分类：模型只能使用 `classification_inputs`，不得补回或纠正已保护专辑成员。优先选择真实已有专辑；确需新增时，只能依据本次内容提出最多 20 个 `proposed_board_names`，不得使用模板或插件预设，并明确统一的 `new_board_privacy=public|private`。每个提议名称必须至少被一条真实分类使用。空目标由工具机械转入固定“无法确定”；若该专辑不存在，工具把它加入同一次待创建确认，不占用模型的 20 个内容专辑提议。
 7. `xhs_workbuddy_prepare`（dry-run 阶段）：第二次自动传入 classification、可选提议名称及隐私、移动上限、`verify_pages` 和 inventory receipt。工具机械核验所有输入，把待创建专辑、隐私、逐条移动与上限写入同一个 approval digest；此阶段不创建任何专辑。
-8. `xhs_workbuddy_execute`：用户一次确认上述完整方案后执行。MCP `COMMIT` 之后，Python 在同一个受管 BrowserContext 中先创建确认过的专辑，逐个核验名称、隐私和空成员，再只移动 `not_in_any_board + first_archive_pending` 且空 `source_board_id` 的笔记；只有 `U_` + `Ks` 回读确认后才转为 `first_archive_confirmed` 并永久保护。已有专辑成员在 Python 与页面 JavaScript 两层跳过。任一创建结果不确定即写入安全停机并停止后续移动。WorkBuddy 中直接运行抓取脚本或 `run_reassign_batch.py --execute` 会被拒绝。
+8. `xhs_workbuddy_execute`：用户一次确认完整方案后执行。MCP `COMMIT` 之后，在同一个受管 BrowserContext 中先创建并核验专辑，再按 note id 回到收藏/点赞来源列表点击真实卡片。已收藏且未受保护的条目须明确同意取消后重新收藏；未收藏条目只点击一次收藏，两者都立即使用本次出现的“加入专辑”。风险及动作绑定 `visible_assignment_contract` 与 approval digest，旧审批不能复用；详见 `visible-collection-entry.md`。每条回读目标专辑，跨未登记专辑时同时回读原专辑。整批和最终完整回读全部通过后才生成新的不可覆盖 v2 登记；错误、中止或达到上限不更新登记。
 
 ## 证据 receipt
 
@@ -68,7 +68,7 @@ WorkBuddy 5.3.5 不会可靠展开 `.mcp.json` 的插件数据目录变量。`bi
 用户只感知两次安全决策：
 
 1. 首次只读整理前，确认范围、深度和打开专用浏览器；列表与详情固定每组最多 200 条、非末组间隔 3 分钟，不要求用户配置。一次确认覆盖同一浏览器里的列表读取和详情补齐。
-2. 真正写入前，一次确认待创建专辑及隐私、逐条映射和移动上限。
+2. 真正写入前，一次明确确认待创建专辑及隐私、逐条映射、移动上限，以及取消后重收藏会改变排序、中途失败可能留下未收藏状态的风险。
 
 `login`、`capture`、`prepare` 是代码内部的安全边界，不得变成让用户关窗口、抄 URL 或理解 profile 的操作说明。
 

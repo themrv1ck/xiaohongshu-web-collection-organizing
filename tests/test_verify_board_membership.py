@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
-from run_reassign_batch import BOARD_VERIFICATION_JS, LIVE_API_RESOLVER_JS  # noqa: E402
+
 from capture_board_snapshot import capture_snapshot, validate_args as validate_snapshot_capture_args  # noqa: E402
 from verify_board_membership import (  # noqa: E402
     MembershipContractError,

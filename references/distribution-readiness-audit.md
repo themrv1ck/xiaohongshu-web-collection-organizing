@@ -24,10 +24,10 @@
 4. **SkillHub / RedSkill 发布包结构正确**
    - 分别运行：`python3 scripts/build_redskill_package.py --channel redskill --output-dir <tmp>/redskill` 和 `python3 scripts/build_redskill_package.py --channel skillhub --output-dir <tmp>/skillhub`。
    - ZIP 只能有一个顶层目录，且必须与 `SKILL.md` 的 `name` 一致。
-   - ZIP 根 Skill 目录必须包含 `.codebuddy-plugin/plugin.json`、`.mcp.json` 和 `server/xhs-workbuddy-mcp.mjs`；不能把缺少 Plugin 的普通 Skill 包称为 WorkBuddy 2.3.0。
+   - ZIP 根 Skill 目录必须包含 `.codebuddy-plugin/plugin.json`、`.mcp.json` 和 `server/xhs-workbuddy-mcp.mjs`；不能把缺少 Plugin 的普通 Skill 包称为 WorkBuddy 2.3.1。
    - 上传包不得包含 `tests/` 或 `workbuddy-plugin-src/`，文件数不得超过 100；源码和测试继续保留在 GitHub。
    - `manifest.yaml`、Plugin、Marketplace、MCP 构建产物和 `SKILL.md` 的版本必须全部一致。
-   - 用 `python3 scripts/build_redskill_package.py --output-dir <tmp>/noop --validate-only <zip>` 复验，结果必须为 `{"valid": true, "errors": []}`。
+   - 用 `python3 scripts/build_redskill_package.py --channel <redskill|skillhub> --output-dir <tmp>/noop --validate-only <zip>` 按对应渠道复验，结果必须为 `{"valid": true, "errors": []}`。
 
 5. **脚本基础质量**
    - 运行：`python3 -m compileall -q <repo>`。
@@ -42,7 +42,7 @@
    python3 scripts/classify_items.py --skip-ocr examples/visible_items.example.json /tmp/xhs_classification_skip.json
    python3 scripts/run_reassign_batch.py /tmp/xhs_classification_skip.json /tmp/xhs_classification_preview.json
    python3 scripts/build_retry_queue.py examples/run_report.example.json /tmp/xhs_retry_queue.json
-   python3 scripts/summarize_run_report.py examples/run_report.example.json /tmp/xhs_summary.json
+   python3 scripts/summarize_run_report.py examples/run_report.example.json > /tmp/xhs_summary.json
    ```
 
    无浏览器证据的 `run_reassign_batch.py` 必须输出 `classification_preview`、`ready_for_execute=false`，不能输出可执行 dry-run。`build_created_boards.py` 需要三个参数；第二个参数是“现有专辑列表或 `board_snapshot.json`”，不是输出路径，例如：
@@ -54,7 +54,7 @@
 
 7. **有副作用功能不应盲测**
    - `extract_visible_items.py` 依赖已登录浏览器和页面状态，可在用户授权浏览器环境中测。
-   - `capture_board_snapshot.py` 依赖用户本轮授权的已登录浏览器，只读调用前端 `yC + U_ + Ks`。
+   - `capture_board_snapshot.py` 依赖用户本轮授权的已登录浏览器，只读正式页面可见专辑卡片和成员卡片，不调用私有模块或接口。
    - `run_reassign_batch.py --execute` 会实际整理/移动收藏；没有 `board_snapshot.json` 和 `created_boards.json` 时必须在接触浏览器前拒绝。
 
 ## 必查差异
